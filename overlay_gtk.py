@@ -2,7 +2,7 @@
 """overlay_gtk.py: camada transparente por cima de qualquer app (Linux, X11).
 
 Desenha laser, foco (escurece tudo menos um circulo), caneta, marca-texto, cortina e confete.
-Mesmo protocolo do overlay.swift: JSON, um por linha, na entrada padrao (enviados pelo passador.py).
+Mesmo protocolo do overlay.swift: JSON, um por linha, na entrada padrao (enviados pelo baton.py).
 Precisa de PyGObject com Gtk 3 e pycairo (Debian/Ubuntu: python3-gi, gir1.2-gtk-3.0, python3-gi-cairo)
 e de um compositor ativo (GNOME, KDE e XFCE com composicao ligada). Em Wayland roda via XWayland.
 Nao ha desfoque no Linux: o foco so escurece.
@@ -21,7 +21,7 @@ try:
     gi.require_version("Gtk", "3.0")
     gi.require_version("Gdk", "3.0")
     from gi.repository import Gdk, GLib, Gtk
-except Exception as e:  # sem Gtk: o passador cai para a camada Tk
+except Exception as e:  # sem Gtk: o Baton cai para a camada Tk
     print(f"overlay_gtk: Gtk/cairo indisponivel ({e})", file=sys.stderr)
     sys.exit(3)
 
@@ -42,7 +42,7 @@ class Camada(Gtk.Window):
     def __init__(self, indice):
         super().__init__(type=Gtk.WindowType.POPUP)  # sem decoracao, sem foco, acima de janelas em tela cheia
         tela = Gdk.Screen.get_default()
-        if not os.environ.get("PASSADOR_OVERLAY_PNG") and (not tela.is_composited() or tela.get_rgba_visual() is None):
+        if not os.environ.get("BATON_OVERLAY_PNG") and (not tela.is_composited() or tela.get_rgba_visual() is None):
             print("overlay_gtk: sem compositor (janela transparente indisponivel)", file=sys.stderr)
             sys.exit(4)
         if tela.get_rgba_visual() is not None:
@@ -260,8 +260,8 @@ class Camada(Gtk.Window):
 
 
 def salvar_png(camada):
-    """Teste sem tela real: PASSADOR_OVERLAY_PNG=arquivo grava o quadro final e encerra."""
-    destino = os.environ.get("PASSADOR_OVERLAY_PNG")
+    """Teste sem tela real: BATON_OVERLAY_PNG=arquivo grava o quadro final e encerra."""
+    destino = os.environ.get("BATON_OVERLAY_PNG")
     if not destino:
         Gtk.main_quit()  # pai fechou a entrada: encerra
         return
@@ -272,7 +272,7 @@ def salvar_png(camada):
         sup.write_to_png(destino)
         Gtk.main_quit()
         return False
-    GLib.timeout_add(int(float(os.environ.get("PASSADOR_OVERLAY_ESPERA", "0")) * 1000), gravar)
+    GLib.timeout_add(int(float(os.environ.get("BATON_OVERLAY_ESPERA", "0")) * 1000), gravar)
 
 
 def main():

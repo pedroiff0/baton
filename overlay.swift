@@ -1,6 +1,6 @@
 // overlay.swift: camada transparente por cima de qualquer app (macOS).
 // Desenha laser, foco (desfoca e escurece tudo menos um circulo), caneta e marca-texto.
-// Recebe comandos JSON, um por linha, na entrada padrao (enviados pelo passador.py).
+// Recebe comandos JSON, um por linha, na entrada padrao (enviados pelo baton.py).
 //
 // Compilar:  swiftc -O overlay.swift -o overlay
 // Usar:      ./overlay [--tela N] [--nivel N]

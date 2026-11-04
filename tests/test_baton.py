@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import passador as P  # noqa: E402
+import baton as P  # noqa: E402
 
 
 class FakeBackend:
@@ -264,7 +264,7 @@ class PlataformasTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d, mock.patch.object(P.sys, "platform", "linux"), \
                 mock.patch.object(P.Path, "home", return_value=Path(d)):
             P.instalar_login()
-            alvo = Path(d) / ".config" / "autostart" / "passador.desktop"
+            alvo = Path(d) / ".config" / "autostart" / "baton.desktop"
             self.assertIn("--externo", alvo.read_text())
             P.instalar_login(remover=True)
             self.assertFalse(alvo.exists())

@@ -1,21 +1,21 @@
-# passador
+# Baton
 
 Seu celular (iPhone ou Android) como passador de slides, via Tailscale: controla qualquer app no Mac, Windows ou Linux, com laser, foco, caneta, marca-texto, cortina, notas do apresentador e zoom. Só biblioteca padrão do Python 3.8+; para desenhar sobre os apps há uma camada nativa por sistema (Swift no macOS, Tk no Windows, Gtk no Linux).
 
 ## Início rápido
 
 ```
-python3 passador.py                  # modo passador USB: o celular controla o app em primeiro plano
-python3 passador.py slides.pdf       # modo tela: o passador mostra o PDF (transições, notas, zoom, passos)
-python3 passador.py --instalar       # liga sozinho no login (launchd, Inicializar do Windows ou autostart); --desinstalar remove
+python3 baton.py                  # modo passador USB: o celular controla o app em primeiro plano
+python3 baton.py slides.pdf       # modo tela: o Baton mostra o PDF (transições, notas, zoom, passos)
+python3 baton.py --instalar       # liga sozinho no login (launchd, Inicializar do Windows ou autostart); --desinstalar remove
 ```
 
-No Windows use `py passador.py ...` (ou `python`).
+No Windows use `py baton.py ...` (ou `python`).
 
 ```
 ```
 
-Ao iniciar, o computador abre uma página com um **QR code**. Escaneie com o celular. No iPhone, **Compartilhar > Adicionar à Tela de Início**; no Android (Chrome), menu **⋮ > Instalar app** ou **Adicionar à tela inicial**. O token fica salvo em `~/.cache/passador/token` (`--novo-token` troca), então a página do celular continua valendo depois de reiniciar.
+Ao iniciar, o computador abre uma página com um **QR code**. Escaneie com o celular. No iPhone, **Compartilhar > Adicionar à Tela de Início**; no Android (Chrome), menu **⋮ > Instalar app** ou **Adicionar à tela inicial**. O token fica salvo em `~/.cache/baton/token` (`--novo-token` troca), então a página do celular continua valendo depois de reiniciar.
 
 ## Plataformas
 
@@ -34,15 +34,15 @@ O celular envia setas, Home e End para o app em primeiro plano (PowerPoint, Keyn
 - **Laser**: ponto vermelho. **Foco**: desfoca tudo, menos um círculo em volta do ponteiro; o **raio é ajustável** no celular (controle "Raio do foco" ou gesto de pinça sobre a miniatura) e fica salvo.
 - **Caneta** e **Marca** (marca-texto), 5 cores, e **Limpar**. Trocar de slide limpa os desenhos sozinho.
 - `--tela N` escolhe a tela do projetor; `--sem-overlay` usa só o cursor do mouse como laser; `--cursor` move o cursor junto com a camada; `--proporcao 16:9` define a área do laser quando não há PDF (o padrão é o formato da tela).
-- Se a camada não subir (sem `swiftc`, Gtk ou compositor), o passador avisa e segue com o laser como cursor (e só o Preto, pela tecla `B` do leitor).
+- Se a camada não subir (sem `swiftc`, Gtk ou compositor), o Baton avisa e segue com o laser como cursor (e só o Preto, pela tecla `B` do leitor).
 
 ## Personalização (botão "Ajustes" no celular)
-Tudo é salvo em `~/.cache/passador/config.json` e vale em todos os modos: **tamanho e cor do laser**; **foco**: raio, intensidade do desfoque e escurecimento fora do círculo; **caneta**: espessura; **marca-texto**: espessura e opacidade. "Restaurar padrão" volta aos valores originais. Sobre outros apps, o desfoque usa o efeito nativo do macOS (a intensidade controla a opacidade dele); no modo tela, o desfoque é real e proporcional.
+Tudo é salvo em `~/.cache/baton/config.json` e vale em todos os modos: **tamanho e cor do laser**; **foco**: raio, intensidade do desfoque e escurecimento fora do círculo; **caneta**: espessura; **marca-texto**: espessura e opacidade. "Restaurar padrão" volta aos valores originais. Sobre outros apps, o desfoque usa o efeito nativo do macOS (a intensidade controla a opacidade dele); no modo tela, o desfoque é real e proporcional.
 
 ## Modo tela (com PDF)
-O passador mostra o PDF no navegador do Mac (`F` tela cheia, setas/espaço/clique navegam, `B` preto, `W` branco, `T` teatro, `E` fim, `C` limpar, `Q` QR code):
+O baton mostra o PDF no navegador do Mac (`F` tela cheia, setas/espaço/clique navegam, `B` preto, `W` branco, `T` teatro, `E` fim, `C` limpar, `Q` QR code):
 - **Transições**: fade, deslizar, zoom (`--transicao`, ou o seletor no celular); sem transição entre os passos de um mesmo slide.
-- **Passos dentro de um slide**: com `elementos=progressivo` na classe `iffslides` (ou `\pause`, `\item<2->`), o passador agrupa as páginas do mesmo slide e mostra "slide 5 / 33  passo 2/4".
+- **Passos dentro de um slide**: com `elementos=progressivo` na classe `iffslides` (ou `\pause`, `\item<2->`), o Baton agrupa as páginas do mesmo slide e mostra "slide 5 / 33  passo 2/4".
 - **Cronômetro**: começa no primeiro avanço (ou toque no relógio), mostra o tempo decorrido e quanto resta da meta (padrão 50 min, ajustável em Ajustes); amarelo nos últimos 10% e vermelho ao estourar; sincronizado pelo servidor, sobrevive a recarregar a página.
 - **Prévia do próximo** slide (ou do próximo passo) ao lado do cronômetro, e **Ir para**: grade de miniaturas dos slides (modo tela) ou número direto.
 - **Notas do apresentador** no iPhone, com A−/A+: `--notas slides.notas.md` (ou `slides.notas.md` ao lado do PDF). Formato: `## 5` = slide 5, `## p12` = página 12 do PDF, texto livre com `**negrito**`, `*itálico*` e listas com `-`. Exemplo: `exemplo.notas.md` (slides de e-lixo).
@@ -52,10 +52,10 @@ O passador mostra o PDF no navegador do Mac (`F` tela cheia, setas/espaço/cliqu
 ## Cortina, fim e efeitos sonoros (botão "Extras" no celular)
 - **Cortina:** Preto, Branco, Teatro (panos vermelhos que fecham e abrem) e Fim (tela de encerramento com o texto que você digitar e confete). Tocar de novo abre a cortina. No modo externo ela é desenhada pela camada nativa, por cima do app; sem a camada, só o Preto funciona (tecla `B` do leitor).
 - **Confete:** chuva de confete por cima do slide, por 4 segundos.
-- **Efeitos:** Ding, Tambor, Aplausos, Fanfarra, Buzina e Suspense, sintetizados pelo próprio passador (sem arquivos) e tocados no computador que projeta, por `afplay` (macOS), `winsound` (Windows), `paplay`, `aplay` ou `ffplay` (Linux). "Parar som" interrompe o efeito.
+- **Efeitos:** Ding, Tambor, Aplausos, Fanfarra, Buzina e Suspense, sintetizados pelo próprio baton (sem arquivos) e tocados no computador que projeta, por `afplay` (macOS), `winsound` (Windows), `paplay`, `aplay` ou `ffplay` (Linux). "Parar som" interrompe o efeito.
 
 ## Conexão estável
-Batimento do servidor a cada 4 s; o celular reabre a conexão sozinho (silêncio de 12 s, volta para a tela, volta a rede); cada comando tem um id e é reenviado até 5 vezes sem pular dois slides; TCP keepalive e `TCP_NODELAY`. Dica: no Mac, `caffeinate -dis python3 passador.py` evita a suspensão; no Windows e no Linux, desative a suspensão durante a apresentação.
+Batimento do servidor a cada 4 s; o celular reabre a conexão sozinho (silêncio de 12 s, volta para a tela, volta a rede); cada comando tem um id e é reenviado até 5 vezes sem pular dois slides; TCP keepalive e `TCP_NODELAY`. Dica: no Mac, `caffeinate -dis python3 baton.py` evita a suspensão; no Windows e no Linux, desative a suspensão durante a apresentação.
 
 ## Segurança
 O servidor escuta em `127.0.0.1` e no IP do Tailscale, nunca na internet. O celular precisa do token (`k`); o Mac local não. Quem tem a URL com o token controla o Mac pelo Tailscale: não compartilhe o QR.
@@ -64,9 +64,9 @@ O servidor escuta em `127.0.0.1` e no IP do Tailscale, nunca na internet. O celu
 ```
 python3 -m unittest discover -s tests -v
 swiftc -O overlay.swift -o overlay        # macOS: compilar o helper à mão
-PASSADOR_BACKEND=log PASSADOR_OVERLAY=log python3 passador.py --sem-abrir   # testa sem mexer no Mac
+BATON_BACKEND=log BATON_OVERLAY=log python3 baton.py --sem-abrir   # testa sem mexer no Mac
 ```
-Estrutura: `passador.py` (servidor, páginas web e modo externo), `overlay.swift` (camada macOS), `overlay_tk.py` (Windows), `overlay_gtk.py` (Linux), `tests/`. O pdf.js e o gerador de QR são baixados para `~/.cache/passador` na primeira execução.
+Estrutura: `baton.py` (servidor, páginas web e modo externo), `overlay.swift` (camada macOS), `overlay_tk.py` (Windows), `overlay_gtk.py` (Linux), `tests/`. O pdf.js e o gerador de QR são baixados para `~/.cache/baton` na primeira execução.
 
 ## Projetos parecidos
 - [mobslide](https://github.com/thewh1teagle/mobslide) (Tauri, macOS e Windows, QR code, PowerPoint/Keynote/Slides): só avança e volta.
@@ -75,7 +75,7 @@ Estrutura: `passador.py` (servidor, páginas web e modo externo), `overlay.swift
 - [Projecteur](https://github.com/gbin/Projecteur) (MIT): laser virtual no Linux para o Logitech Spotlight.
 - [ScreenPen](https://github.com/rsusik/screenpen) (GPL-3.0): anotação direta na tela.
 
-O passador junta o que cada um faz separado: controle pelo celular via Tailscale (funciona fora da mesma rede Wi-Fi), laser, foco com desfoque de raio ajustável, caneta e marca-texto sobre qualquer app, notas do apresentador no celular, zoom e passos dentro de um slide.
+O baton junta o que cada um faz separado: controle pelo celular via Tailscale (funciona fora da mesma rede Wi-Fi), laser, foco com desfoque de raio ajustável, caneta e marca-texto sobre qualquer app, notas do apresentador no celular, zoom e passos dentro de um slide.
 
 ## Licença
 MIT (ver `LICENSE`). O pdf.js (Apache-2.0) e o qrcode-generator (MIT) são baixados na primeira execução e não fazem parte deste repositório.

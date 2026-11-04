@@ -2,7 +2,7 @@
 """overlay_tk.py: camada transparente por cima de qualquer app (Windows; Linux como alternativa sem Gtk).
 
 Desenha laser, foco (escurece tudo menos um circulo), caneta, marca-texto, cortina e confete.
-Mesmo protocolo do overlay.swift: JSON, um por linha, na entrada padrao (enviados pelo passador.py).
+Mesmo protocolo do overlay.swift: JSON, um por linha, na entrada padrao (enviados pelo baton.py).
 So biblioteca padrao (tkinter). No Windows usa cor transparente + clique atravessando a janela.
 Limites do Tk: nao ha desfoque (o foco so escurece), a borda do foco e o marca-texto usam padroes
 pontilhados (stipple) no lugar de transparencia real, e a cortina "branco/preto/fim" aparece com fade
@@ -20,7 +20,7 @@ import tkinter as tk
 
 WIN = sys.platform == "win32"
 CHAVE = "#010203"  # cor que vira transparente
-TESTE = os.environ.get("PASSADOR_TK_TESTE", "")  # draw | dim | cort: mostra so uma janela, com fundo opaco
+TESTE = os.environ.get("BATON_TK_TESTE", "")  # draw | dim | cort: mostra so uma janela, com fundo opaco
 PALETA = ["#ff3b30", "#ffd60a", "#30d158", "#0a84ff", "#bf5af2", "#ff9f0a"]
 
 

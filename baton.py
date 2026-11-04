@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""passador: controle de slides em PDF pelo celular, via Tailscale, com laser.
+"""baton: controle de slides em PDF pelo celular, via Tailscale, com laser.
 
 Dois modos (no Mac que projeta):
-    python3 passador.py slides.pdf             # a tela do passador mostra o PDF (fade/slide/zoom)
-    python3 passador.py --externo [slides.pdf] # controla QUALQUER leitor (Adobe, Preview, Keynote...)
+    python3 baton.py slides.pdf             # a tela do Baton mostra o PDF (fade/slide/zoom)
+    python3 baton.py --externo [slides.pdf] # controla QUALQUER leitor (Adobe, Preview, Keynote...)
 
 No modo externo o celular envia teclas (setas, Home, End, B) e move o cursor do mouse (laser)
 para o aplicativo em primeiro plano; o Terminal precisa de permissao de Acessibilidade.
 A pagina inicial mostra um QR code para abrir o controle no celular.
 Somente biblioteca padrao do Python 3.8+. pdf.js e gerador de QR sao baixados uma vez para
-~/.cache/passador; sem internet nessa hora, o navegador usa a CDN.
+~/.cache/baton; sem internet nessa hora, o navegador usa a CDN.
 """
 import argparse
 import collections
@@ -40,9 +40,20 @@ from urllib.parse import parse_qs, urlparse
 PDFJS_VERSION = "3.11.174"
 PDFJS_CDN = f"https://cdnjs.cloudflare.com/ajax/libs/pdf.js/{PDFJS_VERSION}/"
 PDFJS_FILES = ("pdf.min.js", "pdf.worker.min.js")
-CACHE = Path.home() / ".cache" / "passador" / f"pdfjs-{PDFJS_VERSION}"
+def _migrar_cache():
+    """Renomeado de passador para baton: leva token, configuracao e cache junto."""
+    velho, novo = Path.home() / ".cache" / "passador", Path.home() / ".cache" / "baton"
+    if velho.exists() and not novo.exists():
+        try:
+            velho.rename(novo)
+        except OSError:
+            pass
+
+
+_migrar_cache()
+CACHE = Path.home() / ".cache" / "baton" / f"pdfjs-{PDFJS_VERSION}"
 QR_CDN = "https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"
-QR_FILE = Path.home() / ".cache" / "passador" / "qrcode.min.js"
+QR_FILE = Path.home() / ".cache" / "baton" / "qrcode.min.js"
 TRANSICOES = ("fade", "slide", "zoom", "nenhuma")
 
 
@@ -50,7 +61,7 @@ CFG_PADRAO = {"laser_tam": 24, "laser_cor": "#ff2d2d", "foco_raio": 12, "foco_bl
               "pen_larg": 3.5, "hl_larg": 14, "hl_alpha": 38, "meta_min": 50}
 CFG_LIM = {"laser_tam": (6, 120), "foco_raio": (3, 35), "foco_blur": (0, 100), "foco_escuro": (0, 90),
            "pen_larg": (0.5, 20), "hl_larg": (3, 60), "hl_alpha": (5, 90), "meta_min": (1, 300)}
-CFG_ARQ = Path.home() / ".cache" / "passador" / "config.json"
+CFG_ARQ = Path.home() / ".cache" / "baton" / "config.json"
 
 
 def cfg_validar(d, base=None):
@@ -79,7 +90,7 @@ def cfg_carregar():
 EFEITOS = ("ding", "tambor", "aplausos", "fanfarra", "buzina", "suspense")
 CORTINAS = ("preto", "branco", "teatro", "fim")
 TAXA_SOM = 22050
-SONS_DIR = Path.home() / ".cache" / "passador" / "sons"
+SONS_DIR = Path.home() / ".cache" / "baton" / "sons"
 
 
 def _mixar(trilhas):
@@ -192,7 +203,7 @@ class Som:
     """Toca os efeitos no Mac que projeta (e sai nas caixas da apresentacao). 'log' so imprime (teste)."""
 
     def __init__(self, modo=None):
-        self.modo = modo if modo is not None else os.environ.get("PASSADOR_SOM", "")
+        self.modo = modo if modo is not None else os.environ.get("BATON_SOM", "")
         self.cmd = None
         self.proc = None
         self.lock = threading.Lock()
@@ -572,9 +583,9 @@ class _OverlayMac:
     def __init__(self, tela=0, nivel=None):
         fonte = Path(__file__).with_name("overlay.swift")
         if not fonte.exists():
-            raise RuntimeError("overlay.swift nao encontrado ao lado do passador.py")
+            raise RuntimeError("overlay.swift nao encontrado ao lado do baton.py")
         h = hashlib.sha1(fonte.read_bytes()).hexdigest()[:10]
-        binario = Path.home() / ".cache" / "passador" / f"overlay-{h}"
+        binario = Path.home() / ".cache" / "baton" / f"overlay-{h}"
         if not binario.exists():
             swiftc = shutil.which("swiftc")
             if not swiftc:
@@ -606,7 +617,7 @@ class _OverlayProc:
     def __init__(self, script, tela=0):
         fonte = Path(__file__).with_name(script)
         if not fonte.exists():
-            raise RuntimeError(f"{script} nao encontrado ao lado do passador.py")
+            raise RuntimeError(f"{script} nao encontrado ao lado do baton.py")
         self.p = subprocess.Popen([sys.executable, str(fonte), "--tela", str(tela)], stdin=subprocess.PIPE,
                                   text=True, bufsize=1)
         self.lock = threading.Lock()
@@ -692,7 +703,7 @@ def criar_externo(usar_overlay=True, tela=0, cursor=False, nivel=None):
     overlay = None
     if usar_overlay:
         try:
-            if os.environ.get("PASSADOR_OVERLAY") == "log":
+            if os.environ.get("BATON_OVERLAY") == "log":
                 overlay = _OverlayLog()
             elif sys.platform == "darwin":
                 overlay = _OverlayMac(tela, nivel)
@@ -706,7 +717,7 @@ def criar_externo(usar_overlay=True, tela=0, cursor=False, nivel=None):
                     overlay = _OverlayProc("overlay_tk.py", tela)
         except Exception as e:
             print(f"aviso: sem camada de desenho ({e}); o laser sera so o cursor", file=sys.stderr)
-    if os.environ.get("PASSADOR_BACKEND") == "log":
+    if os.environ.get("BATON_BACKEND") == "log":
         return Externo(_Log(), overlay, cursor)
     if sys.platform == "darwin":
         return Externo(_Mac(), overlay, cursor)
@@ -782,7 +793,7 @@ def icone_png(tam=180):
 PLIST = """<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>Label</key><string>com.passador</string>
+<key>Label</key><string>com.baton</string>
 <key>ProgramArguments</key><array><string>__PY__</string><string>__SCRIPT__</string><string>--externo</string><string>--sem-abrir</string></array>
 <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
 <key>StandardOutPath</key><string>__LOG__</string><key>StandardErrorPath</key><string>__LOG__</string>
@@ -791,37 +802,37 @@ PLIST = """<?xml version="1.0" encoding="UTF-8"?>
 
 
 def instalar_login(remover=False):
-    """Inicia o passador no login (como o receptor USB do passador de slides): launchd, Inicializar do Windows ou autostart."""
+    """Inicia o Baton no login (como o receptor USB do passador de slides): launchd, Inicializar do Windows ou autostart."""
     script = os.path.abspath(__file__)
     if sys.platform == "win32":
         pasta = Path(os.environ.get("APPDATA", str(Path.home()))) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
-        alvo = pasta / "passador.bat"
+        alvo = pasta / "baton.bat"
         if remover:
             alvo.unlink(missing_ok=True)
-            return print("passador removido da inicializacao")
+            return print("baton removido da inicializacao")
         pythonw = Path(sys.executable).with_name("pythonw.exe")
         py = pythonw if pythonw.exists() else Path(sys.executable)
         pasta.mkdir(parents=True, exist_ok=True)
         alvo.write_text(f'@echo off\r\nstart "" /b "{py}" "{script}" --externo --sem-abrir\r\n')
         return print(f"instalado: {alvo}\nAgora ele liga sozinho no login do Windows.")
     if sys.platform.startswith("linux"):
-        alvo = Path.home() / ".config" / "autostart" / "passador.desktop"
+        alvo = Path.home() / ".config" / "autostart" / "baton.desktop"
         if remover:
             alvo.unlink(missing_ok=True)
-            return print("passador removido do autostart")
+            return print("baton removido do autostart")
         alvo.parent.mkdir(parents=True, exist_ok=True)
-        alvo.write_text("[Desktop Entry]\nType=Application\nName=Passador\n"
+        alvo.write_text("[Desktop Entry]\nType=Application\nName=Baton\n"
                         f"Exec={sys.executable} {script} --externo --sem-abrir\nX-GNOME-Autostart-enabled=true\n")
         return print(f"instalado: {alvo}\nAgora ele liga sozinho no login (sessao grafica X11).")
     if sys.platform != "darwin":
         sys.exit("--instalar funciona no macOS, Windows e Linux")
-    plist = Path.home() / "Library" / "LaunchAgents" / "com.passador.plist"
+    plist = Path.home() / "Library" / "LaunchAgents" / "com.baton.plist"
     if remover:
         subprocess.run(["launchctl", "unload", str(plist)], check=False)
         plist.unlink(missing_ok=True)
-        print("passador removido do login")
+        print("baton removido do login")
         return
-    log = Path.home() / ".cache" / "passador" / "passador.log"
+    log = Path.home() / ".cache" / "baton" / "baton.log"
     log.parent.mkdir(parents=True, exist_ok=True)
     plist.parent.mkdir(parents=True, exist_ok=True)
     plist.write_text(PLIST.replace("__PY__", sys.executable).replace("__SCRIPT__", script).replace("__LOG__", str(log)))
@@ -832,7 +843,7 @@ def instalar_login(remover=False):
 
 def token_estavel(novo=False):
     """O token fica salvo: se o script reiniciar, a pagina aberta no celular continua valendo."""
-    f = Path.home() / ".cache" / "passador" / "token"
+    f = Path.home() / ".cache" / "baton" / "token"
     try:
         if not novo and f.exists() and len(f.read_text().strip()) >= 8:
             return f.read_text().strip()
@@ -863,7 +874,7 @@ PAGINA_BASE = """<!doctype html><html lang="pt-br"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
 <meta name="theme-color" content="#000"><title>__TITULO__</title>
 <link rel="manifest" href="/manifest.json"><link rel="apple-touch-icon" href="/icon.png">
-<meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black"><meta name="apple-mobile-web-app-title" content="Passador">
+<meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black"><meta name="apple-mobile-web-app-title" content="Baton">
 <script src="__PDFJS__pdf.min.js"></script>
 <script src="__QRJS__"></script>
 <style>__CSS__</style></head><body class="__CLASSE__">__HTML__
@@ -1147,13 +1158,13 @@ HTML_REMOTO = """<div id="topo"><span><i id="dot"></i><span id="st">conectando</
 <div id="botoes"><button id="ant">&#9664; Anterior</button><button id="seg">Proximo &#9654;</button></div>"""
 JS_REMOTO = r"""
 const $=id=>document.getElementById(id);
-let raioFoco=0.12;try{raioFoco=(parseInt(localStorage.getItem('passador-raio'))||12)/100}catch(e){}
+let raioFoco=0.12;try{raioFoco=(parseInt(localStorage.getItem('baton-raio'))||12)/100}catch(e){}
 let pdf=null,mapa=null,pag=1,total=0,ferr=null,ultimo=0,zoom={z:1,x:.5,y:.5},es=null,ultimaMsg=Date.now(),seqVisto=-1,notas={},fonte=17,desenhado=0;
 const NIVEIS=[1,1.5,2,3,4],cores={pen:'#ff3b30',hl:'#ffd60a'};
 const PADRAO={meta_min:50,laser_tam:24,laser_cor:'#ff2d2d',foco_raio:12,foco_blur:100,foco_escuro:25,pen_larg:3.5,hl_larg:14,hl_alpha:38};
 const DEFS=[['meta_min','Meta de tempo (min)',5,120,5],['laser_tam','Laser: tamanho',6,80,1],['foco_raio','Foco: raio',3,35,1],['foco_blur','Foco: desfoque',0,100,5],['foco_escuro','Foco: escurecer',0,90,5],['pen_larg','Caneta: espessura',0.5,12,0.5],['hl_larg','Marca: espessura',3,40,1],['hl_alpha','Marca: opacidade',10,80,5]];
 let cfg=Object.assign({},PADRAO),tCfg=null;
-try{fonte=parseInt(localStorage.getItem('passador-fonte'))||17}catch(e){}
+try{fonte=parseInt(localStorage.getItem('baton-fonte'))||17}catch(e){}
 if(EXTERNO){$('bz').style.display='none';$('tr').style.display='none';if(!OVERLAY){['bf','bc','bm','bx'].forEach(i=>$(i).style.display='none');document.querySelectorAll('#exk [data-k]:not([data-k=preto])').forEach(b=>b.style.display='none');document.querySelector('[data-s=confete]').style.display='none'}}
 function status(ok,txt){$('dot').classList.toggle('ok',ok);$('st').textContent=txt}
 const cid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,8);
@@ -1315,7 +1326,7 @@ function painel(nome){
   $('ba').classList.toggle('on',alvo==='ajustes');$('bk').classList.toggle('on',alvo==='extras');
 }
 $('ba').onclick=()=>painel('ajustes');$('bk').onclick=()=>painel('extras');$('exx').onclick=()=>painel('extras');
-['fimtxt','fimsub'].forEach(i=>{try{const v=localStorage.getItem('passador-'+i);if(v!==null)$(i).value=v}catch(e){}$(i).oninput=e=>{try{localStorage.setItem('passador-'+i,e.target.value)}catch(x){}}});
+['fimtxt','fimsub'].forEach(i=>{try{const v=localStorage.getItem('baton-'+i);if(v!==null)$(i).value=v}catch(e){}$(i).oninput=e=>{try{localStorage.setItem('baton-'+i,e.target.value)}catch(x){}}});
 document.querySelectorAll('#exk [data-k]').forEach(b=>b.onclick=()=>cmd('cortina',b.dataset.k==='fim'?{k:'fim',txt:$('fimtxt').value,sub:$('fimsub').value}:b.dataset.k));
 document.querySelectorAll('#exs [data-s]').forEach(b=>b.onclick=()=>b.dataset.s==='confete'?cmd('confete',4):cmd('efeito',b.dataset.s));
 $('ajrst').onclick=()=>{cfg=Object.assign({},PADRAO);mostraCfg();fetch('/cfg',{method:'POST',headers:{'Content-Type':'application/json','X-Token':TOKEN},body:JSON.stringify(PADRAO)}).catch(()=>{})};
@@ -1336,13 +1347,13 @@ async function abreIr(){
       for(let f=1;f<=mapa.total;f++){const c=g.children[f-1].querySelector('canvas');await desenha(mapa.paginas[f][0],c,150)}}
     [...g.children].forEach(d=>d.classList.toggle('atual',+d.dataset.f===atual));
     const alvo=g.children[atual-1];if(alvo)alvo.scrollIntoView({block:'center'});
-  }else $('irgrid').innerHTML='<p style="color:#888;font-size:14px;grid-column:1/-1">Digite o numero do slide e toque em Ir.'+(EXTERNO?' No modo externo o passador volta ao inicio e avanca esse numero de vezes.':'')+'</p>';
+  }else $('irgrid').innerHTML='<p style="color:#888;font-size:14px;grid-column:1/-1">Digite o numero do slide e toque em Ir.'+(EXTERNO?' No modo externo o Baton volta ao inicio e avanca esse numero de vezes.':'')+'</p>';
 }
 $('bg').onclick=abreIr;$('irx').onclick=fechaIr;$('irgo').onclick=()=>irPara($('irn').value);
 $('irn').addEventListener('keydown',e=>{if(e.key==='Enter')irPara($('irn').value)});
 function passo(d){let i=NIVEIS.findIndex(n=>n>=zoom.z-1e-6);if(i<0)i=NIVEIS.length-1;i=Math.max(0,Math.min(NIVEIS.length-1,i+d));enviaZoom(NIVEIS[i],zoom.x,zoom.y,true)}
 $('zp').onclick=()=>passo(1);$('zm').onclick=()=>passo(-1);$('z1').onclick=()=>enviaZoom(1,.5,.5,true);
-function tam(d){fonte=Math.max(12,Math.min(34,fonte+d));try{localStorage.setItem('passador-fonte',fonte)}catch(e){}$('ntxt').style.fontSize=fonte+'px'}
+function tam(d){fonte=Math.max(12,Math.min(34,fonte+d));try{localStorage.setItem('baton-fonte',fonte)}catch(e){}$('ntxt').style.fontSize=fonte+'px'}
 $('np').onclick=()=>tam(2);$('nm').onclick=()=>tam(-2);
 $('pos').onclick=abreIr;
 async function carregaCfg(){try{const r=await fetch('/cfg?k='+encodeURIComponent(TOKEN));if(r.ok)recebeCfg(await r.json())}catch(e){}}
@@ -1363,7 +1374,7 @@ else{$('vista').style.background='#1a1a1c';$('vista').insertAdjacentHTML('before
 """
 
 
-PAGINA_QR = """<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><title>Passador - QR</title>
+PAGINA_QR = """<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><title>Baton - QR</title>
 <script src="__QRJS__"></script>
 <style>__CSS__</style></head><body class="tela"><div id="qr" style="display:flex"><h1>Escaneie com o iPhone para controlar</h1><div class="cartao" id="qrsvg"></div><p id="qrurl"></p>
 <p>Modo externo: abra o PDF no leitor que quiser (Adobe, Preview, Keynote...), deixe-o em tela cheia e use o celular.</p></div>
@@ -1384,7 +1395,7 @@ def montar(modo, estado, usar_cache, usar_qr_cache=False):
                                  JS_QR + JS_PASSOS + JS_TELA.replace("__TRANSICAO__", estado.transicao), "tela")
     else:
         css, html, js, classe = CSS_COMUM + CSS_REMOTO, HTML_REMOTO, JS_PASSOS + JS_REMOTO, "remoto"
-    titulo = "Passador - " + (Path(estado.pdf).stem if estado.pdf else "controle")
+    titulo = "Baton - " + (Path(estado.pdf).stem if estado.pdf else "controle")
     return (PAGINA_BASE.replace("__TITULO__", titulo).replace("__PDFJS__", pdfjs).replace("__CSS__", css)
             .replace("__HTML__", html).replace("__JS__", js).replace("__CLASSE__", classe)
             .replace("__QRJS__", qrjs).replace("__REMOTE__", estado.remote_url)
@@ -1463,7 +1474,7 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
                 tam = {"/icon-192.png": 192, "/icon-512.png": 512}.get(u.path, 180)
                 return self._enviar(200, icone_png(tam), "image/png", {"Cache-Control": "max-age=86400"})
             if u.path == "/manifest.json":
-                m = {"name": "Passador", "short_name": "Passador", "display": "standalone", "background_color": "#000000",
+                m = {"name": "Baton", "short_name": "Baton", "display": "standalone", "background_color": "#000000",
                      "theme_color": "#000000", "start_url": "/remote?k=" + estado.token,
                      "icons": [{"src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
                                {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
@@ -1580,9 +1591,9 @@ def contar_paginas(pdf):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Passador de slides pelo celular (Tailscale), com laser e QR code.")
+    ap = argparse.ArgumentParser(description="Baton de slides pelo celular (Tailscale), com laser e QR code.")
     ap.add_argument("pdf", nargs="?", help="PDF dos slides (sem PDF, o modo e 'externo': o celular controla o app em primeiro plano)")
-    ap.add_argument("--instalar", action="store_true", help="macOS: liga o passador sozinho no login (modo externo)")
+    ap.add_argument("--instalar", action="store_true", help="macOS: liga o Baton sozinho no login (modo externo)")
     ap.add_argument("--desinstalar", action="store_true", help="macOS: remove do login")
     ap.add_argument("--externo", action="store_true",
                     help="controla qualquer leitor (Adobe, Preview, Keynote...) com teclas e mouse; exige Acessibilidade")
@@ -1649,7 +1660,7 @@ def main():
         threading.Thread(target=s.serve_forever, daemon=True).start()
         servidores.append(s)
     local = f"http://localhost:{a.porta}/"
-    print(f"\nModo: {'externo (teclas e mouse para o app em primeiro plano)' if externo else 'tela do passador'}")
+    print(f"\nModo: {'externo (teclas e mouse para o app em primeiro plano)' if externo else 'tela do Baton'}")
     if pdf:
         print(f"PDF: {pdf} ({estado.total} paginas)")
     print(f"QR code no Mac:   {local}")
