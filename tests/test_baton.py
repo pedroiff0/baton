@@ -408,5 +408,18 @@ class ResidenteTest(unittest.TestCase):
         self.assertEqual((p["modo"], p["apps_ok"]), ("perguntar", ["A"]))
 
 
+class IpTest(unittest.TestCase):
+    def test_ignora_saida_de_erro_da_cli(self):
+        from unittest import mock
+        erro = mock.Mock(stdout="The Tailscale CLI failed to start: Failed to load preferences.\n")
+        ok = mock.Mock(stdout="inet 100.101.2.3 netmask 0xffffffff\n")
+        with mock.patch.object(P.shutil, "which", side_effect=lambda x: "/bin/" + x), \
+                mock.patch.object(P.os.path, "exists", return_value=True), \
+                mock.patch.object(P.subprocess, "run", side_effect=[erro, erro, erro, ok]):
+            self.assertEqual(P.ip_tailscale(), "100.101.2.3")
+        self.assertEqual(P._ip_valido("The"), None)
+        self.assertEqual(P._ip_valido("100.1.2.3"), "100.1.2.3")
+
+
 if __name__ == "__main__":
     unittest.main()

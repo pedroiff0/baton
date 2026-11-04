@@ -962,15 +962,33 @@ def token_estavel(novo=False):
         return secrets.token_urlsafe(9)
 
 
+def _ip_valido(s):
+    import ipaddress
+    try:
+        return str(ipaddress.IPv4Address(s))
+    except ValueError:
+        return None
+
+
 def ip_tailscale():
+    """IP da tailnet: pela CLI do Tailscale (so aceita IPv4 valido, a CLI pode imprimir erro) ou pelas interfaces (100.64.0.0/10)."""
     candidatos = [shutil.which("tailscale"), "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
                   r"C:\Program Files\Tailscale\tailscale.exe", r"C:\Program Files (x86)\Tailscale\tailscale.exe"]
     for exe in candidatos:
         if exe and os.path.exists(exe):
             try:
-                out = subprocess.run([exe, "ip", "-4"], capture_output=True, text=True, timeout=5).stdout.split()
-                if out:
-                    return out[0]
+                for item in subprocess.run([exe, "ip", "-4"], capture_output=True, text=True, timeout=5).stdout.split():
+                    if _ip_valido(item):
+                        return item
+            except Exception:
+                pass
+    for cmd in (["ifconfig"], ["ip", "-o", "-4", "addr"], ["ipconfig"]):
+        if shutil.which(cmd[0]):
+            try:
+                saida = subprocess.run(cmd, capture_output=True, text=True, timeout=5).stdout
+                for m in re.finditer(r"\b100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b", saida):
+                    if _ip_valido(m.group(0)):
+                        return m.group(0)
             except Exception:
                 pass
     return None
@@ -1813,7 +1831,13 @@ def main():
     handler = criar_handler(estado, usar_cache, usar_qr)
     servidores = []
     for h in hosts:
-        s = Servidor((h, a.porta), handler)
+        try:
+            s = Servidor((h, a.porta), handler)
+        except OSError as e:
+            print(f"aviso: nao consegui escutar em {h}:{a.porta} ({e})", file=sys.stderr)
+            if h == "127.0.0.1":
+                sys.exit(f"a porta {a.porta} esta ocupada ou indisponivel (outro Baton rodando? use --porta)")
+            continue
         threading.Thread(target=s.serve_forever, daemon=True).start()
         servidores.append(s)
     local = f"http://localhost:{a.porta}/"
