@@ -32,6 +32,8 @@ Instalado, o Baton roda no **modo residente** (`--residente`): fica em espera, s
 - o **painel** em `http://localhost:8765/painel` (só abre no próprio computador): pausar/retomar, modo (perguntar, sempre, nunca), apps lembrados, iniciar ou não com o sistema e sair do programa;
 - `./uninstall.sh` remove o início automático.
 
+**Permissões no macOS com o nome certo:** o `./install.sh` monta `~/Applications/Baton.app` (um launcher pequeno em Swift, `launcher.swift`) e o início automático passa a rodar por ele. Assim a lista de **Acessibilidade** e **Automação** mostra **Baton**, e não `python3.x`. Ele pede a Acessibilidade ao iniciar; se não aparecer, use **+** e escolha `~/Applications/Baton.app`. Se você já tinha liberado o `python3.x`, pode remover essa entrada. O app não é recompilado nas próximas instalações, para a permissão não se perder.
+
 Pausado, o celular recebe "Baton pausado" e nenhum comando, laser ou desenho é aceito. As escolhas ficam em `~/.cache/baton/estado.json`. A detecção usa `osascript` (macOS, pede permissão de Automação para o Terminal/Python na primeira vez), a API do Windows (janela em primeiro plano cobrindo o monitor) e `xdotool` + `xprop` (Linux, pacote `x11-utils`). Teste com `baton --detectar`. Ainda sem ícone na barra de menu/bandeja e sem binários prontos: precisa do Python 3.
 
 ## Plataformas

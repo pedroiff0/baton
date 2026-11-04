@@ -1,6 +1,8 @@
 # Changelog
 
 ## Não lançado
+- macOS: `Baton.app` (launcher em Swift) para as permissões de Acessibilidade e Automação aparecerem como "Baton" em vez de `python3.x`.
+- Correção: o IP do Tailscale é validado (sob o launchd a CLI imprimia erro e o servidor não subia) e há fallback pelas interfaces de rede.
 - Modo residente (`--residente`): em segundo plano, detecta apresentação em tela cheia (macOS, Windows, Linux X11) e pergunta no celular antes de controlar; sem aceitar, nenhuma tecla é enviada.
 - Pausa e retomada (`--pausar`, `--retomar`), painel local `/painel`, apps lembrados (sempre/nunca) e modo (perguntar, sempre, nunca).
 - Instaladores `install.sh`/`uninstall.sh` e `install.ps1`/`uninstall.ps1`; o início automático agora usa o modo residente.

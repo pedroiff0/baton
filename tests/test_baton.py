@@ -421,5 +421,16 @@ class IpTest(unittest.TestCase):
         self.assertEqual(P._ip_valido("100.1.2.3"), "100.1.2.3")
 
 
+class LaunchdTest(unittest.TestCase):
+    def test_plist_escapa_e_usa_o_launcher(self):
+        x = P.plist_launchd(["/Users/a b/Applications/Baton.app/Contents/MacOS/Baton", "/usr/bin/python3", "/x/baton.py", "--residente"], "/l&g.log")
+        self.assertIn("<string>/Users/a b/Applications/Baton.app/Contents/MacOS/Baton</string>", x)
+        self.assertIn("<string>--residente</string>", x)
+        self.assertIn("/l&amp;g.log", x)
+        import plistlib
+        self.assertEqual(plistlib.loads(x.encode())["ProgramArguments"][-1], "--residente")
+        self.assertEqual(plistlib.loads(P.INFO_PLIST_APP.encode())["CFBundleName"], "Baton")
+
+
 if __name__ == "__main__":
     unittest.main()

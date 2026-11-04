@@ -26,6 +26,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import struct
 import time
@@ -900,11 +901,66 @@ PLIST = """<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>com.baton</string>
-<key>ProgramArguments</key><array><string>__PY__</string><string>__SCRIPT__</string><string>--residente</string></array>
+<key>ProgramArguments</key><array>__ARGS__</array>
 <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
 <key>StandardOutPath</key><string>__LOG__</string><key>StandardErrorPath</key><string>__LOG__</string>
 </dict></plist>
 """
+
+
+def plist_launchd(args, log):
+    from xml.sax.saxutils import escape
+    return PLIST.replace("__ARGS__", "".join(f"<string>{escape(str(a))}</string>" for a in args)).replace("__LOG__", escape(str(log)))
+
+
+INFO_PLIST_APP = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleName</key><string>Baton</string><key>CFBundleDisplayName</key><string>Baton</string>
+<key>CFBundleIdentifier</key><string>com.pedroiff0.baton</string><key>CFBundleExecutable</key><string>Baton</string>
+<key>CFBundlePackageType</key><string>APPL</string><key>CFBundleIconFile</key><string>Baton</string>
+<key>CFBundleShortVersionString</key><string>0.1</string><key>LSUIElement</key><true/>
+<key>NSAppleEventsUsageDescription</key><string>O Baton detecta apresentacoes em tela cheia para perguntar se deve controla-las.</string>
+</dict></plist>
+"""
+
+
+def montar_app_mac():
+    """Cria ~/Applications/Baton.app (miolo em Swift): a lista de permissoes do macOS passa a mostrar 'Baton'."""
+    base = Path(__file__).resolve().parent
+    fonte = base / "launcher.swift"
+    swiftc = shutil.which("swiftc")
+    if not fonte.exists() or not swiftc:
+        print("aviso: sem swiftc/launcher.swift; a permissao aparecera como o nome do Python", file=sys.stderr)
+        return None
+    app = Path.home() / "Applications" / "Baton.app"
+    exe, marca = app / "Contents" / "MacOS" / "Baton", app / "Contents" / ".launcher-hash"
+    h = hashlib.sha1(fonte.read_bytes() + INFO_PLIST_APP.encode()).hexdigest()[:10]
+    if exe.exists() and marca.exists() and marca.read_text() == h:
+        return str(exe)  # nao recompila: assinatura estavel mantem a permissao ja concedida
+    (app / "Contents" / "MacOS").mkdir(parents=True, exist_ok=True)
+    (app / "Contents" / "Resources").mkdir(parents=True, exist_ok=True)
+    r = subprocess.run([swiftc, "-O", str(fonte), "-o", str(exe)], capture_output=True, text=True)
+    if r.returncode != 0:
+        print("aviso: falha ao compilar launcher.swift:\n" + r.stderr[-800:], file=sys.stderr)
+        return None
+    (app / "Contents" / "Info.plist").write_text(INFO_PLIST_APP)
+    if shutil.which("iconutil"):
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                iset = Path(d) / "Baton.iconset"
+                iset.mkdir()
+                for tam in (16, 32, 128, 256, 512):
+                    (iset / f"icon_{tam}x{tam}.png").write_bytes(icone_png(tam))
+                    (iset / f"icon_{tam}x{tam}@2x.png").write_bytes(icone_png(min(1024, tam * 2)))
+                subprocess.run(["iconutil", "-c", "icns", str(iset), "-o", str(app / "Contents" / "Resources" / "Baton.icns")],
+                               check=False, capture_output=True)
+        except Exception:
+            pass
+    if shutil.which("codesign"):
+        subprocess.run(["codesign", "--force", "--deep", "-s", "-", str(app)], check=False, capture_output=True)
+    marca.write_text(h)
+    return str(exe)
 
 
 def instalar_login(remover=False):
@@ -936,15 +992,23 @@ def instalar_login(remover=False):
     if remover:
         subprocess.run(["launchctl", "unload", str(plist)], check=False)
         plist.unlink(missing_ok=True)
+        shutil.rmtree(Path.home() / "Applications" / "Baton.app", ignore_errors=True)
         print("baton removido do login")
         return
     log = Path.home() / ".cache" / "baton" / "baton.log"
     log.parent.mkdir(parents=True, exist_ok=True)
     plist.parent.mkdir(parents=True, exist_ok=True)
-    plist.write_text(PLIST.replace("__PY__", sys.executable).replace("__SCRIPT__", script).replace("__LOG__", str(log)))
+    app = montar_app_mac()
+    args = ([app] if app else []) + [sys.executable, script, "--residente"]
+    plist.write_text(plist_launchd(args, log))
     subprocess.run(["launchctl", "unload", str(plist)], check=False)
     subprocess.run(["launchctl", "load", str(plist)], check=False)
-    print(f"instalado: {plist}\nAgora ele liga sozinho no login. Libere o Python em Acessibilidade na primeira vez.")
+    print(f"instalado: {plist}\nAgora ele liga sozinho no login.")
+    if app:
+        print("Libere o \"Baton\" em Ajustes do Sistema > Privacidade e Seguranca > Acessibilidade "
+              "(ele aparece na lista sozinho; se nao, clique em + e escolha ~/Applications/Baton.app).")
+    else:
+        print("Libere o Python em Acessibilidade na primeira vez.")
 
 
 def token_estavel(novo=False):
