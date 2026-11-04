@@ -1,6 +1,8 @@
 # Changelog
 
 ## Não lançado
+- Windows e Linux: backend de teclas e cursor do Windows (user32), camada Tk (`overlay_tk.py`) e Gtk (`overlay_gtk.py`), som por `winsound`/`paplay`, `--instalar` na inicialização do Windows e no autostart do Linux.
+- Android: ícones 192 e 512 para instalar a página como app.
 - Cortina (preto, branco, teatro, fim com texto e confete), confete avulso e efeitos sonoros sintetizados (ding, tambor, aplausos, fanfarra, buzina, suspense), painel "Extras" no celular.
 - Correção: o Preto no modo externo agora usa a cortina nativa em vez da tecla `B`, que não fazia nada na maioria dos apps.
 - Cronômetro com meta, prévia do próximo slide e "Ir para" (grade de miniaturas ou número direto).

@@ -251,5 +251,34 @@ class CortinaESomTest(unittest.TestCase):
                 self.assertGreater(w.getnframes(), P.TAXA_SOM // 2, nome)
 
 
+class PlataformasTest(unittest.TestCase):
+    def test_icones_para_android(self):
+        import struct
+        for tam in (180, 192, 512):
+            png = P.icone_png(tam)
+            self.assertEqual(png[:8], b"\x89PNG\r\n\x1a\n")
+            self.assertEqual(struct.unpack(">II", png[16:24]), (tam, tam))
+
+    def test_autostart_no_linux(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(P.sys, "platform", "linux"), \
+                mock.patch.object(P.Path, "home", return_value=Path(d)):
+            P.instalar_login()
+            alvo = Path(d) / ".config" / "autostart" / "passador.desktop"
+            self.assertIn("--externo", alvo.read_text())
+            P.instalar_login(remover=True)
+            self.assertFalse(alvo.exists())
+
+    def test_backend_windows_mapeia_as_teclas(self):
+        self.assertEqual(set(P._Windows.VK), {"Right", "Left", "Home", "End", "b"})
+        self.assertTrue(set(P.Externo.TECLAS.values()) <= set(P._Windows.VK))
+        self.assertTrue(set(P.Externo.TECLAS.values()) <= set(P._Mac.CODES))
+
+    def test_overlays_python_existem_e_compilam(self):
+        import py_compile
+        for nome in ("overlay_gtk.py", "overlay_tk.py"):
+            py_compile.compile(str(Path(P.__file__).with_name(nome)), doraise=True)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,25 +1,40 @@
 # passador
 
-Seu celular como passador de slides, via Tailscale: controla qualquer app no Mac, com laser, foco, caneta, marca-texto, notas do apresentador e zoom. Só biblioteca padrão do Python 3.8+, mais um helper nativo em Swift para desenhar sobre qualquer app.
+Seu celular (iPhone ou Android) como passador de slides, via Tailscale: controla qualquer app no Mac, Windows ou Linux, com laser, foco, caneta, marca-texto, cortina, notas do apresentador e zoom. Só biblioteca padrão do Python 3.8+; para desenhar sobre os apps há uma camada nativa por sistema (Swift no macOS, Tk no Windows, Gtk no Linux).
 
 ## Início rápido
 
 ```
 python3 passador.py                  # modo passador USB: o celular controla o app em primeiro plano
 python3 passador.py slides.pdf       # modo tela: o passador mostra o PDF (transições, notas, zoom, passos)
-python3 passador.py --instalar       # macOS: liga sozinho no login (modo externo); --desinstalar remove
+python3 passador.py --instalar       # liga sozinho no login (launchd, Inicializar do Windows ou autostart); --desinstalar remove
 ```
 
-Ao iniciar, o Mac abre uma página com um **QR code**. Escaneie com o iPhone; use **Compartilhar > Adicionar à Tela de Início** para virar um app. O token fica salvo em `~/.cache/passador/token` (`--novo-token` troca), então a página do celular continua valendo depois de reiniciar.
+No Windows use `py passador.py ...` (ou `python`).
 
-Requisitos no Mac: Tailscale no Mac e no iPhone; Python 3; para o modo externo, **Ajustes > Privacidade e Segurança > Acessibilidade** liberado para o Terminal (ou o Python); para desenhar sobre os apps, as ferramentas de linha de comando (`xcode-select --install`, o `swiftc` compila o `overlay.swift` na primeira execução).
+```
+```
+
+Ao iniciar, o computador abre uma página com um **QR code**. Escaneie com o celular. No iPhone, **Compartilhar > Adicionar à Tela de Início**; no Android (Chrome), menu **⋮ > Instalar app** ou **Adicionar à tela inicial**. O token fica salvo em `~/.cache/passador/token` (`--novo-token` troca), então a página do celular continua valendo depois de reiniciar.
+
+## Plataformas
+
+| Computador que projeta | Teclas e mouse | Camada (laser, foco, caneta, cortina) | Som | Observações |
+| :-- | :-- | :-- | :-- | :-- |
+| macOS | CoreGraphics (ctypes) | `overlay.swift` (compilado na 1a execução, `xcode-select --install`), com desfoque real | `afplay` | Liberar o Terminal/Python em **Acessibilidade** |
+| Windows 10/11 | user32 (ctypes) | `overlay_tk.py` (Tk, vem com o Python do python.org) | `winsound` | Foco só escurece (sem desfoque); marca-texto e borda do foco usam padrão pontilhado |
+| Linux (X11 ou XWayland) | `xdotool` | `overlay_gtk.py` (PyGObject + Gtk 3 + pycairo, compositor ligado); sem Gtk cai no Tk | `paplay`, `aplay` ou `ffplay` | Foco só escurece. Wayland nativo não deixa um programa enviar teclas: use sessão X11 |
+
+O celular pode ser **iPhone ou Android** (e qualquer navegador): o controle é uma página web, sem app. Em todos os casos, Tailscale instalado no computador e no celular.
+
+Estado dos testes: o servidor, o controle web e as camadas Gtk e Tk (desenho) foram testados no Linux; o macOS (Swift) e o Windows (teclas, cliques atravessando a janela, transparência) dependem de teste na máquina real.
 
 ## Modo externo (padrão sem PDF)
-O celular envia setas, Home, End e `B` para o app em primeiro plano (PowerPoint, Keynote, Acrobat, Preview, navegador...). O laser, o foco e os desenhos aparecem numa camada transparente nativa por cima de tudo, inclusive de apresentações em tela cheia:
+O celular envia setas, Home e End para o app em primeiro plano (PowerPoint, Keynote, Acrobat, Preview, navegador...). O laser, o foco e os desenhos aparecem numa camada transparente nativa por cima de tudo, inclusive de apresentações em tela cheia:
 - **Laser**: ponto vermelho. **Foco**: desfoca tudo, menos um círculo em volta do ponteiro; o **raio é ajustável** no celular (controle "Raio do foco" ou gesto de pinça sobre a miniatura) e fica salvo.
 - **Caneta** e **Marca** (marca-texto), 5 cores, e **Limpar**. Trocar de slide limpa os desenhos sozinho.
 - `--tela N` escolhe a tela do projetor; `--sem-overlay` usa só o cursor do mouse como laser; `--cursor` move o cursor junto com a camada; `--proporcao 16:9` define a área do laser quando não há PDF (o padrão é o formato da tela).
-- Se o `swiftc` não existir ou a compilação falhar, o passador avisa e segue com o laser como cursor.
+- Se a camada não subir (sem `swiftc`, Gtk ou compositor), o passador avisa e segue com o laser como cursor (e só o Preto, pela tecla `B` do leitor).
 
 ## Personalização (botão "Ajustes" no celular)
 Tudo é salvo em `~/.cache/passador/config.json` e vale em todos os modos: **tamanho e cor do laser**; **foco**: raio, intensidade do desfoque e escurecimento fora do círculo; **caneta**: espessura; **marca-texto**: espessura e opacidade. "Restaurar padrão" volta aos valores originais. Sobre outros apps, o desfoque usa o efeito nativo do macOS (a intensidade controla a opacidade dele); no modo tela, o desfoque é real e proporcional.
@@ -37,10 +52,10 @@ O passador mostra o PDF no navegador do Mac (`F` tela cheia, setas/espaço/cliqu
 ## Cortina, fim e efeitos sonoros (botão "Extras" no celular)
 - **Cortina:** Preto, Branco, Teatro (panos vermelhos que fecham e abrem) e Fim (tela de encerramento com o texto que você digitar e confete). Tocar de novo abre a cortina. No modo externo ela é desenhada pela camada nativa, por cima do app; sem a camada, só o Preto funciona (tecla `B` do leitor).
 - **Confete:** chuva de confete por cima do slide, por 4 segundos.
-- **Efeitos:** Ding, Tambor, Aplausos, Fanfarra, Buzina e Suspense, sintetizados pelo próprio passador (sem arquivos) e tocados no Mac que projeta, por `afplay` (macOS), `paplay`, `aplay` ou `ffplay`. "Parar som" interrompe o efeito.
+- **Efeitos:** Ding, Tambor, Aplausos, Fanfarra, Buzina e Suspense, sintetizados pelo próprio passador (sem arquivos) e tocados no computador que projeta, por `afplay` (macOS), `winsound` (Windows), `paplay`, `aplay` ou `ffplay` (Linux). "Parar som" interrompe o efeito.
 
 ## Conexão estável
-Batimento do servidor a cada 4 s; o celular reabre a conexão sozinho (silêncio de 12 s, volta para a tela, volta a rede); cada comando tem um id e é reenviado até 5 vezes sem pular dois slides; TCP keepalive e `TCP_NODELAY`. Dica: `caffeinate -dis python3 passador.py` evita a suspensão do Mac.
+Batimento do servidor a cada 4 s; o celular reabre a conexão sozinho (silêncio de 12 s, volta para a tela, volta a rede); cada comando tem um id e é reenviado até 5 vezes sem pular dois slides; TCP keepalive e `TCP_NODELAY`. Dica: no Mac, `caffeinate -dis python3 passador.py` evita a suspensão; no Windows e no Linux, desative a suspensão durante a apresentação.
 
 ## Segurança
 O servidor escuta em `127.0.0.1` e no IP do Tailscale, nunca na internet. O celular precisa do token (`k`); o Mac local não. Quem tem a URL com o token controla o Mac pelo Tailscale: não compartilhe o QR.
@@ -48,10 +63,10 @@ O servidor escuta em `127.0.0.1` e no IP do Tailscale, nunca na internet. O celu
 ## Desenvolvimento
 ```
 python3 -m unittest discover -s tests -v
-swiftc -O overlay.swift -o overlay        # compilar o helper à mão
+swiftc -O overlay.swift -o overlay        # macOS: compilar o helper à mão
 PASSADOR_BACKEND=log PASSADOR_OVERLAY=log python3 passador.py --sem-abrir   # testa sem mexer no Mac
 ```
-Estrutura: `passador.py` (servidor, páginas web e modo externo), `overlay.swift` (camada nativa), `tests/`. O pdf.js e o gerador de QR são baixados para `~/.cache/passador` na primeira execução.
+Estrutura: `passador.py` (servidor, páginas web e modo externo), `overlay.swift` (camada macOS), `overlay_tk.py` (Windows), `overlay_gtk.py` (Linux), `tests/`. O pdf.js e o gerador de QR são baixados para `~/.cache/passador` na primeira execução.
 
 ## Projetos parecidos
 - [mobslide](https://github.com/thewh1teagle/mobslide) (Tauri, macOS e Windows, QR code, PowerPoint/Keynote/Slides): só avança e volta.

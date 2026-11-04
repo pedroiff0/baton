@@ -13,6 +13,7 @@ Somente biblioteca padrao do Python 3.8+. pdf.js e gerador de QR sao baixados um
 """
 import argparse
 import collections
+import functools
 import hashlib
 import json
 import math
@@ -195,7 +196,8 @@ class Som:
         self.cmd = None
         self.proc = None
         self.lock = threading.Lock()
-        if self.modo != "log":
+        self.win = sys.platform == "win32" and self.modo != "log"
+        if self.modo != "log" and not self.win:
             for exe in (("afplay",), ("paplay",), ("aplay", "-q"), ("ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet")):
                 if shutil.which(exe[0]):
                     self.cmd = list(exe)
@@ -210,10 +212,14 @@ class Som:
 
     def preparar(self):
         """Gera os arquivos em segundo plano, para o primeiro toque sair sem atraso."""
-        if self.cmd:
+        if self.cmd or self.win:
             threading.Thread(target=lambda: [self.arquivo(n) for n in EFEITOS], daemon=True).start()
 
     def parar(self):
+        if self.win:
+            import winsound
+            winsound.PlaySound(None, winsound.SND_PURGE)
+            return
         with self.lock:
             if self.proc and self.proc.poll() is None:
                 self.proc.terminate()
@@ -230,12 +236,16 @@ class Som:
         if self.modo == "log":
             print("som:", nome, flush=True)
             return True
-        if not self.cmd:
+        if not self.cmd and not self.win:
             return False
 
         def _tocar():
             try:
                 arq = str(self.arquivo(nome))
+                if self.win:
+                    import winsound
+                    winsound.PlaySound(arq, winsound.SND_FILENAME | winsound.SND_ASYNC)
+                    return
                 self.parar()
                 with self.lock:
                     self.proc = subprocess.Popen(self.cmd + [arq], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -504,6 +514,36 @@ class _Mac:
         return r.s.w, r.s.h
 
 
+class _Windows:
+    """user32 via ctypes (sem dependencias): teclas, cursor e tamanho da tela em pixels fisicos."""
+    VK = {"Right": 0x27, "Left": 0x25, "Home": 0x24, "End": 0x23, "b": 0x42}
+    ESTENDIDAS = ("Right", "Left", "Home", "End")
+
+    def __init__(self):
+        import ctypes
+        self.u = ctypes.windll.user32
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:
+            try:
+                self.u.SetProcessDPIAware()
+            except Exception:
+                pass
+
+    def tecla(self, nome):
+        vk = self.VK[nome]
+        ext = 1 if nome in self.ESTENDIDAS else 0  # KEYEVENTF_EXTENDEDKEY
+        scan = self.u.MapVirtualKeyW(vk, 0)
+        self.u.keybd_event(vk, scan, ext, 0)
+        self.u.keybd_event(vk, scan, ext | 2, 0)  # KEYEVENTF_KEYUP
+
+    def mover(self, x, y):
+        self.u.SetCursorPos(int(x), int(y))
+
+    def tela(self):
+        return float(self.u.GetSystemMetrics(0)), float(self.u.GetSystemMetrics(1))
+
+
 class _Xdotool:
     def __init__(self):
         if not shutil.which("xdotool"):
@@ -558,6 +598,24 @@ class _OverlayMac:
 
     def fechar(self):
         self.enviar({"t": "quit"})
+
+
+class _OverlayProc:
+    """Camada transparente em Python (overlay_gtk.py no Linux, overlay_tk.py no Windows), mesmo protocolo do Swift."""
+
+    def __init__(self, script, tela=0):
+        fonte = Path(__file__).with_name(script)
+        if not fonte.exists():
+            raise RuntimeError(f"{script} nao encontrado ao lado do passador.py")
+        self.p = subprocess.Popen([sys.executable, str(fonte), "--tela", str(tela)], stdin=subprocess.PIPE,
+                                  text=True, bufsize=1)
+        self.lock = threading.Lock()
+        time.sleep(1.0)
+        if self.p.poll() is not None:  # sem Gtk, sem compositor, sem Tk: o processo encerra sozinho
+            raise RuntimeError(f"{script} encerrou (codigo {self.p.returncode}); veja a mensagem acima")
+
+    enviar = _OverlayMac.enviar
+    fechar = _OverlayMac.fechar
 
 
 class Externo:
@@ -638,15 +696,25 @@ def criar_externo(usar_overlay=True, tela=0, cursor=False, nivel=None):
                 overlay = _OverlayLog()
             elif sys.platform == "darwin":
                 overlay = _OverlayMac(tela, nivel)
+            elif sys.platform == "win32":
+                overlay = _OverlayProc("overlay_tk.py", tela)
+            elif sys.platform.startswith("linux"):
+                try:
+                    overlay = _OverlayProc("overlay_gtk.py", tela)
+                except Exception as e:
+                    print(f"aviso: camada Gtk indisponivel ({e}); tentando Tk (sem transparencia real)", file=sys.stderr)
+                    overlay = _OverlayProc("overlay_tk.py", tela)
         except Exception as e:
             print(f"aviso: sem camada de desenho ({e}); o laser sera so o cursor", file=sys.stderr)
     if os.environ.get("PASSADOR_BACKEND") == "log":
         return Externo(_Log(), overlay, cursor)
     if sys.platform == "darwin":
         return Externo(_Mac(), overlay, cursor)
+    if sys.platform == "win32":
+        return Externo(_Windows(), overlay, cursor)
     if sys.platform.startswith("linux"):
         return Externo(_Xdotool(), overlay, cursor)
-    sys.exit("modo externo suportado apenas no macOS (e Linux com xdotool)")
+    sys.exit("modo externo suportado no macOS, Windows e Linux (X11 com xdotool)")
 
 
 def proporcao_pdf(pdf):
@@ -681,6 +749,7 @@ def ler_notas(caminho):
     return notas
 
 
+@functools.lru_cache(maxsize=4)
 def icone_png(tam=180):
     """PNG simples (fundo escuro com ponto vermelho) para a tela inicial do iPhone."""
     linhas = []
@@ -722,9 +791,30 @@ PLIST = """<?xml version="1.0" encoding="UTF-8"?>
 
 
 def instalar_login(remover=False):
-    """macOS: inicia o passador no login (como o receptor USB do passador de slides)."""
+    """Inicia o passador no login (como o receptor USB do passador de slides): launchd, Inicializar do Windows ou autostart."""
+    script = os.path.abspath(__file__)
+    if sys.platform == "win32":
+        pasta = Path(os.environ.get("APPDATA", str(Path.home()))) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+        alvo = pasta / "passador.bat"
+        if remover:
+            alvo.unlink(missing_ok=True)
+            return print("passador removido da inicializacao")
+        pythonw = Path(sys.executable).with_name("pythonw.exe")
+        py = pythonw if pythonw.exists() else Path(sys.executable)
+        pasta.mkdir(parents=True, exist_ok=True)
+        alvo.write_text(f'@echo off\r\nstart "" /b "{py}" "{script}" --externo --sem-abrir\r\n')
+        return print(f"instalado: {alvo}\nAgora ele liga sozinho no login do Windows.")
+    if sys.platform.startswith("linux"):
+        alvo = Path.home() / ".config" / "autostart" / "passador.desktop"
+        if remover:
+            alvo.unlink(missing_ok=True)
+            return print("passador removido do autostart")
+        alvo.parent.mkdir(parents=True, exist_ok=True)
+        alvo.write_text("[Desktop Entry]\nType=Application\nName=Passador\n"
+                        f"Exec={sys.executable} {script} --externo --sem-abrir\nX-GNOME-Autostart-enabled=true\n")
+        return print(f"instalado: {alvo}\nAgora ele liga sozinho no login (sessao grafica X11).")
     if sys.platform != "darwin":
-        sys.exit("--instalar funciona no macOS")
+        sys.exit("--instalar funciona no macOS, Windows e Linux")
     plist = Path.home() / "Library" / "LaunchAgents" / "com.passador.plist"
     if remover:
         subprocess.run(["launchctl", "unload", str(plist)], check=False)
@@ -734,8 +824,7 @@ def instalar_login(remover=False):
     log = Path.home() / ".cache" / "passador" / "passador.log"
     log.parent.mkdir(parents=True, exist_ok=True)
     plist.parent.mkdir(parents=True, exist_ok=True)
-    plist.write_text(PLIST.replace("__PY__", sys.executable).replace("__SCRIPT__", os.path.abspath(__file__))
-                     .replace("__LOG__", str(log)))
+    plist.write_text(PLIST.replace("__PY__", sys.executable).replace("__SCRIPT__", script).replace("__LOG__", str(log)))
     subprocess.run(["launchctl", "unload", str(plist)], check=False)
     subprocess.run(["launchctl", "load", str(plist)], check=False)
     print(f"instalado: {plist}\nAgora ele liga sozinho no login. Libere o Python em Acessibilidade na primeira vez.")
@@ -757,7 +846,8 @@ def token_estavel(novo=False):
 
 
 def ip_tailscale():
-    candidatos = [shutil.which("tailscale"), "/Applications/Tailscale.app/Contents/MacOS/Tailscale"]
+    candidatos = [shutil.which("tailscale"), "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+                  r"C:\Program Files\Tailscale\tailscale.exe", r"C:\Program Files (x86)\Tailscale\tailscale.exe"]
     for exe in candidatos:
         if exe and os.path.exists(exe):
             try:
@@ -1369,12 +1459,15 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
                 return self._enviar(200, montar("tela", estado, usar_cache, usar_qr_cache), "text/html; charset=utf-8")
             if u.path == "/qr":
                 return self._enviar(200, montar_qr(estado, usar_qr_cache), "text/html; charset=utf-8")
-            if u.path == "/icon.png":
-                return self._enviar(200, icone_png(), "image/png", {"Cache-Control": "max-age=86400"})
+            if u.path in ("/icon.png", "/icon-192.png", "/icon-512.png"):
+                tam = {"/icon-192.png": 192, "/icon-512.png": 512}.get(u.path, 180)
+                return self._enviar(200, icone_png(tam), "image/png", {"Cache-Control": "max-age=86400"})
             if u.path == "/manifest.json":
                 m = {"name": "Passador", "short_name": "Passador", "display": "standalone", "background_color": "#000000",
                      "theme_color": "#000000", "start_url": "/remote?k=" + estado.token,
-                     "icons": [{"src": "/icon.png", "sizes": "180x180", "type": "image/png"}]}
+                     "icons": [{"src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+                               {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+                               {"src": "/icon.png", "sizes": "180x180", "type": "image/png"}]}
                 return self._enviar(200, json.dumps(m), "application/manifest+json")
             if u.path == "/vendor/qr.js" and usar_qr_cache:
                 return self._enviar(200, QR_FILE.read_bytes(), "application/javascript")
