@@ -15,8 +15,10 @@ import argparse
 import collections
 import hashlib
 import json
+import math
 import os
 import queue
+import random
 import re
 import secrets
 import shutil
@@ -27,6 +29,7 @@ import threading
 import struct
 import time
 import urllib.request
+import wave
 import zlib
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -71,6 +74,177 @@ def cfg_carregar():
         return dict(CFG_PADRAO)
 
 
+# ------------------------------------------------------------------ efeitos sonoros (sintetizados, sem arquivos)
+EFEITOS = ("ding", "tambor", "aplausos", "fanfarra", "buzina", "suspense")
+CORTINAS = ("preto", "branco", "teatro", "fim")
+TAXA_SOM = 22050
+SONS_DIR = Path.home() / ".cache" / "passador" / "sons"
+
+
+def _mixar(trilhas):
+    n = max(len(x) for x in trilhas)
+    return [sum(x[i] for x in trilhas if i < len(x)) for i in range(n)]
+
+
+def _nota(freq, dur, decay=3.0, harm=(1.0, 0.5, 0.25, 0.12)):
+    n = int(TAXA_SOM * dur)
+    out = []
+    for i in range(n):
+        t = i / TAXA_SOM
+        env = min(1.0, t / 0.008) * math.exp(-t * decay) * min(1.0, (dur - t) / 0.03)
+        out.append(env * sum(a * math.sin(2 * math.pi * freq * (k + 1) * t) for k, a in enumerate(harm)))
+    return out
+
+
+def _som_ding():
+    out = []
+    for i in range(int(TAXA_SOM * 1.6)):
+        t = i / TAXA_SOM
+        out.append(math.exp(-t * 3.2) * (math.sin(2 * math.pi * 880 * t) + 0.35 * math.sin(2 * math.pi * 2217 * t)
+                                         + 0.15 * math.sin(2 * math.pi * 3520 * t)))
+    return out
+
+
+def _som_buzina():
+    out = []
+    for i in range(int(TAXA_SOM * 0.9)):
+        t = i / TAXA_SOM
+        env = min(1.0, t / 0.02) * min(1.0, (0.9 - t) / 0.08)
+        v = (1.0 if math.sin(2 * math.pi * 140 * t) >= 0 else -1.0) + (1.0 if math.sin(2 * math.pi * 147 * t) >= 0 else -1.0)
+        out.append(0.4 * env * v)
+    return out
+
+
+def _som_fanfarra():
+    seq = []
+    for f in (523.25, 659.25, 783.99):
+        seq += _nota(f, 0.15, decay=3.0)
+    return seq + _mixar([_nota(f, 1.4, decay=1.8) for f in (523.25, 659.25, 783.99, 1046.5)])
+
+
+def _som_suspense():
+    out, fase = [], 0.0
+    dur = 2.6
+    for i in range(int(TAXA_SOM * dur)):
+        t = i / TAXA_SOM
+        f = 110 + 330 * (t / dur) ** 2
+        fase += 2 * math.pi * f / TAXA_SOM
+        trem = 0.65 + 0.35 * math.sin(2 * math.pi * (4 + 10 * t / dur) * t)
+        env = min(1.0, t / 0.2) * (0.25 + 0.75 * t / dur) * min(1.0, (dur - t) / 0.05)
+        out.append(env * trem * (math.sin(fase) + 0.4 * math.sin(2 * fase)))
+    return out
+
+
+def _som_tambor():
+    rnd = random.Random(7)
+    out = [0.0] * int(TAXA_SOM * 3.6)
+    t = 0.0
+    while t < 2.0:
+        ini, amp = int(t * TAXA_SOM), 0.35 + 0.45 * t / 2.0
+        for i in range(int(TAXA_SOM * 0.07)):
+            out[ini + i] += amp * math.exp(-i / (TAXA_SOM * 0.016)) * (0.6 * rnd.uniform(-1, 1)
+                                                                       + 0.8 * math.sin(2 * math.pi * 140 * i / TAXA_SOM))
+        t += 0.11 * (1 - 0.6 * t / 2.0)
+    ini, ant = int(2.0 * TAXA_SOM), 0.0
+    for i in range(len(out) - ini):
+        r = rnd.uniform(-1, 1)
+        out[ini + i] += 0.6 * (r - ant) * math.exp(-i / (TAXA_SOM * 0.7))
+        ant = r
+    return out
+
+
+def _som_aplausos():
+    rnd = random.Random(11)
+    dur = 3.4
+    out = [0.0] * int(TAXA_SOM * dur)
+    for _ in range(int(dur * 330)):
+        t = rnd.random() * dur
+        if rnd.random() > min(1.0, t / 0.5) * min(1.0, (dur - t) / 1.2):
+            continue
+        ini, amp, tau = int(t * TAXA_SOM), rnd.uniform(0.3, 1.0), TAXA_SOM * rnd.uniform(0.002, 0.006)
+        for i in range(int(TAXA_SOM * 0.03)):
+            if ini + i < len(out):
+                out[ini + i] += amp * math.exp(-i / tau) * rnd.uniform(-1, 1)
+    return out
+
+
+_GERADORES = {"ding": _som_ding, "tambor": _som_tambor, "aplausos": _som_aplausos, "fanfarra": _som_fanfarra,
+              "buzina": _som_buzina, "suspense": _som_suspense}
+
+
+def wav_bytes(nome):
+    """Sintetiza o efeito e devolve um WAV mono de 16 bits."""
+    amostras = _GERADORES[nome]()
+    pico = max(1e-9, max(abs(x) for x in amostras))
+    pcm = struct.pack("<%dh" % len(amostras), *[int(max(-1.0, min(1.0, x / pico * 0.85)) * 32767) for x in amostras])
+    import io
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(TAXA_SOM)
+        w.writeframes(pcm)
+    return buf.getvalue()
+
+
+class Som:
+    """Toca os efeitos no Mac que projeta (e sai nas caixas da apresentacao). 'log' so imprime (teste)."""
+
+    def __init__(self, modo=None):
+        self.modo = modo if modo is not None else os.environ.get("PASSADOR_SOM", "")
+        self.cmd = None
+        self.proc = None
+        self.lock = threading.Lock()
+        if self.modo != "log":
+            for exe in (("afplay",), ("paplay",), ("aplay", "-q"), ("ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet")):
+                if shutil.which(exe[0]):
+                    self.cmd = list(exe)
+                    break
+
+    def arquivo(self, nome):
+        destino = SONS_DIR / f"{nome}.wav"
+        if not destino.exists() or destino.stat().st_size < 1000:
+            SONS_DIR.mkdir(parents=True, exist_ok=True)
+            destino.write_bytes(wav_bytes(nome))
+        return destino
+
+    def preparar(self):
+        """Gera os arquivos em segundo plano, para o primeiro toque sair sem atraso."""
+        if self.cmd:
+            threading.Thread(target=lambda: [self.arquivo(n) for n in EFEITOS], daemon=True).start()
+
+    def parar(self):
+        with self.lock:
+            if self.proc and self.proc.poll() is None:
+                self.proc.terminate()
+            self.proc = None
+
+    def tocar(self, nome):
+        if nome == "stop":
+            self.parar()
+            if self.modo == "log":
+                print("som: stop", flush=True)
+            return True
+        if nome not in EFEITOS:
+            return False
+        if self.modo == "log":
+            print("som:", nome, flush=True)
+            return True
+        if not self.cmd:
+            return False
+
+        def _tocar():
+            try:
+                arq = str(self.arquivo(nome))
+                self.parar()
+                with self.lock:
+                    self.proc = subprocess.Popen(self.cmd + [arq], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception as e:
+                print(f"aviso: nao toquei {nome} ({e})", file=sys.stderr)
+        threading.Thread(target=_tocar, daemon=True).start()
+        return True
+
+
 class Estado:
     def __init__(self, pdf, total, transicao, token, externo=None, remote_url="", proporcao=16 / 9):
         self.pdf = pdf
@@ -89,7 +263,9 @@ class Estado:
         self.cfg = cfg_carregar()
         self.pagina = 1
         self.transicao = transicao
-        self.preto = False
+        self.cortina = ""
+        self.fim_txt = ("Obrigado!", "")
+        self.som = Som()
         self.lock = threading.Lock()
         self.clientes = []
 
@@ -106,7 +282,8 @@ class Estado:
             self.t_base, self.t_rodando = 0.0, False
 
     def snapshot(self):
-        return {"pagina": self.pagina, "total": self.total, "transicao": self.transicao, "preto": self.preto,
+        return {"pagina": self.pagina, "total": self.total, "transicao": self.transicao, "preto": self.cortina == "preto",
+                "cortina": self.cortina, "fim": {"txt": self.fim_txt[0], "sub": self.fim_txt[1]},
                 "remotos": self.remotos, "zoom": self.zoom, "zx": self.zx, "zy": self.zy, "seq": self.seq,
                 "timer": {"rodando": self.t_rodando, "elapsed": round(self.decorrido(), 1)}}
 
@@ -137,7 +314,19 @@ class Estado:
             elif cmd == "transition" and valor in TRANSICOES:
                 self.transicao = valor
             elif cmd == "blank":
-                self.preto = not self.preto
+                self.cortina = "" if self.cortina == "preto" else "preto"
+            elif cmd == "cortina":
+                k = valor.get("k") if isinstance(valor, dict) else valor
+                if k not in CORTINAS and k != "off":
+                    return False
+                if isinstance(valor, dict) and ("txt" in valor or "sub" in valor):
+                    self.fim_txt = (str(valor.get("txt", ""))[:80], str(valor.get("sub", ""))[:120])
+                self.cortina = "" if (k == "off" or k == self.cortina) else k
+            elif cmd == "confete":
+                seg = max(1.0, min(10.0, float(valor or 4)))
+            elif cmd == "efeito":
+                if valor != "stop" and valor not in EFEITOS:
+                    return False
             elif cmd == "limpar":
                 pass
             elif cmd == "timer":
@@ -158,12 +347,21 @@ class Estado:
                 self.tracos = []
             self.seq += 1
             snap = self.snapshot()
-        if self.externo and cmd == "goto" and self.pagina != pagina_antes:
-            self.externo.ir(self.pagina)
-        elif self.externo and cmd not in ("zoom", "limpar", "timer", "goto"):
-            self.externo.comando(cmd)
-        if self.externo and (cmd == "limpar" or self.pagina != pagina_antes):
-            self.externo.limpar()
+        if self.externo:
+            if cmd == "goto" and self.pagina != pagina_antes:
+                self.externo.ir(self.pagina)
+            elif cmd in ("blank", "cortina"):
+                self.externo.cortina(snap["cortina"], snap["fim"]["txt"], snap["fim"]["sub"])
+            elif cmd == "confete":
+                self.externo.confete(seg)
+            elif cmd not in ("zoom", "limpar", "timer", "goto", "efeito"):
+                self.externo.comando(cmd)
+            if cmd == "limpar" or self.pagina != pagina_antes:
+                self.externo.limpar()
+        if cmd == "efeito":
+            self.som.tocar(valor)
+        if cmd == "confete":
+            self.publicar({"confete": seg})
         if cmd == "limpar":
             self.publicar({"limpar": 1})
         self.publicar(snap)
@@ -364,13 +562,26 @@ class _OverlayMac:
 
 class Externo:
     """Traduz comandos do celular em teclas, mouse e desenho (camada) para o app em primeiro plano."""
-    TECLAS = {"next": "Right", "prev": "Left", "first": "Home", "last": "End", "blank": "b"}
+    TECLAS = {"next": "Right", "prev": "Left", "first": "Home", "last": "End"}
 
     def __init__(self, backend, overlay=None, cursor=True):
         self.b = backend
         self.overlay = overlay
         self.cursor = cursor or overlay is None
         self.ultimo_mouse = 0.0
+        self.tecla_preto = False
+
+    def cortina(self, tipo, txt="", sub=""):
+        """Cortina nativa por cima do app. Sem camada, so o preto funciona (tecla B do leitor)."""
+        if self.overlay:
+            self.overlay.enviar({"t": "cortina", "k": tipo or "off", "txt": txt, "sub": sub})
+        elif (tipo == "preto") != self.tecla_preto:
+            self.tecla_preto = tipo == "preto"
+            self.b.tecla("b")
+
+    def confete(self, seg=4.0):
+        if self.overlay:
+            self.overlay.enviar({"t": "confete", "seg": seg})
 
     def comando(self, cmd):
         tecla = self.TECLAS.get(cmd)
@@ -593,7 +804,16 @@ body{cursor:none}
 @keyframes zoomIn{from{opacity:0;transform:scale(.92)}to{opacity:1;transform:none}}@keyframes zoomOut{from{opacity:1;transform:none}to{opacity:0;transform:scale(1.06)}}
 #laser{position:fixed;width:26px;height:26px;margin:-13px 0 0 -13px;border-radius:50%;pointer-events:none;display:none;
 background:radial-gradient(circle,#fff 0,#ff2d2d 35%,rgba(255,0,0,.35) 60%,rgba(255,0,0,0) 72%);box-shadow:0 0 22px 8px rgba(255,40,40,.55)}
-#preto{position:fixed;inset:0;background:#000;display:none}
+#cortina{position:fixed;inset:0;display:none;z-index:7;overflow:hidden}
+#cortina .cb{position:absolute;inset:0;opacity:0;transition:opacity .35s}
+#cortina.k-preto .cb{background:#000;opacity:1}#cortina.k-branco .cb{background:#fff;opacity:1}
+#cortina.k-fim .cb{background:radial-gradient(circle at 50% 40%,#1b2a52,#05070f 70%);opacity:1}
+#cortina .ct{position:absolute;top:0;bottom:0;left:0;width:50.5%;transform:translateX(-101%);transition:transform 1.3s cubic-bezier(.65,0,.35,1);
+background:repeating-linear-gradient(90deg,#6b0a14 0,#b8202a 3.5%,#6b0a14 7%);box-shadow:0 0 40px rgba(0,0,0,.6)}
+#cortina .ct.r{left:auto;right:0;transform:translateX(101%)}#cortina.k-teatro .ct{transform:none}
+#fimbox{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;text-align:center;color:#fff;gap:2vh}
+#cortina.k-fim #fimbox{display:flex}#fimbox h1{font-size:12vh;font-weight:700}#fimbox p{font-size:4.5vh;color:#cfd6ee}
+#conf{position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:8}
 #ov{position:absolute;left:0;top:0;pointer-events:none}
 #foco{position:fixed;inset:0;display:none;pointer-events:none;z-index:3}
 #qr{position:fixed;inset:0;display:none;align-items:center;justify-content:center;flex-direction:column;gap:18px;background:rgba(0,0,0,.88);color:#fff;text-align:center;z-index:5}
@@ -601,9 +821,9 @@ background:radial-gradient(circle,#fff 0,#ff2d2d 35%,rgba(255,0,0,.35) 60%,rgba(
 #qr h1{font-size:28px;font-weight:600}#qr p{font-size:15px;color:#bbb;max-width:80vw;word-break:break-all}
 #dica{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:rgba(20,20,20,.8);color:#ddd;padding:10px 18px;border-radius:10px;font-size:15px;transition:opacity .6s}
 """
-HTML_TELA = """<div id="stage"></div><div id="laser"></div><div id="foco"></div><div id="preto"></div>
+HTML_TELA = """<div id="stage"></div><div id="laser"></div><div id="foco"></div><div id="cortina"><div class="cb"></div><div class="ct"></div><div class="ct r"></div><div id="fimbox"><h1 id="fimt"></h1><p id="fims"></p></div></div><canvas id="conf"></canvas>
 <div id="qr"><h1>Escaneie com o iPhone para controlar</h1><div class="cartao" id="qrsvg"></div><p id="qrurl"></p><p>Q: mostrar ou ocultar este codigo</p></div>
-<div id="dica">F: tela cheia &middot; setas: navegar &middot; B: preto &middot; C: limpar &middot; Q: QR code &middot; clique: avancar</div>"""
+<div id="dica">F: tela cheia &middot; setas: navegar &middot; B: preto &middot; W: branco &middot; T: teatro &middot; E: fim &middot; C: limpar &middot; Q: QR code &middot; clique: avancar</div>"""
 
 # desenha o QR (qrcode-generator) em #qrsvg; usado pela tela e pela pagina /qr
 JS_QR = r"""
@@ -633,7 +853,7 @@ async function agruparPassos(pdf){
 JS_TELA = r"""
 const qrEl=document.getElementById('qr');
 function mostrarQR(v){qrEl.style.display=v?'flex':'none'}
-const stage=document.getElementById('stage'),laserEl=document.getElementById('laser'),pretoEl=document.getElementById('preto'),focoEl=document.getElementById('foco');
+const stage=document.getElementById('stage'),laserEl=document.getElementById('laser'),focoEl=document.getElementById('foco');
 let pdf=null,mapa=null,atual=null,paginaAtual=0,modo='__TRANSICAO__',trabalhando=false,pendente=null,est={zoom:1,zx:.5,zy:.5};
 let tracos=[],cfg={laser_tam:24,laser_cor:'#ff2d2d',foco_raio:12,foco_blur:100,foco_escuro:25,pen_larg:3.5,hl_larg:14,hl_alpha:38};
 const rgba=(h,a)=>{const n=parseInt(h.slice(1),16);return 'rgba('+(n>>16&255)+','+(n>>8&255)+','+(n&255)+','+a+')'};
@@ -689,9 +909,31 @@ async function ir(n,modoLocal){
 let viuRemoto=false;
 function aplicar(s){
   if(s.remotos>0&&!viuRemoto){viuRemoto=true;mostrarQR(false)}
-  modo=s.transicao;pretoEl.style.display=s.preto?'block':'none';
+  modo=s.transicao;cortina(s.cortina||'',s.fim||{txt:'',sub:''});
   est={zoom:s.zoom||1,zx:s.zx,zy:s.zy};
   if(s.pagina!==paginaAtual)ir(s.pagina);else aplicarZoom();
+}
+let cortK='';
+function cortina(k,fim){
+  const el=document.getElementById('cortina');
+  if(k===cortK&&(k!=='fim'||document.getElementById('fimt').textContent===fim.txt))return;
+  const antes=cortK;cortK=k;
+  if(k){el.style.display='block';void el.offsetWidth;el.className='k-'+k;
+    if(k==='fim'){document.getElementById('fimt').textContent=fim.txt;document.getElementById('fims').textContent=fim.sub;confete(6)}}
+  else{el.className='';setTimeout(()=>{if(!cortK)el.style.display='none'},antes==='teatro'?1400:400)}
+}
+let confP=[],confT=null,confFim=0;
+function confete(seg){
+  const c=document.getElementById('conf'),g=c.getContext('2d');c.width=innerWidth;c.height=innerHeight;
+  confFim=performance.now()+seg*1000;if(confT)return;
+  const cores=['#ff3b30','#ffd60a','#30d158','#0a84ff','#bf5af2','#ff9f0a'];
+  confT=setInterval(()=>{
+    const agora=performance.now();
+    if(agora<confFim)for(let i=0;i<5;i++)confP.push({x:Math.random()*c.width,y:-20,vx:(Math.random()-.5)*4,vy:2+Math.random()*3,r:Math.random()*6.28,vr:(Math.random()-.5)*.3,w:8+Math.random()*8,h:5+Math.random()*6,c:cores[Math.random()*6|0]});
+    g.clearRect(0,0,c.width,c.height);confP=confP.filter(p=>p.y<c.height+30);
+    confP.forEach(p=>{p.x+=p.vx+Math.sin(p.y/40);p.y+=p.vy;p.vy=Math.min(p.vy+.04,6);p.r+=p.vr;g.save();g.translate(p.x,p.y);g.rotate(p.r);g.fillStyle=p.c;g.fillRect(-p.w/2,-p.h/2,p.w,p.h);g.restore()});
+    if(!confP.length&&agora>=confFim){clearInterval(confT);confT=null}
+  },16);
 }
 function laser(l){
   if(!l.on||!atual){laserEl.style.display='none';focoEl.style.display='none';return}
@@ -712,6 +954,7 @@ function msg(m){
     if(!t){t={id:m.draw.id,t:m.draw.t,c:m.draw.c,p:[]};tracos.push(t)}t.p.push(...m.draw.p);tracar(t,de);return}
   if(m.tracos){tracos=m.tracos;redesenhar();return}
   if(m.limpar){limparTracos();return}
+  if(m.confete){confete(m.confete);return}
   if(m.cfg){cfg=m.cfg;aplicarCfg();return}
   aplicar(m);
 }
@@ -721,6 +964,9 @@ addEventListener('keydown',e=>{
   else if(['ArrowLeft','ArrowUp','PageUp','Backspace'].includes(e.key)){cmd('prev');e.preventDefault()}
   else if(e.key==='Home')cmd('first');else if(e.key==='End')cmd('last');
   else if(e.key==='b'||e.key==='B'||e.key==='.')cmd('blank');
+  else if(e.key==='w'||e.key==='W')cmd('cortina','branco');
+  else if(e.key==='t'||e.key==='T')cmd('cortina','teatro');
+  else if(e.key==='e'||e.key==='E')cmd('cortina',{k:'fim',txt:'Obrigado!',sub:'Perguntas?'});
   else if(e.key==='c'||e.key==='C')cmd('limpar');
   else if(e.key==='q'||e.key==='Q'){mostrarQR(qrEl.style.display!=='flex')}
   else if(e.key==='f'||e.key==='F'){document.fullscreenElement?document.exitFullscreen():document.documentElement.requestFullscreen()}
@@ -759,9 +1005,12 @@ select{background:#1d1d1f;color:#fff;border:0;border-radius:12px;font-size:14px;
 #raiobar{display:none;align-items:center;color:#aaa;font-size:14px;gap:12px}#raiobar input{flex:1;accent-color:#0a84ff}
 #zbar{display:none}#zbar span{flex:1;text-align:center;font-size:17px;color:#fff;font-weight:600;align-self:center}
 #cores{display:none;gap:14px;justify-content:center;flex:0 0 auto}#cores i{width:30px;height:30px;border-radius:50%;border:3px solid transparent;display:block}#cores i.sel{border-color:#fff}
-#ajustes{display:none;flex:1;min-height:70px;background:#111;border-radius:12px;flex-direction:column;overflow:hidden}
-#ajhead{display:flex;justify-content:space-between;align-items:center;padding:6px 10px;font-size:13px;color:#888;flex:0 0 auto}
-#ajhead button{padding:5px 10px;font-size:12px;border-radius:8px}
+#ajustes,#extras{display:none;flex:1;min-height:70px;background:#111;border-radius:12px;flex-direction:column;overflow:hidden}
+#ajhead,#exhead{display:flex;justify-content:space-between;align-items:center;padding:6px 10px;font-size:13px;color:#888;flex:0 0 auto}
+#ajhead button,#exhead button{padding:5px 10px;font-size:12px;border-radius:8px}
+#excorpo{flex:1;overflow:auto;padding:2px 12px 10px;touch-action:pan-y}.exl{font-size:12px;color:#888;margin:10px 0 5px}
+.exg{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}.exg button{padding:12px 0;font-size:14px}.exg button.on{background:#0a84ff}
+#excorpo input{width:100%;background:#1d1d1f;color:#fff;border:0;border-radius:10px;font-size:15px;padding:10px;margin-bottom:6px;user-select:text;-webkit-user-select:text}
 #ajcorpo{flex:1;overflow:auto;padding:2px 12px 10px;touch-action:pan-y}
 .ajl{display:flex;align-items:center;gap:10px;font-size:13px;color:#ccc;margin:7px 0}.ajl label{flex:0 0 118px}.ajl input{flex:1;accent-color:#0a84ff}.ajl output{flex:0 0 38px;text-align:right;color:#888;font-variant-numeric:tabular-nums}
 .ajc{display:flex;gap:12px;margin:8px 0 4px;align-items:center;font-size:13px;color:#ccc}.ajc i{width:26px;height:26px;border-radius:50%;border:3px solid transparent;display:block}.ajc i.sel{border-color:#fff}
@@ -792,10 +1041,17 @@ HTML_REMOTO = """<div id="topo"><span><i id="dot"></i><span id="st">conectando</
 <div class="linha" id="zbar"><button id="zm">&minus;</button><span id="zv">1x</span><button id="zp">+</button><button id="z1">1x</button></div>
 <div class="linha" id="raiobar"><span>Raio do foco</span><input id="raio" type="range" min="4" max="30" value="12"></div>
 <div id="cores"><i data-c="#ff3b30" style="background:#ff3b30"></i><i data-c="#0a84ff" style="background:#0a84ff"></i><i data-c="#30d158" style="background:#30d158"></i><i data-c="#ffd60a" style="background:#ffd60a"></i><i data-c="#ffffff" style="background:#fff"></i></div>
-<div class="linha" id="tools2"><button id="bx">Limpar</button><button id="bb">Preto</button><button id="bg">Ir para</button><button id="ba">Ajustes</button></div>
+<div class="linha" id="tools2"><button id="bx">Limpar</button><button id="bb">Preto</button><button id="bg">Ir para</button><button id="bk">Extras</button><button id="ba">Ajustes</button></div>
 <div id="ajustes"><div id="ajhead"><span>Ajustes</span><button id="ajrst">Restaurar padrao</button></div>
 <div class="ajc" id="ajtr"><span>Transicao</span><select id="tr"><option value="fade">Fade</option><option value="slide">Deslizar</option><option value="zoom">Zoom</option><option value="nenhuma">Sem transicao</option></select><button id="tz">Zerar cronometro</button></div>
 <div id="ajcorpo"></div></div>
+<div id="extras"><div id="exhead"><span>Cortina e efeitos</span><button id="exx">Fechar</button></div><div id="excorpo">
+<div class="exl">Cortina (toque de novo para abrir)</div>
+<div class="exg" id="exk"><button data-k="preto">Preto</button><button data-k="branco">Branco</button><button data-k="teatro">Teatro</button><button data-k="fim">Fim</button></div>
+<div class="exl">Texto do fim</div><input id="fimtxt" value="Obrigado!" maxlength="80"><input id="fimsub" value="Perguntas?" maxlength="120">
+<div class="exl">Efeitos</div>
+<div class="exg" id="exs"><button data-s="confete">Confete</button><button data-s="ding">Ding</button><button data-s="tambor">Tambor</button><button data-s="aplausos">Aplausos</button><button data-s="fanfarra">Fanfarra</button><button data-s="buzina">Buzina</button><button data-s="suspense">Suspense</button><button data-s="stop">Parar som</button></div>
+</div></div>
 <div id="irbox"><div id="irhead"><input id="irn" type="number" inputmode="numeric" min="1" placeholder="no do slide"><button id="irgo">Ir</button><button id="irx">Fechar</button></div><div id="irgrid"></div></div>
 <div id="notas"><div id="nhead"><span id="nt">Notas do apresentador</span><span><button id="nm">A&minus;</button><button id="np">A+</button></span></div><div id="ntxt"></div></div>
 <div id="botoes"><button id="ant">&#9664; Anterior</button><button id="seg">Proximo &#9654;</button></div>"""
@@ -808,7 +1064,7 @@ const PADRAO={meta_min:50,laser_tam:24,laser_cor:'#ff2d2d',foco_raio:12,foco_blu
 const DEFS=[['meta_min','Meta de tempo (min)',5,120,5],['laser_tam','Laser: tamanho',6,80,1],['foco_raio','Foco: raio',3,35,1],['foco_blur','Foco: desfoque',0,100,5],['foco_escuro','Foco: escurecer',0,90,5],['pen_larg','Caneta: espessura',0.5,12,0.5],['hl_larg','Marca: espessura',3,40,1],['hl_alpha','Marca: opacidade',10,80,5]];
 let cfg=Object.assign({},PADRAO),tCfg=null;
 try{fonte=parseInt(localStorage.getItem('passador-fonte'))||17}catch(e){}
-if(EXTERNO){$('bz').style.display='none';$('tr').style.display='none';if(!OVERLAY)['bf','bc','bm','bx'].forEach(i=>$(i).style.display='none')}
+if(EXTERNO){$('bz').style.display='none';$('tr').style.display='none';if(!OVERLAY){['bf','bc','bm','bx'].forEach(i=>$(i).style.display='none');document.querySelectorAll('#exk [data-k]:not([data-k=preto])').forEach(b=>b.style.display='none');document.querySelector('[data-s=confete]').style.display='none'}}
 function status(ok,txt){$('dot').classList.toggle('ok',ok);$('st').textContent=txt}
 const cid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,8);
 async function cmd(c,v){
@@ -879,7 +1135,7 @@ setInterval(tick,500);
 $('relogio').onclick=()=>cmd('timer','toggle');$('tz').onclick=()=>cmd('timer','reset');
 function aplicar(s){
   if(s.seq!==undefined&&s.seq<seqVisto)return;sincTimer(s.timer);if(s.seq!==undefined)seqVisto=s.seq;
-  pag=s.pagina;total=s.total;$('tr').value=s.transicao;$('bb').classList.toggle('on',s.preto);
+  pag=s.pagina;total=s.total;$('tr').value=s.transicao;$('bb').classList.toggle('on',s.preto);document.querySelectorAll('#exk [data-k]').forEach(b=>b.classList.toggle('on',b.dataset.k===s.cortina));
   zoom={z:s.zoom||1,x:s.zx,y:s.zy};$('zv').textContent=(zoom.z%1?zoom.z.toFixed(1):zoom.z)+'x';retangulo();mostra()
 }
 // ---- miniatura: desenho local de caneta e marca-texto
@@ -963,7 +1219,15 @@ function enviaCfg(parte){
   tCfg=setTimeout(()=>fetch('/cfg',{method:'POST',headers:{'Content-Type':'application/json','X-Token':TOKEN},body:JSON.stringify(parte)}).catch(()=>{}),120);
 }
 function recebeCfg(c){cfg=Object.assign({},PADRAO,c);mostraCfg()}
-$('ba').onclick=()=>{const aberto=$('ajustes').style.display==='flex';$('ajustes').style.display=aberto?'none':'flex';$('notas').style.display=aberto?'flex':'none';$('ba').classList.toggle('on',!aberto)};
+function painel(nome){
+  const alvo=$(nome).style.display==='flex'?null:nome;
+  ['ajustes','extras'].forEach(p=>$(p).style.display=p===alvo?'flex':'none');$('notas').style.display=alvo?'none':'flex';
+  $('ba').classList.toggle('on',alvo==='ajustes');$('bk').classList.toggle('on',alvo==='extras');
+}
+$('ba').onclick=()=>painel('ajustes');$('bk').onclick=()=>painel('extras');$('exx').onclick=()=>painel('extras');
+['fimtxt','fimsub'].forEach(i=>{try{const v=localStorage.getItem('passador-'+i);if(v!==null)$(i).value=v}catch(e){}$(i).oninput=e=>{try{localStorage.setItem('passador-'+i,e.target.value)}catch(x){}}});
+document.querySelectorAll('#exk [data-k]').forEach(b=>b.onclick=()=>cmd('cortina',b.dataset.k==='fim'?{k:'fim',txt:$('fimtxt').value,sub:$('fimsub').value}:b.dataset.k));
+document.querySelectorAll('#exs [data-s]').forEach(b=>b.onclick=()=>b.dataset.s==='confete'?cmd('confete',4):cmd('efeito',b.dataset.s));
 $('ajrst').onclick=()=>{cfg=Object.assign({},PADRAO);mostraCfg();fetch('/cfg',{method:'POST',headers:{'Content-Type':'application/json','X-Token':TOKEN},body:JSON.stringify(PADRAO)}).catch(()=>{})};
 let gradeFeita=false;
 function irPara(n){
@@ -1278,6 +1542,7 @@ def main():
     elif a.notas:
         sys.exit(f"arquivo de notas nao encontrado: {a.notas}")
     estado.sincronizar_overlay()
+    estado.som.preparar()
     usar_cache = baixar_pdfjs() if pdf else False
     usar_qr = baixar_qr()
     hosts = ["127.0.0.1"] + ([ts] if ts else [])

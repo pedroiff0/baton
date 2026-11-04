@@ -1,6 +1,8 @@
 # Changelog
 
 ## Não lançado
+- Cortina (preto, branco, teatro, fim com texto e confete), confete avulso e efeitos sonoros sintetizados (ding, tambor, aplausos, fanfarra, buzina, suspense), painel "Extras" no celular.
+- Correção: o Preto no modo externo agora usa a cortina nativa em vez da tecla `B`, que não fazia nada na maioria dos apps.
 - Cronômetro com meta, prévia do próximo slide e "Ir para" (grade de miniaturas ou número direto).
 - Personalização salva em disco: tamanho e cor do laser, raio, desfoque e escurecimento do foco, espessura da caneta e do marca-texto, opacidade do marca-texto.
 - Camada nativa acima de modos de apresentação (nível máximo da janela, painel sem ativação).

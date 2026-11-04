@@ -25,7 +25,7 @@ O celular envia setas, Home, End e `B` para o app em primeiro plano (PowerPoint,
 Tudo é salvo em `~/.cache/passador/config.json` e vale em todos os modos: **tamanho e cor do laser**; **foco**: raio, intensidade do desfoque e escurecimento fora do círculo; **caneta**: espessura; **marca-texto**: espessura e opacidade. "Restaurar padrão" volta aos valores originais. Sobre outros apps, o desfoque usa o efeito nativo do macOS (a intensidade controla a opacidade dele); no modo tela, o desfoque é real e proporcional.
 
 ## Modo tela (com PDF)
-O passador mostra o PDF no navegador do Mac (`F` tela cheia, setas/espaço/clique navegam, `B` preto, `C` limpar, `Q` QR code):
+O passador mostra o PDF no navegador do Mac (`F` tela cheia, setas/espaço/clique navegam, `B` preto, `W` branco, `T` teatro, `E` fim, `C` limpar, `Q` QR code):
 - **Transições**: fade, deslizar, zoom (`--transicao`, ou o seletor no celular); sem transição entre os passos de um mesmo slide.
 - **Passos dentro de um slide**: com `elementos=progressivo` na classe `iffslides` (ou `\pause`, `\item<2->`), o passador agrupa as páginas do mesmo slide e mostra "slide 5 / 33  passo 2/4".
 - **Cronômetro**: começa no primeiro avanço (ou toque no relógio), mostra o tempo decorrido e quanto resta da meta (padrão 50 min, ajustável em Ajustes); amarelo nos últimos 10% e vermelho ao estourar; sincronizado pelo servidor, sobrevive a recarregar a página.
@@ -33,6 +33,11 @@ O passador mostra o PDF no navegador do Mac (`F` tela cheia, setas/espaço/cliqu
 - **Notas do apresentador** no iPhone, com A−/A+: `--notas slides.notas.md` (ou `slides.notas.md` ao lado do PDF). Formato: `## 5` = slide 5, `## p12` = página 12 do PDF, texto livre com `**negrito**`, `*itálico*` e listas com `-`. Exemplo: `exemplo.notas.md` (slides de e-lixo).
 - **Zoom**: toque ou arraste na miniatura, botões − e +, ou pinça; `1x` volta.
 - Todas as ferramentas do modo externo, desenhadas sobre o slide.
+
+## Cortina, fim e efeitos sonoros (botão "Extras" no celular)
+- **Cortina:** Preto, Branco, Teatro (panos vermelhos que fecham e abrem) e Fim (tela de encerramento com o texto que você digitar e confete). Tocar de novo abre a cortina. No modo externo ela é desenhada pela camada nativa, por cima do app; sem a camada, só o Preto funciona (tecla `B` do leitor).
+- **Confete:** chuva de confete por cima do slide, por 4 segundos.
+- **Efeitos:** Ding, Tambor, Aplausos, Fanfarra, Buzina e Suspense, sintetizados pelo próprio passador (sem arquivos) e tocados no Mac que projeta, por `afplay` (macOS), `paplay`, `aplay` ou `ffplay`. "Parar som" interrompe o efeito.
 
 ## Conexão estável
 Batimento do servidor a cada 4 s; o celular reabre a conexão sozinho (silêncio de 12 s, volta para a tela, volta a rede); cada comando tem um id e é reenviado até 5 vezes sem pular dois slides; TCP keepalive e `TCP_NODELAY`. Dica: `caffeinate -dis python3 passador.py` evita a suspensão do Mac.

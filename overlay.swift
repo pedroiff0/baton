@@ -12,6 +12,8 @@
 //   {"t":"draw","id":"a1","hl":false,"c":"#ff3b30","p":[[0.1,0.1],[0.2,0.2]]}
 //   {"t":"cfg","laser_tam":24,"laser_cor":"#ff2d2d","foco_blur":100,"foco_escuro":25,
 //    "pen_larg":3.5,"hl_larg":14,"hl_alpha":38}
+//   {"t":"cortina","k":"preto|branco|teatro|fim|off","txt":"Obrigado!","sub":"Perguntas?"}
+//   {"t":"confete","seg":4}
 //   {"t":"clear"}   {"t":"quit"}
 import Cocoa
 
@@ -90,6 +92,234 @@ final class Quadro: NSView {
     }
 }
 
+struct Particula {
+    var x: CGFloat
+    var y: CGFloat
+    var vx: CGFloat
+    var vy: CGFloat
+    var rot: CGFloat
+    var vr: CGFloat
+    var w: CGFloat
+    var h: CGFloat
+    var cor: NSColor
+}
+
+// Confete: particulas com fisica simples, desenhadas por cima de tudo.
+final class Confete: NSView {
+    var ps: [Particula] = []
+    var emitindo = false
+    var fimEmissao = Date()
+    var relogio: Timer?
+    let paleta: [NSColor] = [
+        NSColor(calibratedRed: 1.0, green: 0.23, blue: 0.19, alpha: 1.0),
+        NSColor(calibratedRed: 1.0, green: 0.84, blue: 0.04, alpha: 1.0),
+        NSColor(calibratedRed: 0.19, green: 0.82, blue: 0.35, alpha: 1.0),
+        NSColor(calibratedRed: 0.04, green: 0.52, blue: 1.0, alpha: 1.0),
+        NSColor(calibratedRed: 0.75, green: 0.35, blue: 0.95, alpha: 1.0),
+        NSColor(calibratedRed: 1.0, green: 0.62, blue: 0.04, alpha: 1.0),
+    ]
+
+    override var isFlipped: Bool { return true }
+    override var isOpaque: Bool { return false }
+
+    func iniciar(_ segundos: Double) {
+        emitindo = true
+        fimEmissao = Date().addingTimeInterval(segundos)
+        if relogio == nil {
+            relogio = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+                self?.passo()
+            }
+        }
+    }
+
+    func parar() {
+        emitindo = false
+        ps.removeAll()
+        relogio?.invalidate()
+        relogio = nil
+        needsDisplay = true
+    }
+
+    func nova() -> Particula {
+        return Particula(x: CGFloat.random(in: 0...bounds.width), y: -20,
+                         vx: CGFloat.random(in: -120...120), vy: CGFloat.random(in: 80...200),
+                         rot: CGFloat.random(in: 0...6.28), vr: CGFloat.random(in: -9...9),
+                         w: CGFloat.random(in: 8...16), h: CGFloat.random(in: 5...11),
+                         cor: paleta[Int.random(in: 0..<paleta.count)])
+    }
+
+    func passo() {
+        let dt: CGFloat = 1.0 / 60.0
+        if emitindo && Date() < fimEmissao {
+            for _ in 0..<5 { ps.append(nova()) }
+        } else {
+            emitindo = false
+        }
+        for i in ps.indices {
+            ps[i].vy = min(ps[i].vy + 260 * dt, 340)
+            ps[i].x += (ps[i].vx + sin(ps[i].y / 45) * 40) * dt
+            ps[i].y += ps[i].vy * dt
+            ps[i].rot += ps[i].vr * dt
+        }
+        let limite = bounds.height + 30
+        ps.removeAll { $0.y > limite }
+        if ps.isEmpty && !emitindo {
+            relogio?.invalidate()
+            relogio = nil
+        }
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let g = NSGraphicsContext.current?.cgContext else { return }
+        for p in ps {
+            g.saveGState()
+            g.translateBy(x: p.x, y: p.y)
+            g.rotate(by: p.rot)
+            g.setFillColor(p.cor.cgColor)
+            g.fill(CGRect(x: -p.w / 2, y: -p.h / 2, width: p.w, height: p.h))
+            g.restoreGState()
+        }
+    }
+}
+
+// Cortina por cima de tudo: preto, branco, teatro (panos vermelhos) e tela de encerramento.
+final class Cortina: NSView {
+    let fundo = NSView()
+    let esq = NSView()
+    let dir = NSView()
+    let titulo = NSTextField(labelWithString: "")
+    let sub = NSTextField(labelWithString: "")
+    let confete: Confete
+    var tipo = ""
+
+    override var isFlipped: Bool { return true }
+
+    init(frame: NSRect, confete: Confete) {
+        self.confete = confete
+        super.init(frame: frame)
+        autoresizingMask = [.width, .height]
+        fundo.frame = bounds
+        fundo.wantsLayer = true
+        fundo.alphaValue = 0
+        fundo.autoresizingMask = [.width, .height]
+        addSubview(fundo)
+        for pano in [esq, dir] {
+            pano.frame = NSRect(x: -bounds.width, y: 0, width: bounds.width / 2 + 2, height: bounds.height)
+            pano.wantsLayer = true
+            pano.layer?.addSublayer(gradientePregas(NSRect(origin: NSPoint.zero, size: pano.frame.size)))
+            addSubview(pano)
+        }
+        for rotulo in [titulo, sub] {
+            rotulo.alignment = .center
+            rotulo.isBezeled = false
+            rotulo.drawsBackground = false
+            rotulo.isEditable = false
+            rotulo.textColor = NSColor.white
+            rotulo.alphaValue = 0
+            addSubview(rotulo)
+        }
+        isHidden = true
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) nao suportado") }
+
+    func gradientePregas(_ r: NSRect) -> CAGradientLayer {
+        let g = CAGradientLayer()
+        let escuro = NSColor(calibratedRed: 0.42, green: 0.04, blue: 0.08, alpha: 1.0).cgColor
+        let claro = NSColor(calibratedRed: 0.72, green: 0.12, blue: 0.16, alpha: 1.0).cgColor
+        let n = 14
+        var cores: [CGColor] = []
+        var locais: [NSNumber] = []
+        for i in 0...n {
+            cores.append(i % 2 == 0 ? escuro : claro)
+            locais.append(NSNumber(value: Double(i) / Double(n)))
+        }
+        g.colors = cores
+        g.locations = locais
+        g.startPoint = CGPoint(x: 0.0, y: 0.5)
+        g.endPoint = CGPoint(x: 1.0, y: 0.5)
+        g.frame = r
+        return g
+    }
+
+    func definir(_ k: String, _ txt: String, _ subtxt: String) {
+        let w = bounds.width
+        let h = bounds.height
+        let anterior = tipo
+        let foraEsq = NSRect(x: -w / 2 - 4, y: 0, width: w / 2 + 2, height: h)
+        let foraDir = NSRect(x: w + 2, y: 0, width: w / 2 + 2, height: h)
+
+        if k == "" || k == "off" || k == "preto" || k == "branco" || k == "teatro" || k == "fim" {
+            tipo = (k == "off") ? "" : k
+        } else {
+            return
+        }
+
+        if tipo == "" {
+            NSAnimationContext.runAnimationGroup({ c in
+                c.duration = (anterior == "teatro") ? 1.2 : 0.3
+                c.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                fundo.animator().alphaValue = 0
+                esq.animator().frame = foraEsq
+                dir.animator().frame = foraDir
+                titulo.animator().alphaValue = 0
+                sub.animator().alphaValue = 0
+            }, completionHandler: { [weak self] in
+                guard let s = self, s.tipo == "" else { return }
+                s.isHidden = true
+                s.confete.parar()
+            })
+            return
+        }
+
+        isHidden = false
+        let cor: NSColor
+        switch tipo {
+        case "branco": cor = NSColor.white
+        case "fim": cor = NSColor(calibratedRed: 0.03, green: 0.05, blue: 0.12, alpha: 1.0)
+        default: cor = NSColor.black
+        }
+        fundo.layer?.backgroundColor = cor.cgColor
+
+        let tamTitulo = h * 0.11
+        titulo.stringValue = txt
+        titulo.font = NSFont.boldSystemFont(ofSize: tamTitulo)
+        titulo.frame = NSRect(x: 0, y: h * 0.5 - tamTitulo * 1.1, width: w, height: tamTitulo * 1.4)
+        let tamSub = h * 0.04
+        sub.stringValue = subtxt
+        sub.font = NSFont.systemFont(ofSize: tamSub)
+        sub.textColor = NSColor(calibratedWhite: 0.85, alpha: 1.0)
+        sub.frame = NSRect(x: 0, y: h * 0.5 + tamTitulo * 0.5, width: w, height: tamSub * 1.5)
+
+        if tipo == "teatro" {
+            if anterior != "teatro" {
+                esq.frame = foraEsq
+                dir.frame = foraDir
+            }
+            NSAnimationContext.runAnimationGroup({ c in
+                c.duration = 1.3
+                c.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                fundo.animator().alphaValue = 0
+                esq.animator().frame = NSRect(x: 0, y: 0, width: w / 2 + 2, height: h)
+                dir.animator().frame = NSRect(x: w / 2 - 2, y: 0, width: w / 2 + 2, height: h)
+                titulo.animator().alphaValue = 0
+                sub.animator().alphaValue = 0
+            }, completionHandler: nil)
+        } else {
+            esq.frame = foraEsq
+            dir.frame = foraDir
+            NSAnimationContext.runAnimationGroup({ c in
+                c.duration = 0.35
+                fundo.animator().alphaValue = 1
+                titulo.animator().alphaValue = (tipo == "fim") ? 1 : 0
+                sub.animator().alphaValue = (tipo == "fim") ? 1 : 0
+            }, completionHandler: nil)
+            if tipo == "fim" { confete.iniciar(6) }
+        }
+    }
+}
+
 final class Camada {
     let janela: NSPanel
     let quadro: Quadro
@@ -97,6 +327,8 @@ final class Camada {
     let escuro: NSView
     let mascaraEscuro = CALayer()
     let tamanho: NSSize
+    let confete: Confete
+    let cortina: Cortina
     var focoLigado = false
 
     init(indiceTela: Int, nivel: Int) {
@@ -137,7 +369,12 @@ final class Camada {
         quadro.autoresizingMask = [.width, .height]
         raiz.addSubview(desfoque)
         raiz.addSubview(escuro)
+        confete = Confete(frame: raiz.bounds)
+        confete.autoresizingMask = [.width, .height]
+        cortina = Cortina(frame: raiz.bounds, confete: confete)
         raiz.addSubview(quadro)
+        raiz.addSubview(cortina)
+        raiz.addSubview(confete)
         janela.contentView = raiz
         janela.setFrame(tela.frame, display: true)
         janela.orderFrontRegardless()
@@ -252,6 +489,10 @@ final class Camada {
             a.hlAlpha = numero(msg, "hl_alpha", a.hlAlpha, 5, 90)
             quadro.aj = a
             aplicarAjustes()
+        case "cortina":
+            cortina.definir((msg["k"] as? String) ?? "off", (msg["txt"] as? String) ?? "", (msg["sub"] as? String) ?? "")
+        case "confete":
+            confete.iniciar(min(10.0, max(1.0, (msg["seg"] as? Double) ?? 4.0)))
         case "clear":
             quadro.tracos.removeAll()
             quadro.ordem.removeAll()
