@@ -8,6 +8,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import baton as P  # noqa: E402
+import residente as R  # noqa: E402
+
+_TMP = tempfile.mkdtemp()
+R.PREFS_ARQ = Path(_TMP) / "estado.json"  # os testes nao tocam nas preferencias reais
+
 
 
 class FakeBackend:
@@ -265,7 +270,7 @@ class PlataformasTest(unittest.TestCase):
                 mock.patch.object(P.Path, "home", return_value=Path(d)):
             P.instalar_login()
             alvo = Path(d) / ".config" / "autostart" / "baton.desktop"
-            self.assertIn("--externo", alvo.read_text())
+            self.assertIn("--residente", alvo.read_text())
             P.instalar_login(remover=True)
             self.assertFalse(alvo.exists())
 
@@ -278,6 +283,129 @@ class PlataformasTest(unittest.TestCase):
         import py_compile
         for nome in ("overlay_gtk.py", "overlay_tk.py"):
             py_compile.compile(str(Path(P.__file__).with_name(nome)), doraise=True)
+
+
+class ResidenteTest(unittest.TestCase):
+    def setUp(self):
+        R.PREFS_ARQ.unlink(missing_ok=True)
+
+    def tearDown(self):
+        R.PREFS_ARQ.unlink(missing_ok=True)
+
+    def estado(self, residente=True):
+        b, o = FakeBackend(), FakeOverlay()
+        e = P.Estado(None, 9999, "slide", "tok", P.Externo(b, o, cursor=False), "http://x/remote?k=tok")
+        e.som = P.Som("log")
+        e.residente, e.autorizado = residente, not residente
+        return e, b
+
+    def test_em_espera_nao_envia_tecla(self):
+        e, b = self.estado()
+        self.assertFalse(e.comando("next"))
+        e.laser(0.5, 0.5, True)
+        self.assertEqual(b.teclas, [])
+        self.assertFalse(e.snapshot()["auth"])
+
+    def test_apresentacao_gera_pedido_e_sim_autoriza(self):
+        e, b = self.estado()
+        e.remotos = 1
+        e.presentacao("POWERPNT.EXE")
+        self.assertEqual(e.snapshot()["pedido"], {"app": "POWERPNT.EXE"})
+        self.assertTrue(e.consentir("sim"))
+        self.assertTrue(e.comando("next"))
+        self.assertEqual(b.teclas, ["Right"])
+        e.presentacao(None)  # tela cheia acabou: volta a espera
+        self.assertFalse(e.snapshot()["auth"])
+
+    def test_sempre_lembra_o_app_e_autoriza_sozinho(self):
+        e, _ = self.estado()
+        e.remotos = 1
+        e.presentacao("Keynote")
+        e.consentir("sempre")
+        e.presentacao(None)
+        e.presentacao("Keynote")
+        self.assertTrue(e.snapshot()["auth"])
+        self.assertIn("Keynote", R.prefs_carregar()["apps_ok"])
+
+    def test_nao_e_nunca(self):
+        e, _ = self.estado()
+        e.remotos = 1
+        e.presentacao("Acrobat")
+        e.consentir("nao")
+        e.presentacao("Acrobat")  # mesma tela cheia: nao pergunta de novo
+        self.assertIsNone(e.snapshot()["pedido"])
+        e.presentacao(None)
+        e.presentacao("Acrobat")
+        self.assertIsNotNone(e.snapshot()["pedido"])
+        e.consentir("nunca")
+        e.presentacao(None)
+        e.presentacao("Acrobat")
+        self.assertIsNone(e.snapshot()["pedido"])
+        self.assertIn("Acrobat", R.prefs_carregar()["apps_nao"])
+
+    def test_ignorados_e_modos(self):
+        e, _ = self.estado()
+        e.remotos = 1
+        e.presentacao("VLC")
+        self.assertIsNone(e.snapshot()["pedido"])
+        e.prefs["modo"] = "sempre"
+        e.presentacao("Impress")
+        self.assertTrue(e.snapshot()["auth"])
+        e2, _ = self.estado()
+        e2.prefs["modo"] = "nunca"
+        e2.presentacao("Impress")
+        self.assertFalse(e2.snapshot()["auth"])
+
+    def test_pausar_bloqueia_ate_retomar(self):
+        e, b = self.estado(residente=False)
+        self.assertTrue(e.comando("next"))
+        e.painel("pausar")
+        self.assertFalse(e.comando("next"))
+        self.assertFalse(e.snapshot()["ativo"])
+        e.painel("retomar")
+        self.assertTrue(e.comando("prev"))
+        self.assertTrue(e.painel("modo", "sempre"))
+        self.assertFalse(e.painel("modo", "xyz"))
+        self.assertFalse(e.painel("inexistente"))
+
+    def test_vigia_exige_duas_leituras_iguais(self):
+        e, _ = self.estado()
+        e.remotos = 1
+        leituras = iter(["App", "App", None, None])
+        v = R.Vigia(e, detector=lambda: next(leituras))
+        v.passo()
+        self.assertIsNone(e.snapshot()["pedido"])
+        v.passo()
+        self.assertEqual(e.snapshot()["pedido"], {"app": "App"})
+        v.passo()
+        self.assertIsNotNone(e.snapshot()["pedido"])
+        v.passo()
+        self.assertIsNone(e.snapshot()["pedido"])
+
+    def test_vigia_pausado_nao_detecta(self):
+        e, _ = self.estado()
+        e.prefs["ativo"] = False
+        R.prefs_salvar(e.prefs)
+        v = R.Vigia(e, detector=lambda: "App")
+        v.passo()
+        v.passo()
+        self.assertIsNone(e.snapshot()["pedido"])
+
+    def test_parsers_de_deteccao(self):
+        self.assertEqual(R.parse_osascript("Keynote|0|0|1920|1080\n", (1920, 1080)), "Keynote")
+        self.assertIsNone(R.parse_osascript("Safari|0|38|1920|1042", (1920, 1080)))
+        self.assertIsNone(R.parse_osascript("Finder|-", (1920, 1080)))
+        cheia = '_NET_WM_STATE(ATOM) = _NET_WM_STATE_FULLSCREEN\nWM_CLASS(STRING) = "soffice", "libreoffice-impress"\n'
+        self.assertEqual(R.parse_xprop(cheia), "libreoffice-impress")
+        self.assertIsNone(R.parse_xprop('_NET_WM_STATE(ATOM) = \nWM_CLASS(STRING) = "a", "b"\n'))
+        self.assertTrue(R.ignorado("VLC media player"))
+        self.assertFalse(R.ignorado("POWERPNT.EXE"))
+
+    def test_prefs_persistem_e_validam(self):
+        R.PREFS_ARQ.write_text('{"ativo": false, "modo": "xyz", "apps_ok": ["A"]}')
+        p = R.prefs_carregar()
+        self.assertFalse(p["ativo"])
+        self.assertEqual((p["modo"], p["apps_ok"]), ("perguntar", ["A"]))
 
 
 if __name__ == "__main__":

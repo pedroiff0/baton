@@ -17,6 +17,23 @@ No Windows use `py baton.py ...` (ou `python`).
 
 Ao iniciar, o computador abre uma página com um **QR code**. Escaneie com o celular. No iPhone, **Compartilhar > Adicionar à Tela de Início**; no Android (Chrome), menu **⋮ > Instalar app** ou **Adicionar à tela inicial**. O token fica salvo em `~/.cache/baton/token` (`--novo-token` troca), então a página do celular continua valendo depois de reiniciar.
 
+## Instalar e rodar em segundo plano
+
+```
+./install.sh        # macOS e Linux (sem sudo): copia para ~/.local/share/baton, cria o comando `baton` e liga no login
+.\install.ps1       # Windows (PowerShell, sem administrador): copia para %LOCALAPPDATA%\Baton e liga no login
+./uninstall.sh      # ou .\uninstall.ps1: remove tudo
+```
+
+Instalado, o Baton roda no **modo residente** (`--residente`): fica em espera, sem enviar nenhuma tecla, e vigia a janela em primeiro plano a cada 2 s. Quando um programa abre **em tela cheia** (PowerPoint, Keynote, Impress, leitor de PDF...), ele pergunta **no celular** (se a página estiver aberta): **Controlar**, **Sempre neste app**, **Agora não** ou **Nunca neste app**. Se o celular não estiver conectado, mostra um aviso do sistema com o endereço. Ao sair da tela cheia, volta à espera. Apps de vídeo (VLC, IINA, QuickTime, mpv, Spotify...) são ignorados. No celular, "Controlar mesmo assim" libera o controle sem apresentação detectada.
+
+**Desativar** a qualquer momento, sem desinstalar:
+- `baton --pausar` e `baton --retomar` (ou `python baton.py --pausar`);
+- o **painel** em `http://localhost:8765/painel` (só abre no próprio computador): pausar/retomar, modo (perguntar, sempre, nunca), apps lembrados, iniciar ou não com o sistema e sair do programa;
+- `./uninstall.sh` remove o início automático.
+
+Pausado, o celular recebe "Baton pausado" e nenhum comando, laser ou desenho é aceito. As escolhas ficam em `~/.cache/baton/estado.json`. A detecção usa `osascript` (macOS, pede permissão de Automação para o Terminal/Python na primeira vez), a API do Windows (janela em primeiro plano cobrindo o monitor) e `xdotool` + `xprop` (Linux, pacote `x11-utils`). Teste com `baton --detectar`. Ainda sem ícone na barra de menu/bandeja e sem binários prontos: precisa do Python 3.
+
 ## Plataformas
 
 | Computador que projeta | Teclas e mouse | Camada (laser, foco, caneta, cortina) | Som | Observações |

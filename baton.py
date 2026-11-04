@@ -35,6 +35,8 @@ import zlib
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+import residente
 from urllib.parse import parse_qs, urlparse
 
 PDFJS_VERSION = "3.11.174"
@@ -287,6 +289,11 @@ class Estado:
         self.cortina = ""
         self.fim_txt = ("Obrigado!", "")
         self.som = Som()
+        self.residente = False
+        self.autorizado = True  # modo residente comeca em espera ate alguem aceitar
+        self.pedido = None
+        self.sem_perguntar = None  # app que o usuario recusou nesta tela cheia
+        self.prefs = residente.prefs_carregar()
         self.lock = threading.Lock()
         self.clientes = []
 
@@ -305,6 +312,7 @@ class Estado:
     def snapshot(self):
         return {"pagina": self.pagina, "total": self.total, "transicao": self.transicao, "preto": self.cortina == "preto",
                 "cortina": self.cortina, "fim": {"txt": self.fim_txt[0], "sub": self.fim_txt[1]},
+                "auth": self.autorizado, "ativo": self.prefs["ativo"], "pedido": self.pedido,
                 "remotos": self.remotos, "zoom": self.zoom, "zx": self.zx, "zy": self.zy, "seq": self.seq,
                 "timer": {"rodando": self.t_rodando, "elapsed": round(self.decorrido(), 1)}}
 
@@ -315,7 +323,101 @@ class Estado:
             except queue.Full:
                 pass
 
+    # ---- modo residente: pausa, consentimento e deteccao de apresentacao
+    def permitido(self):
+        return self.prefs["ativo"] and self.autorizado
+
+    def tela_tamanho(self):
+        try:
+            return self.externo.b.tela()
+        except Exception:
+            return (1920.0, 1080.0)
+
+    def recarregar_prefs(self):
+        novo = residente.prefs_carregar()
+        if novo != self.prefs:
+            self.prefs = novo
+            self._mudou()
+
+    def _mudou(self):
+        with self.lock:
+            self.seq += 1
+            snap = self.snapshot()
+        self.publicar(snap)
+
+    def _salvar_prefs(self):
+        residente.prefs_salvar(self.prefs)
+        self._mudou()
+
+    def presentacao(self, app):
+        """Chamado pelo vigia: app e o programa em tela cheia, ou None quando ela termina."""
+        if app is None:
+            self.pedido, self.sem_perguntar = None, None
+            if self.residente and self.prefs["modo"] != "sempre":
+                self.autorizado = False
+            return self._mudou()
+        if residente.ignorado(app) or app in self.prefs["apps_nao"] or self.prefs["modo"] == "nunca" or app == self.sem_perguntar:
+            return
+        if self.prefs["modo"] == "sempre" or app in self.prefs["apps_ok"]:
+            self.autorizado, self.pedido = True, None
+            return self._mudou()
+        self.pedido = {"app": app}
+        self._mudou()
+        if not self.remotos:
+            residente.notificar("Baton", f"Apresentacao detectada em {app}. Abra o Baton no celular para controlar: {self.remote_url}")
+
+    def consentir(self, acao):
+        app = (self.pedido or {}).get("app")
+        if acao in ("sim", "sempre", "manual", "autorizar"):
+            self.autorizado, self.pedido = True, None
+            if acao == "sempre" and app and app not in self.prefs["apps_ok"]:
+                self.prefs["apps_ok"].append(app)
+                self.prefs["apps_nao"] = [a for a in self.prefs["apps_nao"] if a != app]
+        elif acao == "nao":
+            self.sem_perguntar, self.pedido = app, None
+        elif acao == "nunca":
+            if app and app not in self.prefs["apps_nao"]:
+                self.prefs["apps_nao"].append(app)
+            self.sem_perguntar, self.pedido = app, None
+        elif acao == "revogar":
+            self.autorizado = False
+        else:
+            return False
+        self._salvar_prefs()
+        return True
+
+    def painel(self, acao, valor=None):
+        """Acoes da pagina /painel (so no proprio computador)."""
+        p = self.prefs
+        if acao == "pausar":
+            p["ativo"] = False
+            self.autorizado = not self.residente and self.autorizado
+        elif acao == "retomar":
+            p["ativo"] = True
+        elif acao == "modo" and valor in residente.MODOS:
+            p["modo"] = valor
+        elif acao == "esquecer":
+            p["apps_ok"] = [a for a in p["apps_ok"] if a != valor]
+            p["apps_nao"] = [a for a in p["apps_nao"] if a != valor]
+        elif acao in ("autorizar", "revogar"):
+            return self.consentir(acao)
+        elif acao == "instalar":
+            instalar_login()
+        elif acao == "desinstalar":
+            instalar_login(remover=True)
+        else:
+            return False
+        self._salvar_prefs()
+        return True
+
+    def painel_estado(self):
+        return {"ativo": self.prefs["ativo"], "modo": self.prefs["modo"], "autorizado": self.autorizado,
+                "pedido": self.pedido, "apps_ok": self.prefs["apps_ok"], "apps_nao": self.prefs["apps_nao"],
+                "residente": self.residente}
+
     def comando(self, cmd, valor=None, cid=None):
+        if not self.permitido():
+            return False
         with self.lock:
             if cid:
                 if cid in self.vistos:  # repeticao de um comando que o celular reenviou por timeout
@@ -407,6 +509,8 @@ class Estado:
             self.externo.overlay.enviar(dict(self.cfg, t="cfg"))
 
     def laser(self, x, y, on, modo="laser", raio=None):
+        if not self.permitido():
+            return
         raio = self.cfg["foco_raio"] / 100.0 if raio is None else raio
         raio = max(0.03, min(0.35, float(raio)))
         if self.externo:
@@ -415,6 +519,8 @@ class Estado:
 
     def desenhar(self, d):
         """Recebe pontos de um traco (caneta ou marca-texto) e repassa para a tela."""
+        if not self.permitido():
+            return
         with self.lock:
             tid = str(d.get("id", ""))[:24]
             pts = [[max(0.0, min(1.0, float(a))), max(0.0, min(1.0, float(b)))] for a, b in d.get("p", [])][:200]
@@ -794,7 +900,7 @@ PLIST = """<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>com.baton</string>
-<key>ProgramArguments</key><array><string>__PY__</string><string>__SCRIPT__</string><string>--externo</string><string>--sem-abrir</string></array>
+<key>ProgramArguments</key><array><string>__PY__</string><string>__SCRIPT__</string><string>--residente</string></array>
 <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
 <key>StandardOutPath</key><string>__LOG__</string><key>StandardErrorPath</key><string>__LOG__</string>
 </dict></plist>
@@ -813,7 +919,7 @@ def instalar_login(remover=False):
         pythonw = Path(sys.executable).with_name("pythonw.exe")
         py = pythonw if pythonw.exists() else Path(sys.executable)
         pasta.mkdir(parents=True, exist_ok=True)
-        alvo.write_text(f'@echo off\r\nstart "" /b "{py}" "{script}" --externo --sem-abrir\r\n')
+        alvo.write_text(f'@echo off\r\nstart "" /b "{py}" "{script}" --residente\r\n')
         return print(f"instalado: {alvo}\nAgora ele liga sozinho no login do Windows.")
     if sys.platform.startswith("linux"):
         alvo = Path.home() / ".config" / "autostart" / "baton.desktop"
@@ -822,7 +928,7 @@ def instalar_login(remover=False):
             return print("baton removido do autostart")
         alvo.parent.mkdir(parents=True, exist_ok=True)
         alvo.write_text("[Desktop Entry]\nType=Application\nName=Baton\n"
-                        f"Exec={sys.executable} {script} --externo --sem-abrir\nX-GNOME-Autostart-enabled=true\n")
+                        f"Exec={sys.executable} {script} --residente\nX-GNOME-Autostart-enabled=true\n")
         return print(f"instalado: {alvo}\nAgora ele liga sozinho no login (sessao grafica X11).")
     if sys.platform != "darwin":
         sys.exit("--instalar funciona no macOS, Windows e Linux")
@@ -1106,6 +1212,8 @@ select{background:#1d1d1f;color:#fff;border:0;border-radius:12px;font-size:14px;
 #raiobar{display:none;align-items:center;color:#aaa;font-size:14px;gap:12px}#raiobar input{flex:1;accent-color:#0a84ff}
 #zbar{display:none}#zbar span{flex:1;text-align:center;font-size:17px;color:#fff;font-weight:600;align-self:center}
 #cores{display:none;gap:14px;justify-content:center;flex:0 0 auto}#cores i{width:30px;height:30px;border-radius:50%;border:3px solid transparent;display:block}#cores i.sel{border-color:#fff}
+#aviso{display:none;position:fixed;left:12px;right:12px;top:calc(env(safe-area-inset-top) + 8px);z-index:30;background:#2c2c2e;border:1px solid #0a84ff;border-radius:14px;padding:12px;font-size:14px;line-height:1.35}
+.avb{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px}.avb button{padding:10px 0;font-size:14px}
 #ajustes,#extras{display:none;flex:1;min-height:70px;background:#111;border-radius:12px;flex-direction:column;overflow:hidden}
 #ajhead,#exhead{display:flex;justify-content:space-between;align-items:center;padding:6px 10px;font-size:13px;color:#888;flex:0 0 auto}
 #ajhead button,#exhead button{padding:5px 10px;font-size:12px;border-radius:8px}
@@ -1135,7 +1243,7 @@ select{background:#1d1d1f;color:#fff;border:0;border-radius:12px;font-size:14px;
 #botoes{display:flex;gap:10px;height:84px;flex:0 0 auto}#botoes button{font-size:19px;border-radius:16px}
 #ant{flex:1}#seg{flex:2;background:#0a84ff}#seg:active{background:#006fe0}
 """
-HTML_REMOTO = """<div id="topo"><span><i id="dot"></i><span id="st">conectando</span></span><span id="pos">- / -</span></div>
+HTML_REMOTO = """<div id="aviso"></div><div id="topo"><span><i id="dot"></i><span id="st">conectando</span></span><span id="pos">- / -</span></div>
 <div id="vista"><canvas id="cv"></canvas><canvas id="ovp"></canvas><div id="zrect"></div><div id="ponto"></div></div>
 <div id="info"><div id="prevbox"><canvas id="cvp"></canvas><span id="prevlbl">Proximo</span></div><div id="relogio"><div id="tempo">00:00</div><div id="restante">toque para iniciar</div></div></div>
 <div class="linha" id="tools"><button id="bl">Laser</button><button id="bf">Foco</button><button id="bc">Caneta</button><button id="bm">Marca</button><button id="bz">Zoom</button></div>
@@ -1174,7 +1282,8 @@ async function cmd(c,v){
     const ac=new AbortController(),to=setTimeout(()=>ac.abort(),2500);
     try{
       const r=await fetch('/cmd',{method:'POST',headers:{'Content-Type':'application/json','X-Token':TOKEN},body:JSON.stringify({cmd:c,valor:v,cid:id}),signal:ac.signal});
-      clearTimeout(to);if(r.ok){const s=await r.json();aplicar(s);status(true,'conectado');return true}
+      clearTimeout(to);if(r.status===423){aplicar(await r.json());status(true,'em espera');return false}
+      if(r.ok){const s=await r.json();aplicar(s);status(true,'conectado');return true}
     }catch(e){clearTimeout(to)}
     status(false,'reenviando...');await new Promise(r=>setTimeout(r,250*(t+1)));
   }
@@ -1234,8 +1343,18 @@ function tick(){
 }
 setInterval(tick,500);
 $('relogio').onclick=()=>cmd('timer','toggle');$('tz').onclick=()=>cmd('timer','reset');
+const esc=x=>String(x).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+function avisoUI(s){
+  const el=$('aviso');
+  if(s.ativo===false){el.innerHTML='<b>Baton pausado</b> no computador. Retome pelo painel (localhost:8765/painel).'}
+  else if(s.auth!==false){el.style.display='none';return}
+  else if(s.pedido){el.innerHTML='<b>Apresentacao detectada</b> ('+esc(s.pedido.app)+'). Controlar com o Baton?<div class="avb"><button data-a="sim">Controlar</button><button data-a="sempre">Sempre neste app</button><button data-a="nao">Agora nao</button><button data-a="nunca">Nunca neste app</button></div>'}
+  else{el.innerHTML='Em espera: nenhuma apresentacao em tela cheia.<div class="avb"><button data-a="manual">Controlar mesmo assim</button></div>'}
+  el.style.display='block';el.querySelectorAll('button').forEach(b=>b.onclick=()=>consentir(b.dataset.a));
+}
+function consentir(a){fetch('/consent',{method:'POST',headers:{'Content-Type':'application/json','X-Token':TOKEN},body:JSON.stringify({acao:a})}).then(r=>r.json()).then(aplicar).catch(()=>{})}
 function aplicar(s){
-  if(s.seq!==undefined&&s.seq<seqVisto)return;sincTimer(s.timer);if(s.seq!==undefined)seqVisto=s.seq;
+  if(s.seq!==undefined&&s.seq<seqVisto)return;avisoUI(s);sincTimer(s.timer);if(s.seq!==undefined)seqVisto=s.seq;
   pag=s.pagina;total=s.total;$('tr').value=s.transicao;$('bb').classList.toggle('on',s.preto);document.querySelectorAll('#exk [data-k]').forEach(b=>b.classList.toggle('on',b.dataset.k===s.cortina));
   zoom={z:s.zoom||1,x:s.zx,y:s.zy};$('zv').textContent=(zoom.z%1?zoom.z.toFixed(1):zoom.z)+'x';retangulo();mostra()
 }
@@ -1470,6 +1589,12 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
                 return self._enviar(200, montar("tela", estado, usar_cache, usar_qr_cache), "text/html; charset=utf-8")
             if u.path == "/qr":
                 return self._enviar(200, montar_qr(estado, usar_qr_cache), "text/html; charset=utf-8")
+            if u.path in ("/painel", "/painel/estado"):
+                if not self._local():
+                    return self._enviar(403, "painel so no proprio computador", "text/plain; charset=utf-8")
+                if u.path == "/painel":
+                    return self._enviar(200, residente.PAINEL_HTML, "text/html; charset=utf-8")
+                return self._enviar(200, json.dumps(estado.painel_estado()))
             if u.path in ("/icon.png", "/icon-192.png", "/icon-512.png"):
                 tam = {"/icon-192.png": 192, "/icon-512.png": 512}.get(u.path, 180)
                 return self._enviar(200, icone_png(tam), "image/png", {"Cache-Control": "max-age=86400"})
@@ -1550,6 +1675,20 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
                 dados = json.loads(self.rfile.read(n) or b"{}")
             except Exception:
                 return self._enviar(400, '{"erro":"json"}')
+            if self.path == "/consent":
+                ok = estado.consentir(dados.get("acao"))
+                return self._enviar(200 if ok else 400, json.dumps(estado.snapshot()))
+            if self.path == "/painel/acao":
+                if not self._local():
+                    return self._enviar(403, '{"erro":"local"}')
+                ok = estado.painel(dados.get("acao"), dados.get("valor"))
+                corpo = json.dumps(estado.painel_estado())
+                self._enviar(200 if ok or dados.get("acao") == "sair" else 400, corpo)
+                if dados.get("acao") == "sair":
+                    threading.Timer(0.3, lambda: os._exit(0)).start()
+                return
+            if self.path in ("/cmd", "/laser", "/draw") and not estado.permitido():
+                return self._enviar(423, json.dumps(estado.snapshot()))
             if self.path == "/cmd":
                 ok = estado.comando(dados.get("cmd"), dados.get("valor"), dados.get("cid"))
                 return self._enviar(200 if ok else 400, json.dumps(estado.snapshot()))
@@ -1607,10 +1746,25 @@ def main():
     ap.add_argument("--sem-overlay", action="store_true", help="modo externo: nao usa a camada de desenho (laser = cursor)")
     ap.add_argument("--cursor", action="store_true", help="modo externo: move tambem o cursor do mouse com o laser")
     ap.add_argument("--notas", help="arquivo Markdown com as notas do apresentador (padrao: <pdf>.notas.md)")
+    ap.add_argument("--residente", action="store_true",
+                    help="segundo plano: fica em espera e pergunta no celular quando uma apresentacao abrir em tela cheia")
+    ap.add_argument("--pausar", action="store_true", help="pausa o Baton em execucao (nao controla nada ate --retomar)")
+    ap.add_argument("--retomar", action="store_true", help="retoma o Baton pausado")
+    ap.add_argument("--detectar", action="store_true", help="mostra qual app esta em tela cheia agora e sai (teste)")
     ap.add_argument("--novo-token", action="store_true", help="gera outro token (invalida o QR e a pagina abertos no celular)")
     a = ap.parse_args()
     if a.instalar or a.desinstalar:
         return instalar_login(remover=a.desinstalar)
+    if a.pausar or a.retomar:
+        p = residente.prefs_carregar()
+        p["ativo"] = a.retomar
+        residente.prefs_salvar(p)
+        return print("Baton retomado" if a.retomar else "Baton pausado")
+    if a.detectar:
+        print(residente.detectar() or "nenhum app em tela cheia")
+        return
+    if a.residente:
+        a.externo, a.sem_abrir = True, True
     if not a.pdf:
         a.externo = True  # sem PDF: plug and play, como um passador de slides USB
     pdf = None
@@ -1647,6 +1801,9 @@ def main():
         sys.exit(f"arquivo de notas nao encontrado: {a.notas}")
     estado.sincronizar_overlay()
     estado.som.preparar()
+    if a.residente:
+        estado.residente, estado.autorizado = True, False
+        residente.Vigia(estado).start()
     usar_cache = baixar_pdfjs() if pdf else False
     usar_qr = baixar_qr()
     hosts = ["127.0.0.1"] + ([ts] if ts else [])
@@ -1664,6 +1821,7 @@ def main():
     if pdf:
         print(f"PDF: {pdf} ({estado.total} paginas)")
     print(f"QR code no Mac:   {local}")
+    print(f"Painel (pausar, modo, apps): {local}painel")
     print(f"Celular (iPhone): {remoto}\n")
     if shutil.which("qrencode"):
         subprocess.run(["qrencode", "-t", "ANSIUTF8", remoto])

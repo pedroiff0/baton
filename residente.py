@@ -1,0 +1,230 @@
+"""residente.py: Baton em segundo plano.
+
+Preferencias (ativo/pausado, modo, apps lembrados), deteccao de apresentacao em tela cheia
+(macOS, Windows, Linux X11), aviso do sistema e a pagina de painel (so no proprio computador).
+Somente biblioteca padrao.
+"""
+import json
+import os
+import shutil
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+PREFS_ARQ = Path.home() / ".cache" / "baton" / "estado.json"
+PADRAO = {"ativo": True, "modo": "perguntar", "apps_ok": [], "apps_nao": []}
+MODOS = ("perguntar", "sempre", "nunca")
+# apps de video e arquivos: tela cheia que quase nunca e uma apresentacao
+IGNORADOS = ("vlc", "iina", "quicktime", "mpv", "finder", "explorer.exe", "dwm.exe", "steam", "netflix", "spotify")
+
+
+def prefs_carregar():
+    p = dict(PADRAO, apps_ok=[], apps_nao=[])
+    try:
+        d = json.loads(PREFS_ARQ.read_text(encoding="utf-8"))
+        if isinstance(d.get("ativo"), bool):
+            p["ativo"] = d["ativo"]
+        if d.get("modo") in MODOS:
+            p["modo"] = d["modo"]
+        for k in ("apps_ok", "apps_nao"):
+            if isinstance(d.get(k), list):
+                p[k] = [str(x)[:80] for x in d[k]][:200]
+    except (OSError, ValueError):
+        pass
+    return p
+
+
+def prefs_salvar(p):
+    try:
+        PREFS_ARQ.parent.mkdir(parents=True, exist_ok=True)
+        PREFS_ARQ.write_text(json.dumps(p, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def ignorado(app):
+    a = (app or "").lower()
+    return any(i in a for i in IGNORADOS)
+
+
+# ------------------------------------------------------------------ deteccao de tela cheia
+def parse_osascript(saida, tela):
+    """'App|x|y|largura|altura' (System Events) -> nome do app se a janela cobre a tela inteira."""
+    partes = saida.strip().split("|")
+    if len(partes) != 5:
+        return None
+    try:
+        w, h = float(partes[3]), float(partes[4])
+    except ValueError:
+        return None
+    return partes[0] if w >= tela[0] - 2 and h >= tela[1] - 2 else None
+
+
+def parse_xprop(saida):
+    """Saida do xprop (_NET_WM_STATE, WM_CLASS) -> classe da janela se ela esta em tela cheia."""
+    cheia, classe = False, None
+    for linha in saida.splitlines():
+        if linha.startswith("_NET_WM_STATE") and "_NET_WM_STATE_FULLSCREEN" in linha:
+            cheia = True
+        elif linha.startswith("WM_CLASS") and "=" in linha:
+            valores = [v.strip().strip('"') for v in linha.split("=", 1)[1].split(",")]
+            classe = valores[-1] if valores and valores[-1] else None
+    return (classe or "janela") if cheia else None
+
+
+_APPLESCRIPT = '''tell application "System Events"
+  set p to first application process whose frontmost is true
+  set n to name of p
+  try
+    set w to front window of p
+    set {x, y} to position of w
+    set {ww, hh} to size of w
+    return n & "|" & x & "|" & y & "|" & ww & "|" & hh
+  on error
+    return n & "|-"
+  end try
+end tell'''
+
+
+def detectar_mac(tela):
+    r = subprocess.run(["osascript", "-e", _APPLESCRIPT], capture_output=True, text=True, timeout=5)
+    return parse_osascript(r.stdout, tela) if r.returncode == 0 else None
+
+
+def detectar_windows():
+    import ctypes
+    from ctypes import wintypes as wt
+    u, k = ctypes.windll.user32, ctypes.windll.kernel32
+    u.GetForegroundWindow.restype = wt.HWND
+    u.MonitorFromWindow.argtypes = [wt.HWND, wt.DWORD]
+    u.MonitorFromWindow.restype = wt.HANDLE
+    k.OpenProcess.restype = wt.HANDLE
+    hwnd = u.GetForegroundWindow()
+    if not hwnd:
+        return None
+    cls = ctypes.create_unicode_buffer(256)
+    u.GetClassNameW(hwnd, cls, 256)
+    if cls.value in ("Progman", "WorkerW", "Shell_TrayWnd"):  # area de trabalho e barra de tarefas
+        return None
+    r = wt.RECT()
+    u.GetWindowRect(hwnd, ctypes.byref(r))
+
+    class MI(ctypes.Structure):
+        _fields_ = [("cbSize", wt.DWORD), ("rcMonitor", wt.RECT), ("rcWork", wt.RECT), ("dwFlags", wt.DWORD)]
+    mi = MI()
+    mi.cbSize = ctypes.sizeof(MI)
+    u.GetMonitorInfoW(u.MonitorFromWindow(hwnd, 2), ctypes.byref(mi))
+    m = mi.rcMonitor
+    if not (r.left <= m.left and r.top <= m.top and r.right >= m.right and r.bottom >= m.bottom):
+        return None
+    pid = wt.DWORD()
+    u.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    h = k.OpenProcess(0x1000, False, pid.value)  # PROCESS_QUERY_LIMITED_INFORMATION
+    buf, n = ctypes.create_unicode_buffer(520), wt.DWORD(520)
+    k.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(n))
+    k.CloseHandle(h)
+    return os.path.basename(buf.value) or cls.value
+
+
+def detectar_linux():
+    if not (shutil.which("xdotool") and shutil.which("xprop")):
+        return None
+    jid = subprocess.run(["xdotool", "getactivewindow"], capture_output=True, text=True, timeout=5).stdout.strip()
+    if not jid:
+        return None
+    out = subprocess.run(["xprop", "-id", jid, "_NET_WM_STATE", "WM_CLASS"], capture_output=True, text=True, timeout=5).stdout
+    return parse_xprop(out)
+
+
+def detectar(tela=(1920, 1080)):
+    """Nome do app em primeiro plano se ele ocupa a tela inteira; senao None."""
+    try:
+        if sys.platform == "darwin":
+            return detectar_mac(tela)
+        if sys.platform == "win32":
+            return detectar_windows()
+        if sys.platform.startswith("linux"):
+            return detectar_linux()
+    except Exception:
+        return None
+    return None
+
+
+class Vigia(threading.Thread):
+    """Olha a janela em primeiro plano a cada 2 s; exige 2 leituras iguais antes de avisar o Estado."""
+
+    def __init__(self, estado, detector=None, intervalo=2.0):
+        super().__init__(daemon=True)
+        self.estado, self.intervalo = estado, intervalo
+        self.detector = detector or (lambda: detectar(self.estado.tela_tamanho()))
+        self.parar = threading.Event()
+        self._ult, self._atual = None, None
+
+    def passo(self):
+        self.estado.recarregar_prefs()
+        app = self.detector() if self.estado.prefs["ativo"] else None
+        if app == self._ult and app != self._atual:
+            self._atual = app
+            self.estado.presentacao(app)
+        self._ult = app
+
+    def run(self):
+        while not self.parar.wait(self.intervalo):
+            try:
+                self.passo()
+            except Exception as e:
+                print(f"aviso: vigia falhou ({e})", file=sys.stderr)
+
+
+def notificar(titulo, texto):
+    """Aviso do sistema (melhor esforco; alguns sistemas suprimem avisos durante apresentacoes)."""
+    try:
+        if sys.platform == "darwin":
+            esc = lambda s: s.replace("\\", "\\\\").replace('"', '\\"')
+            subprocess.Popen(["osascript", "-e", f'display notification "{esc(texto)}" with title "{esc(titulo)}"'])
+        elif sys.platform == "win32":
+            ps = ("Add-Type -AssemblyName System.Windows.Forms,System.Drawing;$n=New-Object System.Windows.Forms.NotifyIcon;"
+                  "$n.Icon=[System.Drawing.SystemIcons]::Information;$n.Visible=$true;"
+                  f"$n.ShowBalloonTip(8000,'{titulo}','{texto.replace(chr(39), '')}',[System.Windows.Forms.ToolTipIcon]::Info);"
+                  "Start-Sleep 9;$n.Dispose()")
+            subprocess.Popen(["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps])
+        elif shutil.which("notify-send"):
+            subprocess.Popen(["notify-send", titulo, texto])
+    except Exception:
+        pass
+
+
+PAINEL_HTML = """<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Baton - painel</title><style>
+body{font-family:-apple-system,system-ui,sans-serif;background:#111;color:#eee;max-width:560px;margin:32px auto;padding:0 16px}
+h1{font-size:24px}h2{font-size:15px;color:#999;margin:24px 0 8px;font-weight:600}
+.cartao{background:#1c1c1e;border-radius:12px;padding:14px;margin-bottom:10px}
+button{background:#0a84ff;color:#fff;border:0;border-radius:10px;padding:10px 16px;font-size:15px;margin:4px 6px 4px 0;cursor:pointer}
+button.cinza{background:#3a3a3c}button.verm{background:#ff453a}
+select{background:#3a3a3c;color:#fff;border:0;border-radius:10px;padding:10px;font-size:15px}
+.ok{color:#30d158}.pausa{color:#ffd60a}li{margin:6px 0}small{color:#888}
+</style></head><body><h1>Baton</h1><div class="cartao" id="st">...</div>
+<h2>Execucao</h2><div class="cartao"><button id="bp">Pausar</button><button class="cinza" id="bq">Mostrar QR code</button>
+<button class="cinza" id="ba">Autorizar agora</button></div>
+<h2>Quando uma apresentacao em tela cheia abrir</h2><div class="cartao"><select id="modo">
+<option value="perguntar">Perguntar no celular</option><option value="sempre">Controlar sempre, sem perguntar</option><option value="nunca">Nunca controlar</option></select>
+<p><small>Ate alguem aceitar, o Baton nao envia nenhuma tecla ao computador.</small></p></div>
+<h2>Apps lembrados</h2><div class="cartao"><b>Sempre controlar</b><ul id="ok"></ul><b>Nunca controlar</b><ul id="nao"></ul></div>
+<h2>Inicio com o sistema</h2><div class="cartao"><button id="bi">Iniciar com o sistema</button><button class="cinza" id="br">Remover do inicio</button></div>
+<h2>Encerrar</h2><div class="cartao"><button class="verm" id="bs">Sair do Baton</button><p><small>Para voltar, abra o Baton de novo (ou reinicie a sessao se estiver instalado).</small></p></div>
+<script>
+const $=id=>document.getElementById(id);let est={};
+async function acao(a,v){const r=await fetch('/painel/acao',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({acao:a,valor:v})});if(r.ok)est=await r.json();ver()}
+function lista(el,itens,tipo){el.innerHTML='';if(!itens.length){el.innerHTML='<li><small>nenhum</small></li>';return}
+  itens.forEach(a=>{const li=document.createElement('li');li.textContent=a+' ';const b=document.createElement('button');b.className='cinza';b.textContent='Esquecer';b.onclick=()=>acao('esquecer',a);li.appendChild(b);el.appendChild(li)})}
+function ver(){
+  $('st').innerHTML=est.ativo?'<span class="ok">Ativo</span>'+(est.autorizado?' - controlando':' - em espera')+(est.pedido?'<br><small>Pedido pendente: '+est.pedido.app+'</small>':''):'<span class="pausa">Pausado</span>';
+  $('bp').textContent=est.ativo?'Pausar':'Retomar';$('modo').value=est.modo;
+  lista($('ok'),est.apps_ok||[]);lista($('nao'),est.apps_nao||[]);$('ba').textContent=est.autorizado?'Revogar autorizacao':'Autorizar agora'}
+$('bp').onclick=()=>acao(est.ativo?'pausar':'retomar');$('ba').onclick=()=>acao(est.autorizado?'revogar':'autorizar');
+$('modo').onchange=e=>acao('modo',e.target.value);$('bi').onclick=()=>acao('instalar');$('br').onclick=()=>acao('desinstalar');
+$('bq').onclick=()=>window.open('/qr','_blank');$('bs').onclick=()=>{if(confirm('Encerrar o Baton?'))acao('sair')};
+fetch('/painel/estado').then(r=>r.json()).then(e=>{est=e;ver()});setInterval(()=>fetch('/painel/estado').then(r=>r.json()).then(e=>{est=e;ver()}).catch(()=>{}),3000);
+</script></body></html>"""
