@@ -48,7 +48,7 @@ No Windows use `py baton.py ...`. Ao iniciar, uma página local mostra um **QR c
 
 ## 🔧 Instalação <a name="instalacao"></a>
 
-Requisitos: Python 3.8+. Para controlar de qualquer rede, Tailscale no computador e no celular; sem ele, use `--rede` (mesmo Wi-Fi).
+Requisitos: Python 3.8+. O celular conecta pelo Wi-Fi do computador (sem VPN) ou, de fora dele, pelo Tailscale (opcional, nos dois aparelhos). A página do QR code mostra um QR para cada caminho e o celular troca sozinho de um para o outro se a conexão cair.
 
 ```bash
 ./install.sh        # macOS e Linux (sem sudo)
@@ -65,13 +65,15 @@ Dependências opcionais:
 
 ## 🧭 Uso <a name="uso"></a>
 
+**Sem terminal:** abra o painel (`http://localhost:8765/painel`, também acessível pelo link da página do QR code), solte o arquivo da apresentação (PDF, PPTX, ODP ou `.md` de notas) na área **Apresentação** e pronto: o celular recarrega sozinho com o slide atual, o próximo e as notas, e as teclas continuam indo para o app em primeiro plano (PowerPoint, Keynote, ReLaTeX em Modo Apresentação...). **Remover apresentação** volta ao modo só-teclas. `.pptx` precisa do LibreOffice para gerar a prévia.
+
 ```bash
 baton --pausar | --retomar     # sem desinstalar
 baton --detectar               # testa a detecção de tela cheia
 python3 baton.py slides.pdf --notas slides.notas.md --transicao fade
 ```
 
-Opções: `--rede` (sem Tailscale: escuta na rede local e usa o IP dela no QR code; sem Tailscale instalado isso já é automático), `--tela N` (monitor do projetor), `--sem-overlay`, `--cursor`, `--proporcao 16:9`, `--novo-token`, `--porta`, `--sem-abrir`.
+Opções: `--tela N` (monitor do projetor), `--sem-overlay`, `--cursor`, `--proporcao 16:9`, `--novo-token`, `--porta`, `--sem-abrir`.
 
 Painel local (pausar, modo, apps lembrados, início com o sistema, sair): `http://localhost:8765/painel`.
 
@@ -110,7 +112,7 @@ Wayland nativo não permite enviar teclas: use sessão X11. A camada macOS e o W
 
 ## 🔒 Segurança <a name="seguranca"></a>
 
-Por padrão o servidor escuta apenas em `127.0.0.1` e no IP do Tailscale, nunca na internet. Com `--rede` (ou sem Tailscale) escuta na rede local em HTTP, sem criptografia: use só em Wi-Fi de confiança. O celular precisa do token da URL; o computador local não. Quem tem a URL com o token controla o computador: não compartilhe o QR code. Pausado, nenhum comando é aceito.
+O servidor escuta em todas as interfaces (Wi-Fi e Tailscale) e o Baton nunca o abre na internet. Na rede local o tráfego é HTTP sem criptografia: use só em Wi-Fi de confiança. Tudo que importa (PDF, eventos, comandos, manifesto) exige o token; a página do QR code e o painel só abrem no próprio computador. O celular precisa do token da URL; o computador local não. Quem tem a URL com o token controla o computador: não compartilhe o QR code. Pausado, nenhum comando é aceito.
 
 ---
 

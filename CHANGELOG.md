@@ -1,6 +1,10 @@
 # Changelog
 
 ## Não lançado
+- Carregar a apresentação pela interface: o painel aceita PDF, PPTX, ODP ou `.md` (arrastar e soltar); o celular recarrega com prévia, próximo slide e notas, sem terminal.
+- Rede: o endereço principal agora é o do Wi-Fi (funciona sem VPN) e o Tailscale vira o segundo; a página do QR mostra os dois, o celular mostra o atraso (ms) e troca sozinho de endereço quando a conexão cai. O `--rede` não é mais necessário.
+- Segurança: com a escuta em todas as interfaces, `/`, `/qr`, `/pdf`, `/events` e o manifesto passam a exigir o token (ou o próprio computador).
+- macOS: o Baton avisa no painel e no celular quando a permissão de Acessibilidade está bloqueada (botão que abre os Ajustes e "Testar tecla"); eventos de seta agora levam as marcas de um teclado real.
 - PDF do beamer com notas ao lado (`show notes on second screen=right`): detectado automaticamente; a prévia e o modo tela mostram só o slide e as notas vêm da metade direita da página. Exemplo: `exemplo-notas-beamer.tex`.
 - Correção: o agrupamento de passos ignorava mal os números de página (regex com barras duplas).
 - Importação de notas de `.pptx` (notas do apresentador) e `.md` para a sessão: `--importar-notas ARQUIVO` e seletor de arquivo no painel.

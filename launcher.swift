@@ -19,6 +19,18 @@ _ = AXIsProcessTrustedWithOptions(opcoes)
 let filho = Process()
 filho.executableURL = URL(fileURLWithPath: argumentos[0])
 filho.arguments = Array(argumentos.dropFirst())
+filho.environment = ProcessInfo.processInfo.environment.merging(["BATON_LAUNCHER": "1"]) { $1 }
+
+// A permissao de Acessibilidade e do Baton.app (nao do Python filho): grava o estado para o Baton avisar
+// no painel e no celular quando as teclas estiverem bloqueadas.
+let pastaCache = NSHomeDirectory() + "/.cache/baton"
+try? FileManager.default.createDirectory(atPath: pastaCache, withIntermediateDirectories: true)
+DispatchQueue.global().async {
+    while true {
+        try? (AXIsProcessTrusted() ? "1" : "0").write(toFile: pastaCache + "/acessibilidade", atomically: true, encoding: .utf8)
+        Thread.sleep(forTimeInterval: 2)
+    }
+}
 
 var fontes: [DispatchSourceSignal] = []
 for sinal in [SIGTERM, SIGINT, SIGHUP] {

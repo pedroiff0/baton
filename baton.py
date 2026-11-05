@@ -278,6 +278,7 @@ class Estado:
         self.externo = externo
         self.remote_url = remote_url
         self.local_url = ""
+        self.urls = []  # [{"nome","url"}]: enderecos do celular (rede local primeiro, Tailscale depois)
         self.proporcao = proporcao
         self.remotos = 0
         self.zoom, self.zx, self.zy = 1.0, 0.5, 0.5
@@ -318,6 +319,7 @@ class Estado:
         return {"pagina": self.pagina, "total": self.total, "transicao": self.transicao, "preto": self.cortina == "preto",
                 "cortina": self.cortina, "fim": {"txt": self.fim_txt[0], "sub": self.fim_txt[1]},
                 "auth": self.autorizado, "ativo": self.prefs["ativo"], "pedido": self.pedido,
+                "acess": self.acessibilidade(),
                 "remotos": self.remotos, "zoom": self.zoom, "zx": self.zx, "zy": self.zy, "seq": self.seq,
                 "timer": {"rodando": self.t_rodando, "elapsed": round(self.decorrido(), 1)}}
 
@@ -407,6 +409,21 @@ class Estado:
             p["apps_nao"] = [a for a in p["apps_nao"] if a != valor]
         elif acao in ("autorizar", "revogar"):
             return self.consentir(acao)
+        elif acao == "abrir_acessibilidade":
+            if sys.platform == "darwin":
+                subprocess.Popen(["open", "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"])
+            return True
+        elif acao == "testar_tecla":
+            def _testar():  # 5 s para trazer o app (ex.: ReLaTeX em tela cheia) ao primeiro plano
+                self.externo.b.tecla("Right")
+                time.sleep(0.6)
+                self.externo.b.tecla("Left")
+            if self.externo:
+                threading.Timer(5.0, _testar).start()
+            return True
+        elif acao == "remover_deck":
+            self.remover_deck()
+            return True
         elif acao == "instalar":
             instalar_login()
         elif acao == "desinstalar":
@@ -416,10 +433,13 @@ class Estado:
         self._salvar_prefs()
         return True
 
+    def acessibilidade(self):
+        return acessibilidade_mac() if self.externo else None
+
     def painel_estado(self):
         return {"ativo": self.prefs["ativo"], "modo": self.prefs["modo"], "autorizado": self.autorizado,
                 "pedido": self.pedido, "apps_ok": self.prefs["apps_ok"], "apps_nao": self.prefs["apps_nao"],
-                "residente": self.residente}
+                "residente": self.residente, "acessibilidade": self.acessibilidade(), "deck": self.deck_info()}
 
     def comando(self, cmd, valor=None, cid=None):
         if not self.permitido():
@@ -546,6 +566,30 @@ class Estado:
             self._persistir_notas()
             return dict(self.notas)
 
+    def deck_info(self):
+        return {"nome": Path(self.pdf).stem, "paginas": self.total} if self.pdf else None
+
+    def trocar_deck(self, pdf, notas_base):
+        """Carrega outra apresentacao sem reiniciar: o celular recarrega a pagina e mostra previa e notas."""
+        total = contar_paginas(pdf)
+        with self.lock:
+            self.pdf, self.total, self.proporcao = pdf, total, proporcao_pdf(pdf)
+            self.notas_id = hashlib.sha1(pdf.encode()).hexdigest()[:10]
+            self._edits, self._base_vazia = {}, False
+            self.pagina, self.zoom, self.zx, self.zy, self.tracos = 1, 1.0, 0.5, 0.5, []
+            self.t_base, self.t_rodando = 0.0, False
+        self.carregar_notas_sessao(notas_base)
+        self._mudou()
+        self.publicar({"deck": 1})
+
+    def remover_deck(self):
+        with self.lock:
+            self.pdf, self.total, self.pagina = None, 9999, 1
+            self.notas_id, self._edits, self._base_vazia = "livre", {}, False
+        self.carregar_notas_sessao({})
+        self._mudou()
+        self.publicar({"deck": 1})
+
     def importar_notas(self, notas):
         """Substitui as notas da sessao pelas lidas de um arquivo (.pptx ou .md) escolhido no painel ou na linha de comando."""
         with self.lock:
@@ -670,6 +714,10 @@ class _Mac:
         cg.CGEventCreateMouseEvent.restype = ct.c_void_p
         cg.CGEventCreateMouseEvent.argtypes = [ct.c_void_p, ct.c_uint32, Pt, ct.c_uint32]
         cg.CGEventPost.argtypes = [ct.c_uint32, ct.c_void_p]
+        cg.CGEventSourceCreate.restype = ct.c_void_p
+        cg.CGEventSourceCreate.argtypes = [ct.c_int32]
+        cg.CGEventSetFlags.argtypes = [ct.c_void_p, ct.c_uint64]
+        self.fonte = cg.CGEventSourceCreate(1)  # kCGEventSourceStateHIDSystemState: igual a um teclado de verdade
         cg.CGWarpMouseCursorPosition.argtypes = [Pt]
         cg.CGMainDisplayID.restype = ct.c_uint32
         cg.CGDisplayBounds.argtypes = [ct.c_uint32]
@@ -681,10 +729,17 @@ class _Mac:
         self.cg.CGEventPost(0, ev)
         self.cf.CFRelease(ev)
 
+    # setas, Home e End de um teclado real chegam com estas marcas (Fn e teclado numerico); alguns apps
+    # e navegadores em tela cheia ignoram eventos de seta sem elas
+    FLAGS = {"Right": 0x800000 | 0x200000, "Left": 0x800000 | 0x200000, "Home": 0x800000, "End": 0x800000}
+
     def tecla(self, nome):
         codigo = self.CODES[nome]
         for baixo in (True, False):
-            self._post(self.cg.CGEventCreateKeyboardEvent(None, codigo, baixo))
+            ev = self.cg.CGEventCreateKeyboardEvent(self.fonte, codigo, baixo)
+            if nome in self.FLAGS:
+                self.cg.CGEventSetFlags(ev, self.FLAGS[nome])
+            self._post(ev)
 
     def mover(self, x, y):
         pt = self.Pt(x, y)
@@ -694,6 +749,26 @@ class _Mac:
     def tela(self):
         r = self.cg.CGDisplayBounds(self.cg.CGMainDisplayID())
         return r.s.w, r.s.h
+
+
+def acessibilidade_mac():
+    """True/False se o macOS deixou o Baton enviar teclas (Acessibilidade); None fora do Mac ou sem como saber.
+    Pelo Baton.app o launcher grava o estado em ~/.cache/baton/acessibilidade (a permissao e do app, nao do Python filho)."""
+    if sys.platform != "darwin":
+        return None
+    if os.environ.get("BATON_LAUNCHER"):
+        try:
+            return (Path.home() / ".cache" / "baton" / "acessibilidade").read_text().strip() == "1"
+        except OSError:
+            return None
+    try:
+        import ctypes
+        import ctypes.util
+        lib = ctypes.CDLL(ctypes.util.find_library("ApplicationServices"))
+        lib.AXIsProcessTrusted.restype = ctypes.c_bool
+        return bool(lib.AXIsProcessTrusted())
+    except Exception:
+        return None
 
 
 class _Windows:
@@ -1139,13 +1214,13 @@ def ip_lan():
 PAGINA_BASE = """<!doctype html><html lang="pt-br"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
 <meta name="theme-color" content="#000"><title>__TITULO__</title>
-<link rel="manifest" href="/manifest.json"><link rel="apple-touch-icon" href="/icon.png">
+<link rel="manifest" href="/manifest.json?k=__TOKEN__"><link rel="apple-touch-icon" href="/icon.png">
 <meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black"><meta name="apple-mobile-web-app-title" content="Baton">
 <script src="__PDFJS__pdf.min.js"></script>
 <script src="__QRJS__"></script>
 <style>__CSS__</style></head><body class="__CLASSE__">__HTML__
 <script>
-const BASE="__PDFJS__", TOKEN="__TOKEN__", REMOTE_URL="__REMOTE__", TEM_PDF=__TEMPDF__, EXTERNO=__EXTERNO__, OVERLAY=__OVERLAY__;
+const BASE="__PDFJS__", TOKEN="__TOKEN__", REMOTE_URL="__REMOTE__", URLS=__URLS__, TEM_PDF=__TEMPDF__, EXTERNO=__EXTERNO__, OVERLAY=__OVERLAY__;
 pdfjsLib.GlobalWorkerOptions.workerSrc = BASE+"pdf.worker.min.js";
 __JS__
 </script></body></html>"""
@@ -1366,12 +1441,12 @@ ajustarOv();desenharQR();mostrarQR(true);
 let es=null,ultimaMsg=Date.now();
 function conectar(){
   if(es){try{es.close()}catch(e){}}
-  es=new EventSource('/events');ultimaMsg=Date.now();
+  es=new EventSource('/events?k='+encodeURIComponent(TOKEN));ultimaMsg=Date.now();
   es.onmessage=ev=>{ultimaMsg=Date.now();msg(JSON.parse(ev.data))};
 }
 setInterval(()=>{if(Date.now()-ultimaMsg>12000)conectar()},3000);
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')conectar()});
-pdfjsLib.getDocument('/pdf').promise.then(async d=>{pdf=d;try{await detectaLado(d);mapa=await agruparPassos(d)}catch(e){}conectar()});
+pdfjsLib.getDocument('/pdf?k='+encodeURIComponent(TOKEN)).promise.then(async d=>{pdf=d;try{await detectaLado(d);mapa=await agruparPassos(d)}catch(e){}conectar()});
 """
 
 # ------------------------------------------------------------------ celular (iPhone)
@@ -1457,7 +1532,7 @@ const DEFS=[['meta_min','Meta de tempo (min)',5,120,5],['laser_tam','Laser: tama
 let cfg=Object.assign({},PADRAO),tCfg=null;
 try{fonte=parseInt(localStorage.getItem('baton-fonte'))||17}catch(e){}
 if(EXTERNO){$('bz').style.display='none';$('tr').style.display='none';if(!OVERLAY){['bf','bc','bm','bx'].forEach(i=>$(i).style.display='none');document.querySelectorAll('#exk [data-k]:not([data-k=preto])').forEach(b=>b.style.display='none');document.querySelector('[data-s=confete]').style.display='none'}}
-function status(ok,txt){$('dot').classList.toggle('ok',ok);$('st').textContent=txt}
+function status(ok,txt){$('dot').classList.toggle('ok',ok);$('st').textContent=(ok&&txt==='conectado'&&typeof rtt==='number'&&rtt>0)?txt+' - '+rtt+' ms'+(viaNome?' - '+viaNome.split(' ')[0]:''):txt}
 const cid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,8);
 async function cmd(c,v){
   const id=cid();
@@ -1531,7 +1606,8 @@ $('relogio').onclick=()=>cmd('timer','toggle');$('tz').onclick=()=>cmd('timer','
 const esc=x=>String(x).replace(/&/g,'&amp;').replace(/</g,'&lt;');
 function avisoUI(s){
   const el=$('aviso');
-  if(s.ativo===false){el.innerHTML='<b>Baton pausado</b> no computador. Retome pelo painel (localhost:8765/painel).'}
+  if(s.acess===false){el.innerHTML='<b>O Mac nao deixou o Baton enviar teclas.</b> No computador: Ajustes do Sistema > Privacidade e Seguranca > Acessibilidade, ative o Baton (painel em localhost:8765/painel).'}
+  else if(s.ativo===false){el.innerHTML='<b>Baton pausado</b> no computador. Retome pelo painel (localhost:8765/painel).'}
   else if(s.auth!==false){el.style.display='none';return}
   else if(s.pedido){el.innerHTML='<b>Apresentacao detectada</b> ('+esc(s.pedido.app)+'). Controlar com o Baton?<div class="avb"><button data-a="sim">Controlar</button><button data-a="sempre">Sempre neste app</button><button data-a="nao">Agora nao</button><button data-a="nunca">Nunca neste app</button></div>'}
   else{el.innerHTML='Em espera: nenhuma apresentacao em tela cheia.<div class="avb"><button data-a="manual">Controlar mesmo assim</button></div>'}
@@ -1686,30 +1762,48 @@ async function carregaNotas(){try{const r=await fetch('/notas?k='+encodeURICompo
 async function wake(){try{if('wakeLock' in navigator)await navigator.wakeLock.request('screen')}catch(e){}}
 function conectar(){
   if(es){try{es.close()}catch(e){}}
-  status(false,'conectando...');es=new EventSource('/events');ultimaMsg=Date.now();
+  status(false,'conectando...');es=new EventSource('/events?k='+encodeURIComponent(TOKEN));ultimaMsg=Date.now();
   es.onopen=()=>status(true,'conectado');
   es.onerror=()=>status(false,'reconectando...');
-  es.onmessage=ev=>{ultimaMsg=Date.now();const m=JSON.parse(ev.data);if(m.hb){status(true,'conectado');sincTimer(m.timer);return}if(m.limpar){limpaLocal();return}if(m.cfg){recebeCfg(m.cfg);return}if(m.laser||m.draw||m.tracos)return;aplicar(m)};
+  es.onmessage=ev=>{ultimaMsg=Date.now();const m=JSON.parse(ev.data);if(m.deck){location.reload();return}if(m.hb){status(true,'conectado');sincTimer(m.timer);return}if(m.limpar){limpaLocal();return}if(m.cfg){recebeCfg(m.cfg);return}if(m.laser||m.draw||m.tracos)return;aplicar(m)};
 }
 setInterval(()=>{if(Date.now()-ultimaMsg>12000)conectar()},3000);
+// rede: mede o atraso e, sem conexao por ~6 s, troca para outro endereco do computador que esteja respondendo
+var rtt=0,viaNome='';
+function viaAtual(){const u=URLS.find(x=>{try{return new URL(x.url).origin===location.origin}catch(e){return false}});return u?u.nome:''}
+function sondar(origem,ms){const ac=new AbortController(),t=setTimeout(()=>ac.abort(),ms),t0=performance.now();
+  return fetch(origem+'/estado',{mode:origem===location.origin?'same-origin':'no-cors',cache:'no-store',signal:ac.signal}).then(()=>{clearTimeout(t);return performance.now()-t0}).catch(()=>{clearTimeout(t);return -1})}
+async function medeRtt(){const r=await sondar(location.origin,2500);if(r>=0){rtt=Math.round(r);viaNome=viaAtual();status(true,'conectado')}}
+setInterval(()=>{if(Date.now()-ultimaMsg<6000)medeRtt()},5000);
+let trocando=false;
+setInterval(async()=>{
+  if(trocando||URLS.length<2||Date.now()-ultimaMsg<6000)return;trocando=true;
+  for(const u of URLS){let o;try{o=new URL(u.url).origin}catch(e){continue}if(o===location.origin)continue;
+    if(await sondar(o,2000)>=0){location.replace(u.url);return}}
+  trocando=false},4000);
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){wake();conectar()}});
 addEventListener('online',conectar);addEventListener('pageshow',conectar);wake();carregaNotas();montaAjustes();carregaCfg();
-if(TEM_PDF){pdfjsLib.getDocument('/pdf').promise.then(async d=>{pdf=d;total=d.numPages;try{await detectaLado(d);notasPdf=await notasDoPdf(d);mapa=await agruparPassos(d)}catch(e){}mostraNotas();conectar()})}
+if(TEM_PDF){pdfjsLib.getDocument('/pdf?k='+encodeURIComponent(TOKEN)).promise.then(async d=>{pdf=d;total=d.numPages;try{await detectaLado(d);notasPdf=await notasDoPdf(d);mapa=await agruparPassos(d)}catch(e){}mostraNotas();conectar()})}
 else{$('vista').style.background='#1a1a1c';$('vista').insertAdjacentHTML('beforeend','<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#666;font-size:14px;text-align:center;padding:12px;pointer-events:none">area do laser<br>(mapeada na tela do Mac)</div>');conectar()}
 """
 
 
 PAGINA_QR = """<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><title>Baton - QR</title>
 <script src="__QRJS__"></script>
-<style>__CSS__</style></head><body class="tela"><div id="qr" style="display:flex"><h1>Escaneie com o iPhone para controlar</h1><div class="cartao" id="qrsvg"></div><p id="qrurl"></p>
-<p>Modo externo: abra o PDF no leitor que quiser (Adobe, Preview, Keynote...), deixe-o em tela cheia e use o celular.</p></div>
-<script>const REMOTE_URL="__REMOTE__";__JSQR__desenharQR();</script></body></html>"""
+<style>__CSS__</style></head><body class="tela"><div id="qr" style="display:flex"><h1>Escaneie com o celular para controlar</h1><div id="qrlista" style="display:flex;gap:24px;flex-wrap:wrap;justify-content:center"></div>
+<p>Abra a apresentacao no leitor que quiser (PowerPoint, Keynote, ReLaTeX...), deixe-a em tela cheia e use o celular. Painel: <a href="/painel" style="color:#0a84ff">/painel</a></p></div>
+<script>const URLS=__URLS__;
+URLS.forEach(function(u,i){const d=document.createElement('div');d.style.cssText='display:flex;flex-direction:column;align-items:center;max-width:320px';
+  d.innerHTML='<h2 style="font-size:18px;margin:0 0 8px">'+u.nome+'</h2><div class="cartao" style="width:260px"></div><p style="word-break:break-all;font-size:12px;opacity:.7"></p>';
+  d.querySelector('p').textContent=u.url;
+  try{const q=qrcode(0,'M');q.addData(u.url);q.make();d.querySelector('.cartao').innerHTML=q.createSvgTag({cellSize:8,margin:0,scalable:true})}catch(e){d.querySelector('.cartao').textContent='QR indisponivel'}
+  document.getElementById('qrlista').appendChild(d)});</script></body></html>"""
 
 
 def montar_qr(estado, usar_qr_cache):
     qrjs = "/vendor/qr.js" if usar_qr_cache else QR_CDN
     return (PAGINA_QR.replace("__QRJS__", qrjs).replace("__CSS__", CSS_COMUM + CSS_TELA)
-            .replace("__REMOTE__", estado.remote_url).replace("__JSQR__", JS_QR))
+            .replace("__REMOTE__", estado.remote_url).replace("__URLS__", json.dumps(estado.urls).replace("</", "<\\/")))
 
 
 def montar(modo, estado, usar_cache, usar_qr_cache=False):
@@ -1724,6 +1818,7 @@ def montar(modo, estado, usar_cache, usar_qr_cache=False):
     return (PAGINA_BASE.replace("__TITULO__", titulo).replace("__PDFJS__", pdfjs).replace("__CSS__", css)
             .replace("__HTML__", html).replace("__JS__", js).replace("__CLASSE__", classe)
             .replace("__QRJS__", qrjs).replace("__REMOTE__", estado.remote_url)
+            .replace("__URLS__", json.dumps(estado.urls).replace("</", "<\\/"))
             .replace("__TEMPDF__", "true" if estado.pdf else "false")
             .replace("__EXTERNO__", "true" if estado.externo else "false")
             .replace("__OVERLAY__", "true" if (estado.externo and estado.externo.overlay) else "false")
@@ -1766,6 +1861,11 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
         def _local(self):
             return self.client_address[0] in ("127.0.0.1", "::1")
 
+        def _leitura_ok(self, u):
+            """GET com dado sensivel (PDF, eventos, manifesto): so o computador ou quem tem o token (?k=)."""
+            k = parse_qs(u.query).get("k", [""])[0]
+            return self._local() or secrets.compare_digest(k, estado.token)
+
         def _autorizado(self):
             if self._local():
                 return True
@@ -1790,6 +1890,8 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
 
         def do_GET(self):
             u = urlparse(self.path)
+            if u.path in ("/", "/qr") and not self._local():
+                return self._enviar(403, "abra o Baton pelo QR code ou pelo endereco do celular", "text/plain; charset=utf-8")
             if u.path == "/":
                 if estado.externo or not estado.pdf:
                     return self._enviar(200, montar_qr(estado, usar_qr_cache), "text/html; charset=utf-8")
@@ -1806,6 +1908,8 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
                 tam = {"/icon-192.png": 192, "/icon-512.png": 512}.get(u.path, 180)
                 return self._enviar(200, icone_png(tam), "image/png", {"Cache-Control": "max-age=86400"})
             if u.path == "/manifest.json":
+                if not self._leitura_ok(u):
+                    return self._enviar(403, "{}")
                 m = {"name": "Baton", "short_name": "Baton", "display": "standalone", "background_color": "#000000",
                      "theme_color": "#000000", "start_url": "/remote?k=" + estado.token,
                      "icons": [{"src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
@@ -1823,6 +1927,8 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
                     estado.publicar(estado.snapshot())
                 return self._enviar(200, montar("remoto", estado, usar_cache, usar_qr_cache), "text/html; charset=utf-8")
             if u.path == "/pdf" and estado.pdf:
+                if not self._leitura_ok(u):
+                    return self._enviar(403, "token invalido", "text/plain; charset=utf-8")
                 return self._enviar(200, Path(estado.pdf).read_bytes(), "application/pdf")
             if u.path.startswith("/vendor/") and usar_cache:
                 nome = u.path.split("/")[-1]
@@ -1830,6 +1936,8 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
                 if nome in PDFJS_FILES and f.exists():
                     return self._enviar(200, f.read_bytes(), "application/javascript")
             if u.path == "/events":
+                if not self._leitura_ok(u):
+                    return self._enviar(403, "token invalido", "text/plain; charset=utf-8")
                 return self._sse()
             if u.path == "/cfg":
                 k = parse_qs(u.query).get("k", [""])[0]
@@ -1894,9 +2002,32 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
                 return self._enviar(422, '{"erro":"nenhuma nota encontrada no arquivo"}')
             return self._enviar(200, json.dumps({"importadas": len(estado.importar_notas(notas))}))
 
+        def _deck(self):
+            if not self._local():
+                return self._enviar(403, '{"erro":"local"}')
+            n = int(self.headers.get("Content-Length", "0"))
+            if n > 100 * 1024 * 1024:
+                return self._enviar(413, '{"erro":"arquivo maior que 100 MB"}')
+            dados = self.rfile.read(n)
+            nome = parse_qs(urlparse(self.path).query).get("nome", ["apresentacao.pdf"])[0]
+            try:
+                pdf, notas = preparar_deck(dados, nome)
+                if pdf:
+                    estado.trocar_deck(pdf, notas)
+                else:
+                    estado.importar_notas(notas)
+            except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired) as e:
+                return self._enviar(400, json.dumps({"erro": str(e)[:200]}, ensure_ascii=False))
+            return self._enviar(200, json.dumps(estado.painel_estado()))
+
         def do_POST(self):
             if not self._autorizado():
                 return self._enviar(403, '{"erro":"token"}')
+            if urlparse(self.path).path == "/painel/deck":
+                try:
+                    return self._deck()
+                except (ValueError, OSError):
+                    return self._enviar(400, '{"erro":"leitura"}')
             if urlparse(self.path).path == "/painel/importar":
                 try:
                     return self._importar()
@@ -2008,7 +2139,7 @@ def deck_para_pdf(caminho):
         (p for p in ("/Applications/LibreOffice.app/Contents/MacOS/soffice",
                      r"C:\Program Files\LibreOffice\program\soffice.exe") if os.path.exists(p)), None)
     if not exe:
-        sys.exit("para abrir .pptx instale o LibreOffice (ou exporte o PDF no PowerPoint/Keynote e passe o PDF)")
+        raise RuntimeError("para abrir .pptx instale o LibreOffice (ou exporte o PDF no PowerPoint/Keynote e use o PDF)")
     src = Path(caminho)
     h = hashlib.sha1(src.read_bytes()).hexdigest()[:10]
     pasta = CACHE.parent / "decks" / h
@@ -2019,8 +2150,31 @@ def deck_para_pdf(caminho):
         r = subprocess.run([exe, "--headless", "--convert-to", "pdf", "--outdir", str(pasta), str(src)],
                            capture_output=True, text=True, timeout=300)
         if not pdf.exists():
-            sys.exit("falha ao converter a apresentacao:\n" + (r.stderr or r.stdout)[-600:])
+            raise RuntimeError("falha ao converter a apresentacao: " + (r.stderr or r.stdout)[-300:])
     return str(pdf)
+
+
+def preparar_deck(dados, nome):
+    """Bytes de um arquivo enviado pela interface -> (caminho do PDF, notas). Aceita PDF, pptx/ppt/odp e md/txt (so notas).
+    Levanta RuntimeError com a mensagem para mostrar ao usuario."""
+    ext = Path(nome).suffix.lower()
+    seguro = re.sub(r"[^\w.\- ]", "_", Path(nome).name)[:80] or "apresentacao"
+    pasta = CACHE.parent / "decks" / hashlib.sha1(dados).hexdigest()[:10]
+    if ext not in (".pdf", ".md", ".txt") + DECKS:
+        raise RuntimeError("formato nao suportado: use PDF, PPTX, PPT, ODP ou MD (notas)")
+    pasta.mkdir(parents=True, exist_ok=True)
+    arq = pasta / seguro
+    arq.write_bytes(dados)
+    if ext in (".md", ".txt"):
+        return None, ler_notas(arq)
+    notas = {}
+    if ext == ".pptx":
+        try:
+            notas = notas_pptx(arq)
+        except Exception:
+            pass
+    pdf = str(arq) if ext == ".pdf" else deck_para_pdf(arq)
+    return pdf, notas
 
 
 def contar_paginas(pdf):
@@ -2064,8 +2218,7 @@ def main():
     ap.add_argument("--notas", help="arquivo Markdown com as notas do apresentador (padrao: <pdf>.notas.md)")
     ap.add_argument("--importar-notas", metavar="ARQUIVO",
                     help="importa as notas de um .pptx (notas do apresentador) ou .md para a sessao do Baton e sai")
-    ap.add_argument("--rede", action="store_true",
-                    help="escuta tambem na rede local (Wi-Fi) e usa o IP dela no QR code: funciona sem Tailscale, no mesmo Wi-Fi")
+    ap.add_argument("--rede", action="store_true", help="(sem efeito: a rede local ja e o endereco principal)")
     ap.add_argument("--residente", action="store_true",
                     help="segundo plano: fica em espera e pergunta no celular quando uma apresentacao abrir em tela cheia")
     ap.add_argument("--pausar", action="store_true", help="pausa o Baton em execucao (nao controla nada ate --retomar)")
@@ -2114,12 +2267,16 @@ def main():
                     notas_deck = notas_pptx(pdf)
                 except Exception as e:
                     print(f"aviso: nao consegui ler as notas do pptx ({e})", file=sys.stderr)
-            pdf = deck_para_pdf(pdf)
-    ts = a.host or ip_tailscale()
-    lan = (not ts or a.rede) and not a.host
-    ip_url = (ip_lan() if lan else ts) or ts or "IP-DO-COMPUTADOR"
+            try:
+                pdf = deck_para_pdf(pdf)
+            except RuntimeError as e:
+                sys.exit(str(e))
     token = token_estavel(a.novo_token)
-    remoto = f"http://{ip_url}:{a.porta}/remote?k={token}"
+    ips = [("Wi-Fi / rede local", a.host)] if a.host else [("Wi-Fi / rede local", ip_lan()), ("Tailscale (fora do Wi-Fi)", ip_tailscale())]
+    urls = [{"nome": n, "url": f"http://{ip}:{a.porta}/remote?k={token}"} for n, ip in ips if ip]
+    if not urls:
+        urls = [{"nome": "Rede local", "url": f"http://IP-DO-COMPUTADOR:{a.porta}/remote?k={token}"}]
+    remoto = urls[0]["url"]  # rede local primeiro: funciona sem VPN e e o caminho mais estavel
     prop = 16 / 9
     if a.proporcao:
         try:
@@ -2138,6 +2295,7 @@ def main():
             pass
     total = contar_paginas(pdf) if pdf else 9999
     estado = Estado(pdf, total, a.transicao, token, externo, remoto, prop)
+    estado.urls = urls
     caminho_notas = a.notas or (str(Path(pdf).with_suffix(".notas.md")) if pdf else None)
     base = {}
     if notas_deck and not a.notas:
@@ -2156,12 +2314,11 @@ def main():
     if a.residente:
         estado.residente, estado.autorizado = True, False
         residente.Vigia(estado).start()
-    usar_cache = baixar_pdfjs() if pdf else False
+    usar_cache = baixar_pdfjs()
     usar_qr = baixar_qr()
-    hosts = ["0.0.0.0"] if lan else ["127.0.0.1", ts]
-    if lan:
-        print("Rede local: escutando em todas as interfaces; o celular precisa estar no mesmo Wi-Fi. "
-              "O token vai sem criptografia (HTTP): use so em rede de confianca.", file=sys.stderr)
+    hosts = ["0.0.0.0"]  # todas as interfaces: Wi-Fi e Tailscale; tudo que importa exige o token
+    print("Escutando em todas as interfaces (Wi-Fi e Tailscale). O token vai sem criptografia (HTTP) na rede local: "
+          "use so em Wi-Fi de confianca.", file=sys.stderr)
     handler = criar_handler(estado, usar_cache, usar_qr)
     servidores = []
     for h in hosts:
@@ -2181,7 +2338,9 @@ def main():
         print(f"PDF: {pdf} ({estado.total} paginas)")
     print(f"QR code no Mac:   {local}")
     print(f"Painel (pausar, modo, apps): {local}painel")
-    print(f"Celular (iPhone): {remoto}\n")
+    for u in urls:
+        print(f"Celular ({u['nome']}): {u['url']}")
+    print()
     if shutil.which("qrencode"):
         subprocess.run(["qrencode", "-t", "ANSIUTF8", remoto])
     if externo:

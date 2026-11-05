@@ -247,13 +247,22 @@ button.cinza{background:#3a3a3c}button.verm{background:#ff453a}
 select{background:#3a3a3c;color:#fff;border:0;border-radius:10px;padding:10px;font-size:15px}
 .ok{color:#30d158}.pausa{color:#ffd60a}li{margin:6px 0}small{color:#888}
 </style></head><body><h1>Baton</h1><div class="cartao" id="st">...</div>
+<div class="cartao" id="acess" style="display:none;border:1px solid #ff453a"><b>O Mac nao deixou o Baton enviar teclas</b>
+<p><small>Sem essa permissao o Proximo/Anterior do celular nao funciona. Ative o Baton em Acessibilidade (se houver uma entrada antiga, remova e adicione de novo).</small></p>
+<button id="bac">Abrir Ajustes de Acessibilidade</button></div>
+<h2>Apresentacao</h2><div class="cartao"><div id="drop" style="border:2px dashed #3a3a3c;border-radius:12px;padding:22px;text-align:center;cursor:pointer">
+<b>Solte aqui o arquivo da apresentacao</b><br><small>PDF, PowerPoint (.pptx), ODP, ou um .md de notas. Ou clique para escolher.</small></div>
+<input type="file" id="nf" accept=".pdf,.pptx,.ppt,.odp,.md,.txt" style="display:none">
+<p id="dk"></p><p id="dmsg"></p>
+<button class="cinza" id="bdk" style="display:none">Remover apresentacao</button>
+<button class="cinza" id="btt">Testar tecla (em 5 s)</button>
+<p><small>Com a apresentacao carregada o celular mostra o slide atual, o proximo e as notas; as teclas continuam indo para o app em primeiro plano (PowerPoint, Keynote, ReLaTeX...). Notas tambem podem ser digitadas no celular.</small></p></div>
 <h2>Execucao</h2><div class="cartao"><button id="bp">Pausar</button><button class="cinza" id="bq">Mostrar QR code</button>
 <button class="cinza" id="ba">Autorizar agora</button></div>
 <h2>Quando uma apresentacao em tela cheia abrir</h2><div class="cartao"><select id="modo">
 <option value="perguntar">Perguntar no celular</option><option value="sempre">Controlar sempre, sem perguntar</option><option value="nunca">Nunca controlar</option></select>
 <p><small>Ate alguem aceitar, o Baton nao envia nenhuma tecla ao computador.</small></p></div>
 <h2>Apps lembrados</h2><div class="cartao"><b>Sempre controlar</b><ul id="ok"></ul><b>Nunca controlar</b><ul id="nao"></ul></div>
-<h2>Notas do apresentador</h2><div class="cartao"><input type="file" id="nf" accept=".pptx,.md,.txt"><p id="nmsg"><small>Importa as notas de um .pptx (notas do PowerPoint) ou .md (## 1, ## p12) e substitui as da sessao. Tambem da para digitar no celular.</small></p></div>
 <h2>Inicio com o sistema</h2><div class="cartao"><button id="bi">Iniciar com o sistema</button><button class="cinza" id="br">Remover do inicio</button></div>
 <h2>Encerrar</h2><div class="cartao"><button class="verm" id="bs">Sair do Baton</button><p><small>Para voltar, abra o Baton de novo (ou reinicie a sessao se estiver instalado).</small></p></div>
 <script>
@@ -264,12 +273,20 @@ function lista(el,itens,tipo){el.innerHTML='';if(!itens.length){el.innerHTML='<l
 function ver(){
   $('st').innerHTML=est.ativo?'<span class="ok">Ativo</span>'+(est.autorizado?' - controlando':' - em espera')+(est.pedido?'<br><small>Pedido pendente: '+est.pedido.app+'</small>':''):'<span class="pausa">Pausado</span>';
   $('bp').textContent=est.ativo?'Pausar':'Retomar';$('modo').value=est.modo;
+  $('acess').style.display=est.acessibilidade===false?'block':'none';
+  $('dk').innerHTML=est.deck?'<b>'+est.deck.nome.replace(/</g,'&lt;')+'</b> - '+est.deck.paginas+' paginas':'<small>Nenhuma apresentacao carregada: o celular so passa os slides, sem previa nem notas.</small>';$('bdk').style.display=est.deck?'inline-block':'none';
   lista($('ok'),est.apps_ok||[]);lista($('nao'),est.apps_nao||[]);$('ba').textContent=est.autorizado?'Revogar autorizacao':'Autorizar agora'}
 $('bp').onclick=()=>acao(est.ativo?'pausar':'retomar');$('ba').onclick=()=>acao(est.autorizado?'revogar':'autorizar');
 $('modo').onchange=e=>acao('modo',e.target.value);$('bi').onclick=()=>acao('instalar');$('br').onclick=()=>acao('desinstalar');
 $('bq').onclick=()=>window.open('/qr','_blank');$('bs').onclick=()=>{if(confirm('Encerrar o Baton?'))acao('sair')};
-$('nf').onchange=async e=>{const f=e.target.files[0];if(!f)return;$('nmsg').textContent='Importando...';
-  try{const r=await fetch('/painel/importar?nome='+encodeURIComponent(f.name),{method:'POST',body:await f.arrayBuffer()});const j=await r.json();
-    $('nmsg').textContent=r.ok?j.importadas+' notas importadas.':'Falhou: '+(j.erro||r.status)}catch(x){$('nmsg').textContent='Falhou: '+x}e.target.value=''};
+async function enviarDeck(f){if(!f)return;$('dmsg').textContent='Carregando '+f.name+' (arquivos pptx sao convertidos, pode levar um minuto)...';
+  try{const r=await fetch('/painel/deck?nome='+encodeURIComponent(f.name),{method:'POST',body:await f.arrayBuffer()});const j=await r.json();
+    if(r.ok){est=j;$('dmsg').textContent='';ver()}else $('dmsg').textContent='Falhou: '+(j.erro||r.status)}catch(x){$('dmsg').textContent='Falhou: '+x}}
+$('drop').onclick=()=>$('nf').click();$('nf').onchange=e=>{enviarDeck(e.target.files[0]);e.target.value=''};
+['dragover','dragenter'].forEach(t=>$('drop').addEventListener(t,e=>{e.preventDefault();$('drop').style.borderColor='#0a84ff'}));
+['dragleave','drop'].forEach(t=>$('drop').addEventListener(t,e=>{e.preventDefault();$('drop').style.borderColor='#3a3a3c'}));
+$('drop').addEventListener('drop',e=>enviarDeck(e.dataTransfer.files[0]));
+$('bdk').onclick=()=>acao('remover_deck');$('btt').onclick=()=>{acao('testar_tecla');$('dmsg').textContent='Troque para o app da apresentacao: em 5 s o Baton envia seta direita e esquerda.'};
+$('bac').onclick=()=>acao('abrir_acessibilidade');
 fetch('/painel/estado').then(r=>r.json()).then(e=>{est=e;ver()});setInterval(()=>fetch('/painel/estado').then(r=>r.json()).then(e=>{est=e;ver()}).catch(()=>{}),3000);
 </script></body></html>"""

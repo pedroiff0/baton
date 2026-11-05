@@ -4,6 +4,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -59,6 +60,48 @@ class NotasPptxTest(unittest.TestCase):
                 z.writestr("ppt/slides/slide1.xml", "<x/>")
                 z.writestr("ppt/notesSlides/notesSlide2.xml", nota("fala do primeiro slide da ordem"))
             self.assertEqual(P.notas_pptx(f), {"p1": "fala do primeiro slide da ordem"})
+
+
+class DeckTest(unittest.TestCase):
+    PDF = (b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Count 3/Kids[3 0 R]>>endobj\n"
+           b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 960 540]>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF")
+
+    def test_trocar_e_remover_deck(self):
+        with tempfile.TemporaryDirectory() as d:
+            P.NOTAS_ARQ = Path(d) / "notas.json"
+            P.CACHE = Path(d) / "pdfjs"
+            pdf, notas = P.preparar_deck(self.PDF, "meu deck.pdf")
+            self.assertTrue(pdf.endswith(".pdf") and notas == {})
+            e = P.Estado(None, 9999, "slide", "tok")
+            vistos = []
+            q = __import__("queue").Queue()
+            e.clientes.append(q)
+            e.trocar_deck(pdf, {"p1": "nota"})
+            self.assertEqual((e.total, e.pagina, e.notas), (3, 1, {"p1": "nota"}))
+            self.assertAlmostEqual(e.proporcao, 16 / 9)
+            self.assertEqual(e.deck_info()["paginas"], 3)
+            while not q.empty():
+                vistos.append(q.get())
+            self.assertIn({"deck": 1}, vistos)
+            e.remover_deck()
+            self.assertIsNone(e.deck_info())
+            self.assertEqual(e.notas, {})
+
+    def test_formato_invalido_e_md(self):
+        with tempfile.TemporaryDirectory() as d:
+            P.CACHE = Path(d) / "pdfjs"
+            with self.assertRaises(RuntimeError):
+                P.preparar_deck(b"x", "virus.exe")
+            pdf, notas = P.preparar_deck("## 2\nsegunda".encode(), "notas.md")
+            self.assertIsNone(pdf)
+            self.assertEqual(notas, {"2": "segunda"})
+
+    def test_sem_libreoffice_vira_erro_tratado(self):
+        with tempfile.TemporaryDirectory() as d:
+            P.CACHE = Path(d) / "pdfjs"
+            with mock.patch("shutil.which", return_value=None), mock.patch("os.path.exists", return_value=False):
+                with self.assertRaises(RuntimeError):
+                    P.preparar_deck(b"PK", "a.pptx")
 
 
 class NotasSessaoTest(unittest.TestCase):

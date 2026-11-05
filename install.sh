@@ -20,5 +20,8 @@ fi
 
 echo
 echo "Baton instalado em $DEST (comando: baton; confira se ~/.local/bin esta no PATH)."
+if [ "$(uname)" = "Darwin" ]; then
+  echo "macOS: em Ajustes do Sistema > Privacidade e Seguranca > Acessibilidade, ative o Baton (se houver uma entrada antiga, remova e adicione de novo)."
+fi
 echo "Painel (pausar, modo, apps lembrados): http://localhost:8765/painel"
 echo "Pausar:   baton --pausar     Retomar: baton --retomar     Remover: ./uninstall.sh"
