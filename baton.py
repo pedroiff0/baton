@@ -438,7 +438,8 @@ class Estado:
     def painel_estado(self):
         return {"ativo": self.prefs["ativo"], "modo": self.prefs["modo"], "autorizado": self.autorizado,
                 "pedido": self.pedido, "apps_ok": self.prefs["apps_ok"], "apps_nao": self.prefs["apps_nao"],
-                "residente": self.residente, "acessibilidade": self.acessibilidade(), "deck": self.deck_info()}
+                "residente": self.residente, "acessibilidade": self.acessibilidade(), "deck": self.deck_info(),
+                "conexoes": len(self.clientes)}
 
     def comando(self, cmd, valor=None, cid=None):
         if not self.permitido():
@@ -1082,7 +1083,10 @@ def montar_app_mac():
         return str(exe)  # nao recompila: assinatura estavel mantem a permissao ja concedida
     (app / "Contents" / "MacOS").mkdir(parents=True, exist_ok=True)
     (app / "Contents" / "Resources").mkdir(parents=True, exist_ok=True)
-    r = subprocess.run([swiftc, "-O", str(fonte), "-o", str(exe)], capture_output=True, text=True)
+    r = subprocess.run([swiftc, "-O", "-DBANDEJA", str(fonte), "-o", str(exe)], capture_output=True, text=True)
+    if r.returncode != 0:  # sem o icone da barra de menu, mas com o launcher (permissoes) funcionando
+        print("aviso: sem icone na barra de menu (falha ao compilar a bandeja):\n" + r.stderr[-600:], file=sys.stderr)
+        r = subprocess.run([swiftc, "-O", str(fonte), "-o", str(exe)], capture_output=True, text=True)
     if r.returncode != 0:
         print("aviso: falha ao compilar launcher.swift:\n" + r.stderr[-800:], file=sys.stderr)
         return None
@@ -2235,6 +2239,8 @@ def main():
     ap.add_argument("--notas", help="arquivo Markdown com as notas do apresentador (padrao: <pdf>.notas.md)")
     ap.add_argument("--importar-notas", metavar="ARQUIVO",
                     help="importa as notas de um .pptx (notas do apresentador) ou .md para a sessao do Baton e sai")
+    ap.add_argument("--tray", action="store_true", help="mostra o icone na bandeja (ja e o padrao no modo --residente)")
+    ap.add_argument("--sem-tray", action="store_true", help="nao mostra o icone na bandeja")
     ap.add_argument("--permissao", action="store_true", help="macOS: pede a permissao de Acessibilidade para o Baton.app e abre os Ajustes")
     ap.add_argument("--rede", action="store_true", help="(sem efeito: a rede local ja e o endereco principal)")
     ap.add_argument("--residente", action="store_true",
@@ -2353,6 +2359,7 @@ def main():
         servidores.append(s)
     local = f"http://localhost:{a.porta}/"
     estado.local_url = local
+    tray = residente.iniciar_tray(a.porta) if (a.residente or a.tray) and not a.sem_tray else None
     print(f"\nModo: {'externo (teclas e mouse para o app em primeiro plano)' if externo else 'tela do Baton'}")
     if pdf:
         print(f"PDF: {pdf} ({estado.total} paginas)")
@@ -2372,6 +2379,8 @@ def main():
     try:
         threading.Event().wait()
     except KeyboardInterrupt:
+        if tray and tray.poll() is None:
+            tray.terminate()
         for s in servidores:
             s.shutdown()
         if externo and externo.overlay and hasattr(externo.overlay, "fechar"):

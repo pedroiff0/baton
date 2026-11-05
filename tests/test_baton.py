@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -60,6 +61,62 @@ class NotasPptxTest(unittest.TestCase):
                 z.writestr("ppt/slides/slide1.xml", "<x/>")
                 z.writestr("ppt/notesSlides/notesSlide2.xml", nota("fala do primeiro slide da ordem"))
             self.assertEqual(P.notas_pptx(f), {"p1": "fala do primeiro slide da ordem"})
+
+
+class BandejaTest(unittest.TestCase):
+    def test_rotulo_por_estado(self):
+        import tray_gtk as T
+        self.assertEqual(T.rotulo(None)[0], "Baton: sem resposta")
+        self.assertIn("pendente", T.rotulo({"ativo": True, "acessibilidade": False})[0])
+        self.assertEqual(T.rotulo({"ativo": False})[0], "Baton: pausado")
+        self.assertIn("Keynote", T.rotulo({"ativo": True, "pedido": {"app": "Keynote"}})[0])
+        self.assertEqual(T.rotulo({"ativo": True, "autorizado": True})[0], "Baton: controlando")
+        self.assertEqual(T.rotulo({"ativo": True, "autorizado": False})[0], "Baton: em espera")
+
+    def test_iniciar_tray_por_plataforma(self):
+        with mock.patch.object(R.sys, "platform", "darwin"):
+            self.assertIsNone(R.iniciar_tray(8765))  # no Mac a bandeja e o Baton.app
+        with mock.patch.object(R.sys, "platform", "linux"), mock.patch.object(R.subprocess, "Popen") as po:
+            p = mock.Mock()
+            p.wait.side_effect = R.subprocess.TimeoutExpired("x", 1.5)
+            po.return_value = p
+            self.assertIs(R.iniciar_tray(8765), p)
+            self.assertIn("--porta", po.call_args[0][0])
+        with mock.patch.object(R.sys, "platform", "linux"), mock.patch.object(R.subprocess, "Popen") as po:
+            p = mock.Mock()
+            p.wait.return_value = 3  # Gtk indisponivel: encerra logo
+            p.stderr.read.return_value = "sem Gtk"
+            po.return_value = p
+            self.assertIsNone(R.iniciar_tray(8765))
+
+    def test_cliente_contra_o_servidor(self):
+        import tray_gtk as T
+        with tempfile.TemporaryDirectory() as d:
+            P.NOTAS_ARQ = Path(d) / "notas.json"
+            P.CACHE = Path(d) / "pdfjs"
+            e = P.Estado(None, 9999, "slide", "tok")
+            srv = P.Servidor(("127.0.0.1", 0), P.criar_handler(e, False, False))
+            porta = srv.server_address[1]
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            try:
+                est = T.estado(porta)
+                self.assertTrue(est["ativo"])
+                self.assertEqual(est["conexoes"], 0)
+                T.acao(porta, "pausar")
+                self.assertFalse(T.estado(porta)["ativo"])
+                T.acao(porta, "retomar")
+                self.assertTrue(T.estado(porta)["ativo"])
+                pdf = Path(d) / "x.pdf"
+                pdf.write_bytes(DeckTest.PDF)
+                ok, msg = T.enviar_deck(porta, str(pdf))
+                self.assertTrue(ok, msg)
+                self.assertIn("3 paginas", msg)
+                self.assertEqual(T.estado(porta)["deck"]["paginas"], 3)
+                ok, msg = T.enviar_deck(porta, str(Path(d) / "x.exe"))
+                self.assertFalse(ok)
+            finally:
+                srv.shutdown()
+            self.assertIsNone(T.estado(porta, timeout=0.5))
 
 
 class DeckTest(unittest.TestCase):

@@ -67,6 +67,8 @@ Dependências opcionais:
 
 ## 🧭 Uso <a name="uso"></a>
 
+**Ícone na bandeja:** instalado (modo residente), o Baton mostra um ícone na barra de menu (macOS), na bandeja (Windows) ou no indicador (Linux; no GNOME precisa da extensão AppIndicator) com: Pausar/Retomar, **Escolher apresentação...** (seletor de arquivo do sistema), Remover apresentação, Mostrar QR code, Abrir painel e Sair. `--sem-tray` desliga; `--tray` liga fora do modo residente.
+
 **Sem terminal:** abra o painel (`http://localhost:8765/painel`, também acessível pelo link da página do QR code), solte o arquivo da apresentação (PDF, PPTX, ODP ou `.md` de notas) na área **Apresentação** e pronto: o celular recarrega sozinho com o slide atual, o próximo e as notas, e as teclas continuam indo para o app em primeiro plano (PowerPoint, Keynote, ReLaTeX em Modo Apresentação...). **Remover apresentação** volta ao modo só-teclas. `.pptx` precisa do LibreOffice para gerar a prévia.
 
 ```bash
@@ -125,7 +127,7 @@ python3 -m unittest discover -s tests -v
 BATON_BACKEND=log BATON_OVERLAY=log python3 baton.py --sem-abrir   # sem enviar teclas
 ```
 
-Estrutura: `baton.py` (servidor, páginas web, modo externo), `residente.py` (modo residente), `overlay*.{swift,py}` (camadas), `launcher.swift` (`Baton.app` no macOS), `tests/`.
+Estrutura: `baton.py` (servidor, páginas web, modo externo), `residente.py` (modo residente), `overlay*.{swift,py}` (camadas), `launcher.swift` (`Baton.app` e barra de menu no macOS), `tray_win.ps1` e `tray_gtk.py` (bandeja no Windows e Linux), `tests/`.
 
 ---
 

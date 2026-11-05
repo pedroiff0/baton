@@ -237,6 +237,33 @@ def notificar(titulo, texto, url=None):
         pass
 
 
+def iniciar_tray(porta):
+    """Sobe o icone da bandeja (Windows: tray_win.ps1; Linux: tray_gtk.py). No macOS a bandeja e o proprio Baton.app.
+    Devolve o processo ou None (sem helper, sem Gtk, ja encerrou)."""
+    base = Path(__file__).resolve().parent
+    try:
+        if sys.platform == "win32":
+            ps1 = base / "tray_win.ps1"
+            if not ps1.exists():
+                return None
+            return subprocess.Popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
+                                     "-File", str(ps1), "-Porta", str(porta)])
+        if sys.platform.startswith("linux"):
+            py = base / "tray_gtk.py"
+            if not py.exists():
+                return None
+            p = subprocess.Popen([sys.executable, str(py), "--porta", str(porta)], stderr=subprocess.PIPE, text=True)
+            try:
+                p.wait(timeout=1.5)  # Gtk indisponivel: sai logo com codigo 3
+                print("aviso: sem icone na bandeja (" + (p.stderr.read() or "").strip() + ")", file=sys.stderr)
+                return None
+            except subprocess.TimeoutExpired:
+                return p
+    except OSError:
+        return None
+    return None
+
+
 PAINEL_HTML = """<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Baton - painel</title><style>
 body{font-family:-apple-system,system-ui,sans-serif;background:#111;color:#eee;max-width:560px;margin:32px auto;padding:0 16px}
