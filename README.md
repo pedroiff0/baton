@@ -1,100 +1,136 @@
-# Baton
+<h3 align="center">Baton — Passador de slides pelo celular</h3>
 
-Seu celular (iPhone ou Android) como passador de slides, via Tailscale: controla qualquer app no Mac, Windows ou Linux, com laser, foco, caneta, marca-texto, cortina, notas do apresentador e zoom. Só biblioteca padrão do Python 3.8+; para desenhar sobre os apps há uma camada nativa por sistema (Swift no macOS, Tk no Windows, Gtk no Linux).
+<div align="center">
 
-## Início rápido
+[![Status](https://img.shields.io/badge/status-active-success.svg)]()
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](/LICENSE)
 
+</div>
+
+---
+
+<p align="center">O celular (iPhone ou Android) controla qualquer app de apresentação no macOS, Windows ou Linux, com laser, foco, caneta, marca-texto, cortina, notas e zoom. Somente biblioteca padrão do Python 3.8+.</p>
+
+## 📝 Sumário
+
+- [⚡ Guia Rápido](#guia-rapido)
+- [Sobre](#sobre)
+- [Instalação](#instalacao)
+- [Uso](#uso)
+- [Plataformas](#plataformas)
+- [Segurança](#seguranca)
+- [Testes](#testes)
+- [Contribuição](#contribuicao)
+
+---
+
+## ⚡ Guia Rápido <a name="guia-rapido"></a>
+
+```bash
+python3 baton.py                # celular controla o app em primeiro plano
+python3 baton.py slides.pdf     # o Baton exibe o PDF no navegador
+python3 baton.py --instalar     # inicia com o sistema (--desinstalar remove)
 ```
-python3 baton.py                  # modo passador USB: o celular controla o app em primeiro plano
-python3 baton.py slides.pdf       # modo tela: o Baton mostra o PDF (transições, notas, zoom, passos)
-python3 baton.py --instalar       # liga sozinho no login (launchd, Inicializar do Windows ou autostart); --desinstalar remove
+
+No Windows use `py baton.py ...`. Ao iniciar, uma página local mostra um **QR code**: escaneie com o celular. No iPhone, **Compartilhar > Adicionar à Tela de Início**; no Android, **⋮ > Instalar app**.
+
+---
+
+## 🧐 Sobre <a name="sobre"></a>
+
+- **Modo externo** (padrão, sem PDF): envia setas, Home e End ao app em primeiro plano e desenha laser, foco, caneta e marca-texto numa camada transparente por cima de tudo, inclusive em tela cheia.
+- **Modo tela** (com PDF): exibe o PDF no navegador com transições, passos dentro de um slide, notas do apresentador, cronômetro com meta, prévia do próximo slide, "Ir para" e zoom.
+- **Cortina e efeitos**: preto, branco, teatro, fim com confete e efeitos sonoros sintetizados.
+- **Modo residente**: em segundo plano, detecta apresentação em tela cheia e pergunta no celular antes de enviar qualquer tecla. Clicar no aviso do sistema abre a página local.
+- **Ajustes** salvos em disco: cor e tamanho do laser, raio e desfoque do foco, espessura da caneta e do marca-texto.
+
+---
+
+## 🔧 Instalação <a name="instalacao"></a>
+
+Requisitos: Python 3.8+. Para controlar de qualquer rede, Tailscale no computador e no celular; sem ele, use `--rede` (mesmo Wi-Fi).
+
+```bash
+./install.sh        # macOS e Linux (sem sudo)
+.\install.ps1       # Windows (PowerShell, sem administrador)
+./uninstall.sh      # ou .\uninstall.ps1
 ```
 
-No Windows use `py baton.py ...` (ou `python`).
+Dependências opcionais:
+- macOS: `swiftc` (`xcode-select --install`) para a camada de desenho; `terminal-notifier` para o aviso clicável; liberar o **Baton** em Acessibilidade.
+- Linux: `xdotool` e `x11-utils` (teclas e detecção), PyGObject + Gtk 3 + pycairo (camada), `notify-send`.
+- Windows: Python do python.org (inclui Tk).
 
+---
+
+## 🧭 Uso <a name="uso"></a>
+
+```bash
+baton --pausar | --retomar     # sem desinstalar
+baton --detectar               # testa a detecção de tela cheia
+python3 baton.py slides.pdf --notas slides.notas.md --transicao fade
 ```
+
+Opções: `--rede` (sem Tailscale: escuta na rede local e usa o IP dela no QR code; sem Tailscale instalado isso já é automático), `--tela N` (monitor do projetor), `--sem-overlay`, `--cursor`, `--proporcao 16:9`, `--novo-token`, `--porta`, `--sem-abrir`.
+
+Painel local (pausar, modo, apps lembrados, início com o sistema, sair): `http://localhost:8765/painel`.
+
+**Visão do apresentador (como no PowerPoint):** passe o arquivo junto com `--externo`. O celular mostra o slide atual, o próximo, o cronômetro e as notas, e continua enviando as teclas ao app em primeiro plano:
+
+```bash
+python3 baton.py apresentacao.pptx --externo     # notas lidas do próprio .pptx (converte em PDF com o LibreOffice)
+python3 baton.py slides.pdf --externo --notas slides.notas.md
 ```
 
-Ao iniciar, o computador abre uma página com um **QR code**. Escaneie com o celular. No iPhone, **Compartilhar > Adicionar à Tela de Início**; no Android (Chrome), menu **⋮ > Instalar app** ou **Adicionar à tela inicial**. O token fica salvo em `~/.cache/baton/token` (`--novo-token` troca), então a página do celular continua valendo depois de reiniciar.
+A posição é contada pelos toques, então comece a apresentação no slide 1 e use **Ir para** se sair de sincronia (animações dentro do slide contam como avanço). Sem arquivo, o Baton não conhece o conteúdo e não há prévia nem notas.
 
-## Instalar e rodar em segundo plano
+**Notas de PDF do beamer (`\note{}`):** compile com `\setbeameroption{show notes on second screen=right}`; o PDF sai com páginas largas (slide à esquerda, notas à direita) e o Baton detecta isso sozinho: mostra só o slide na prévia e no modo tela e lê as notas da metade direita (descarta o cabeçalho da página de notas). Funciona só com PDF passado na linha de comando (`baton slides.pdf --externo`); exemplo em `exemplo-notas-beamer.tex`. Notas digitadas no celular têm prioridade sobre as do PDF.
 
-```
-./install.sh        # macOS e Linux (sem sudo): copia para ~/.local/share/baton, cria o comando `baton` e liga no login
-.\install.ps1       # Windows (PowerShell, sem administrador): copia para %LOCALAPPDATA%\Baton e liga no login
-./uninstall.sh      # ou .\uninstall.ps1: remove tudo
-```
+**Notas digitadas no celular (sem arquivo):** no painel de notas, **Editar** grava a nota do slide atual e **Todas** abre um campo para colar as notas inteiras em Markdown. Ficam salvas em `~/.cache/baton/notas-sessao.json` (por apresentação; sem arquivo, numa sessão "livre") e voltam sozinhas quando o Baton reabre. Sem arquivo, o número do slide é a contagem de toques (comece no slide 1). Com arquivo, o que você digita se soma às notas dele.
 
-Instalado, o Baton roda no **modo residente** (`--residente`): fica em espera, sem enviar nenhuma tecla, e vigia a janela em primeiro plano a cada 2 s. Quando um programa abre **em tela cheia** (PowerPoint, Keynote, Impress, leitor de PDF...), ele pergunta **no celular** (se a página estiver aberta): **Controlar**, **Sempre neste app**, **Agora não** ou **Nunca neste app**. Se o celular não estiver conectado, mostra um aviso do sistema com o endereço. Ao sair da tela cheia, volta à espera. Apps de vídeo (VLC, IINA, QuickTime, mpv, Spotify...) são ignorados. No celular, "Controlar mesmo assim" libera o controle sem apresentação detectada.
+**Importar notas de um arquivo (sem abrir o arquivo na apresentação):** `baton --importar-notas apresentacao.pptx` (ou `.md`) lê as notas do PowerPoint e as grava na sessão; se o Baton estiver rodando, valem na hora. No painel (`http://localhost:8765/painel`) há o mesmo em "Notas do apresentador > escolher arquivo". A importação substitui as notas da sessão; depois dá para ajustar no celular.
 
-**Desativar** a qualquer momento, sem desinstalar:
-- `baton --pausar` e `baton --retomar` (ou `python baton.py --pausar`);
-- o **painel** em `http://localhost:8765/painel` (só abre no próprio computador): pausar/retomar, modo (perguntar, sempre, nunca), apps lembrados, iniciar ou não com o sistema e sair do programa;
-- `./uninstall.sh` remove o início automático.
+Notas do apresentador em Markdown: `## 5` é o slide 5, `## p12` a página 12 do PDF; aceita `**negrito**`, `*itálico*` e listas. Veja `exemplo.notas.md`.
 
-**Permissões no macOS com o nome certo:** o `./install.sh` monta `~/Applications/Baton.app` (um launcher pequeno em Swift, `launcher.swift`) e o início automático passa a rodar por ele. Assim a lista de **Acessibilidade** e **Automação** mostra **Baton**, e não `python3.x`. Ele pede a Acessibilidade ao iniciar; se não aparecer, use **+** e escolha `~/Applications/Baton.app`. Se você já tinha liberado o `python3.x`, pode remover essa entrada. O app não é recompilado nas próximas instalações, para a permissão não se perder.
+Atalhos no modo tela: `F` tela cheia, setas/espaço avançam, `B` preto, `W` branco, `T` teatro, `E` fim, `C` limpar, `Q` QR code.
 
-Pausado, o celular recebe "Baton pausado" e nenhum comando, laser ou desenho é aceito. As escolhas ficam em `~/.cache/baton/estado.json`. A detecção usa `osascript` (macOS, pede permissão de Automação para o Terminal/Python na primeira vez), a API do Windows (janela em primeiro plano cobrindo o monitor) e `xdotool` + `xprop` (Linux, pacote `x11-utils`). Teste com `baton --detectar`. Ainda sem ícone na barra de menu/bandeja e sem binários prontos: precisa do Python 3.
+---
 
-## Plataformas
+## 🖥️ Plataformas <a name="plataformas"></a>
 
-| Computador que projeta | Teclas e mouse | Camada (laser, foco, caneta, cortina) | Som | Observações |
-| :-- | :-- | :-- | :-- | :-- |
-| macOS | CoreGraphics (ctypes) | `overlay.swift` (compilado na 1a execução, `xcode-select --install`), com desfoque real | `afplay` | Liberar o Terminal/Python em **Acessibilidade** |
-| Windows 10/11 | user32 (ctypes) | `overlay_tk.py` (Tk, vem com o Python do python.org) | `winsound` | Foco só escurece (sem desfoque); marca-texto e borda do foco usam padrão pontilhado |
-| Linux (X11 ou XWayland) | `xdotool` | `overlay_gtk.py` (PyGObject + Gtk 3 + pycairo, compositor ligado); sem Gtk cai no Tk | `paplay`, `aplay` ou `ffplay` | Foco só escurece. Wayland nativo não deixa um programa enviar teclas: use sessão X11 |
+| Sistema | Teclas e mouse | Camada de desenho | Som |
+| :-- | :-- | :-- | :-- |
+| macOS | CoreGraphics | `overlay.swift` | `afplay` |
+| Windows 10/11 | user32 | `overlay_tk.py` | `winsound` |
+| Linux (X11/XWayland) | `xdotool` | `overlay_gtk.py` (ou Tk) | `paplay`, `aplay`, `ffplay` |
 
-O celular pode ser **iPhone ou Android** (e qualquer navegador): o controle é uma página web, sem app. Em todos os casos, Tailscale instalado no computador e no celular.
+Wayland nativo não permite enviar teclas: use sessão X11. A camada macOS e o Windows ainda dependem de teste em máquina real.
 
-Estado dos testes: o servidor, o controle web e as camadas Gtk e Tk (desenho) foram testados no Linux; o macOS (Swift) e o Windows (teclas, cliques atravessando a janela, transparência) dependem de teste na máquina real.
+---
 
-## Modo externo (padrão sem PDF)
-O celular envia setas, Home e End para o app em primeiro plano (PowerPoint, Keynote, Acrobat, Preview, navegador...). O laser, o foco e os desenhos aparecem numa camada transparente nativa por cima de tudo, inclusive de apresentações em tela cheia:
-- **Laser**: ponto vermelho. **Foco**: desfoca tudo, menos um círculo em volta do ponteiro; o **raio é ajustável** no celular (controle "Raio do foco" ou gesto de pinça sobre a miniatura) e fica salvo.
-- **Caneta** e **Marca** (marca-texto), 5 cores, e **Limpar**. Trocar de slide limpa os desenhos sozinho.
-- `--tela N` escolhe a tela do projetor; `--sem-overlay` usa só o cursor do mouse como laser; `--cursor` move o cursor junto com a camada; `--proporcao 16:9` define a área do laser quando não há PDF (o padrão é o formato da tela).
-- Se a camada não subir (sem `swiftc`, Gtk ou compositor), o Baton avisa e segue com o laser como cursor (e só o Preto, pela tecla `B` do leitor).
+## 🔒 Segurança <a name="seguranca"></a>
 
-## Personalização (botão "Ajustes" no celular)
-Tudo é salvo em `~/.cache/baton/config.json` e vale em todos os modos: **tamanho e cor do laser**; **foco**: raio, intensidade do desfoque e escurecimento fora do círculo; **caneta**: espessura; **marca-texto**: espessura e opacidade. "Restaurar padrão" volta aos valores originais. Sobre outros apps, o desfoque usa o efeito nativo do macOS (a intensidade controla a opacidade dele); no modo tela, o desfoque é real e proporcional.
+Por padrão o servidor escuta apenas em `127.0.0.1` e no IP do Tailscale, nunca na internet. Com `--rede` (ou sem Tailscale) escuta na rede local em HTTP, sem criptografia: use só em Wi-Fi de confiança. O celular precisa do token da URL; o computador local não. Quem tem a URL com o token controla o computador: não compartilhe o QR code. Pausado, nenhum comando é aceito.
 
-## Modo tela (com PDF)
-O baton mostra o PDF no navegador do Mac (`F` tela cheia, setas/espaço/clique navegam, `B` preto, `W` branco, `T` teatro, `E` fim, `C` limpar, `Q` QR code):
-- **Transições**: fade, deslizar, zoom (`--transicao`, ou o seletor no celular); sem transição entre os passos de um mesmo slide.
-- **Passos dentro de um slide**: com `elementos=progressivo` na classe `iffslides` (ou `\pause`, `\item<2->`), o Baton agrupa as páginas do mesmo slide e mostra "slide 5 / 33  passo 2/4".
-- **Cronômetro**: começa no primeiro avanço (ou toque no relógio), mostra o tempo decorrido e quanto resta da meta (padrão 50 min, ajustável em Ajustes); amarelo nos últimos 10% e vermelho ao estourar; sincronizado pelo servidor, sobrevive a recarregar a página.
-- **Prévia do próximo** slide (ou do próximo passo) ao lado do cronômetro, e **Ir para**: grade de miniaturas dos slides (modo tela) ou número direto.
-- **Notas do apresentador** no iPhone, com A−/A+: `--notas slides.notas.md` (ou `slides.notas.md` ao lado do PDF). Formato: `## 5` = slide 5, `## p12` = página 12 do PDF, texto livre com `**negrito**`, `*itálico*` e listas com `-`. Exemplo: `exemplo.notas.md` (slides de e-lixo).
-- **Zoom**: toque ou arraste na miniatura, botões − e +, ou pinça; `1x` volta.
-- Todas as ferramentas do modo externo, desenhadas sobre o slide.
+---
 
-## Cortina, fim e efeitos sonoros (botão "Extras" no celular)
-- **Cortina:** Preto, Branco, Teatro (panos vermelhos que fecham e abrem) e Fim (tela de encerramento com o texto que você digitar e confete). Tocar de novo abre a cortina. No modo externo ela é desenhada pela camada nativa, por cima do app; sem a camada, só o Preto funciona (tecla `B` do leitor).
-- **Confete:** chuva de confete por cima do slide, por 4 segundos.
-- **Efeitos:** Ding, Tambor, Aplausos, Fanfarra, Buzina e Suspense, sintetizados pelo próprio baton (sem arquivos) e tocados no computador que projeta, por `afplay` (macOS), `winsound` (Windows), `paplay`, `aplay` ou `ffplay` (Linux). "Parar som" interrompe o efeito.
+## 🧪 Testes <a name="testes"></a>
 
-## Conexão estável
-Batimento do servidor a cada 4 s; o celular reabre a conexão sozinho (silêncio de 12 s, volta para a tela, volta a rede); cada comando tem um id e é reenviado até 5 vezes sem pular dois slides; TCP keepalive e `TCP_NODELAY`. Dica: no Mac, `caffeinate -dis python3 baton.py` evita a suspensão; no Windows e no Linux, desative a suspensão durante a apresentação.
-
-## Segurança
-O servidor escuta em `127.0.0.1` e no IP do Tailscale, nunca na internet. O celular precisa do token (`k`); o Mac local não. Quem tem a URL com o token controla o Mac pelo Tailscale: não compartilhe o QR.
-
-## Desenvolvimento
-```
+```bash
 python3 -m unittest discover -s tests -v
-swiftc -O overlay.swift -o overlay        # macOS: compilar o helper à mão
-BATON_BACKEND=log BATON_OVERLAY=log python3 baton.py --sem-abrir   # testa sem mexer no Mac
+BATON_BACKEND=log BATON_OVERLAY=log python3 baton.py --sem-abrir   # sem enviar teclas
 ```
-Estrutura: `baton.py` (servidor, páginas web e modo externo), `overlay.swift` (camada macOS), `overlay_tk.py` (Windows), `overlay_gtk.py` (Linux), `tests/`. O pdf.js e o gerador de QR são baixados para `~/.cache/baton` na primeira execução.
 
-## Projetos parecidos
-- [mobslide](https://github.com/thewh1teagle/mobslide) (Tauri, macOS e Windows, QR code, PowerPoint/Keynote/Slides): só avança e volta.
-- [DeckTap](https://github.com/Rico00121/decktap) (Node, MIT) e [presento](https://github.com/alxrm/presento) (Go, MIT): controle por setas pela rede local.
-- [DeckRocket](https://github.com/jpsim/DeckRocket) (MIT): iPhone como controle do Deckset.
-- [Projecteur](https://github.com/gbin/Projecteur) (MIT): laser virtual no Linux para o Logitech Spotlight.
-- [ScreenPen](https://github.com/rsusik/screenpen) (GPL-3.0): anotação direta na tela.
+Estrutura: `baton.py` (servidor, páginas web, modo externo), `residente.py` (modo residente), `overlay*.{swift,py}` (camadas), `launcher.swift` (`Baton.app` no macOS), `tests/`.
 
-O baton junta o que cada um faz separado: controle pelo celular via Tailscale (funciona fora da mesma rede Wi-Fi), laser, foco com desfoque de raio ajustável, caneta e marca-texto sobre qualquer app, notas do apresentador no celular, zoom e passos dentro de um slide.
+---
 
-## Licença
-MIT (ver `LICENSE`). O pdf.js (Apache-2.0) e o qrcode-generator (MIT) são baixados na primeira execução e não fazem parte deste repositório.
+## 🤝 Contribuição <a name="contribuicao"></a>
+
+- Abra issues/pull requests neste repositório.
+- Mantenha apenas a biblioteca padrão do Python.
+- Adicione testes em `tests/` para novo comportamento.
+
+---
+
+**Licença:** MIT. O pdf.js (Apache-2.0) e o qrcode-generator (MIT) são baixados na primeira execução e não fazem parte do repositório.

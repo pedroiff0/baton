@@ -153,9 +153,9 @@ def detectar(tela=(1920, 1080)):
 
 
 class Vigia(threading.Thread):
-    """Olha a janela em primeiro plano a cada 2 s; exige 2 leituras iguais antes de avisar o Estado."""
+    """Olha a janela em primeiro plano a cada 1 s; exige 2 leituras iguais antes de avisar o Estado."""
 
-    def __init__(self, estado, detector=None, intervalo=2.0):
+    def __init__(self, estado, detector=None, intervalo=1.0):
         super().__init__(daemon=True)
         self.estado, self.intervalo = estado, intervalo
         self.detector = detector or (lambda: detectar(self.estado.tela_tamanho()))
@@ -178,20 +178,61 @@ class Vigia(threading.Thread):
                 print(f"aviso: vigia falhou ({e})", file=sys.stderr)
 
 
-def notificar(titulo, texto):
-    """Aviso do sistema (melhor esforco; alguns sistemas suprimem avisos durante apresentacoes)."""
+def _abrir(url):
+    try:
+        import webbrowser
+        webbrowser.open(url)
+    except Exception:
+        pass
+
+
+def _notificar_linux(titulo, texto, url):
+    """notify-send com acao: clicar no aviso (ou em 'Abrir') abre a pagina. Sem suporte a --action, aviso simples."""
+    base = ["notify-send", "-a", "Baton", "-t", "10000"]
+    if url:
+        try:
+            r = subprocess.run(base + ["--action=default=Abrir", "--action=abrir=Abrir", "-w", titulo, texto],
+                               capture_output=True, text=True, timeout=30)
+            if r.returncode == 0:
+                if r.stdout.strip() in ("default", "abrir"):
+                    _abrir(url)
+                return
+        except Exception:
+            pass
+    subprocess.run(base + [titulo, texto], check=False)
+
+
+def _notificar_windows(titulo, texto, url):
+    q = lambda s: (s or "").replace("'", "")
+    ps = ("Add-Type -AssemblyName System.Windows.Forms,System.Drawing;$n=New-Object System.Windows.Forms.NotifyIcon;"
+          "$n.Icon=[System.Drawing.SystemIcons]::Information;$n.Visible=$true;"
+          f"$u='{q(url)}';"
+          "if($u){Register-ObjectEvent -InputObject $n -EventName BalloonTipClicked -Action {Start-Process $u} | Out-Null};"
+          f"$n.ShowBalloonTip(8000,'{q(titulo)}','{q(texto)}',[System.Windows.Forms.ToolTipIcon]::Info);"
+          "$t=[DateTime]::Now.AddSeconds(12);while([DateTime]::Now -lt $t){[System.Windows.Forms.Application]::DoEvents();Start-Sleep -Milliseconds 100};$n.Dispose()")
+    subprocess.Popen(["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps])
+
+
+def notificar(titulo, texto, url=None):
+    """Aviso do sistema (melhor esforco). Com url, clicar no aviso abre a pagina local do Baton.
+
+    macOS: precisa do terminal-notifier (brew install terminal-notifier) para o clique; sem ele o aviso e so informativo.
+    Alguns sistemas suprimem avisos durante apresentacoes."""
     try:
         if sys.platform == "darwin":
-            esc = lambda s: s.replace("\\", "\\\\").replace('"', '\\"')
-            subprocess.Popen(["osascript", "-e", f'display notification "{esc(texto)}" with title "{esc(titulo)}"'])
+            tn = shutil.which("terminal-notifier")
+            if tn:
+                cmd = [tn, "-title", titulo, "-message", texto, "-group", "baton", "-sender", "com.apple.Terminal"]
+                if url:
+                    cmd += ["-open", url]
+                subprocess.Popen(cmd)
+            else:
+                esc = lambda s: s.replace("\\", "\\\\").replace('"', '\\"')
+                subprocess.Popen(["osascript", "-e", f'display notification "{esc(texto)}" with title "{esc(titulo)}"'])
         elif sys.platform == "win32":
-            ps = ("Add-Type -AssemblyName System.Windows.Forms,System.Drawing;$n=New-Object System.Windows.Forms.NotifyIcon;"
-                  "$n.Icon=[System.Drawing.SystemIcons]::Information;$n.Visible=$true;"
-                  f"$n.ShowBalloonTip(8000,'{titulo}','{texto.replace(chr(39), '')}',[System.Windows.Forms.ToolTipIcon]::Info);"
-                  "Start-Sleep 9;$n.Dispose()")
-            subprocess.Popen(["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps])
+            _notificar_windows(titulo, texto, url)
         elif shutil.which("notify-send"):
-            subprocess.Popen(["notify-send", titulo, texto])
+            threading.Thread(target=_notificar_linux, args=(titulo, texto, url), daemon=True).start()
     except Exception:
         pass
 
@@ -212,6 +253,7 @@ select{background:#3a3a3c;color:#fff;border:0;border-radius:10px;padding:10px;fo
 <option value="perguntar">Perguntar no celular</option><option value="sempre">Controlar sempre, sem perguntar</option><option value="nunca">Nunca controlar</option></select>
 <p><small>Ate alguem aceitar, o Baton nao envia nenhuma tecla ao computador.</small></p></div>
 <h2>Apps lembrados</h2><div class="cartao"><b>Sempre controlar</b><ul id="ok"></ul><b>Nunca controlar</b><ul id="nao"></ul></div>
+<h2>Notas do apresentador</h2><div class="cartao"><input type="file" id="nf" accept=".pptx,.md,.txt"><p id="nmsg"><small>Importa as notas de um .pptx (notas do PowerPoint) ou .md (## 1, ## p12) e substitui as da sessao. Tambem da para digitar no celular.</small></p></div>
 <h2>Inicio com o sistema</h2><div class="cartao"><button id="bi">Iniciar com o sistema</button><button class="cinza" id="br">Remover do inicio</button></div>
 <h2>Encerrar</h2><div class="cartao"><button class="verm" id="bs">Sair do Baton</button><p><small>Para voltar, abra o Baton de novo (ou reinicie a sessao se estiver instalado).</small></p></div>
 <script>
@@ -226,5 +268,8 @@ function ver(){
 $('bp').onclick=()=>acao(est.ativo?'pausar':'retomar');$('ba').onclick=()=>acao(est.autorizado?'revogar':'autorizar');
 $('modo').onchange=e=>acao('modo',e.target.value);$('bi').onclick=()=>acao('instalar');$('br').onclick=()=>acao('desinstalar');
 $('bq').onclick=()=>window.open('/qr','_blank');$('bs').onclick=()=>{if(confirm('Encerrar o Baton?'))acao('sair')};
+$('nf').onchange=async e=>{const f=e.target.files[0];if(!f)return;$('nmsg').textContent='Importando...';
+  try{const r=await fetch('/painel/importar?nome='+encodeURIComponent(f.name),{method:'POST',body:await f.arrayBuffer()});const j=await r.json();
+    $('nmsg').textContent=r.ok?j.importadas+' notas importadas.':'Falhou: '+(j.erro||r.status)}catch(x){$('nmsg').textContent='Falhou: '+x}e.target.value=''};
 fetch('/painel/estado').then(r=>r.json()).then(e=>{est=e;ver()});setInterval(()=>fetch('/painel/estado').then(r=>r.json()).then(e=>{est=e;ver()}).catch(()=>{}),3000);
 </script></body></html>"""

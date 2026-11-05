@@ -37,6 +37,51 @@ class FakeOverlay:
         self.msgs.append(o)
 
 
+class NotasPptxTest(unittest.TestCase):
+    def test_notas_na_ordem_dos_slides(self):
+        import zipfile
+        R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+        rel = lambda i, tipo, alvo: f'<Relationship Id="{i}" Type="{R_NS}/{tipo}" Target="{alvo}"/>'
+        cab = '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        nota = lambda t: ('<p:notes xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" '
+                          'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree>'
+                          '<p:sp><p:nvSpPr><p:nvPr><p:ph type="sldImg"/></p:nvPr></p:nvSpPr></p:sp>'
+                          '<p:sp><p:nvSpPr><p:nvPr><p:ph type="body" idx="1"/></p:nvPr></p:nvSpPr><p:txBody>'
+                          f'<a:p><a:r><a:t>{t}</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:notes>')
+        with tempfile.TemporaryDirectory() as d:
+            f = os.path.join(d, "x.pptx")
+            with zipfile.ZipFile(f, "w") as z:
+                z.writestr("ppt/presentation.xml", '<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" '
+                           f'xmlns:r="{R_NS}"><p:sldIdLst><p:sldId id="256" r:id="rId2"/><p:sldId id="257" r:id="rId1"/></p:sldIdLst></p:presentation>')
+                z.writestr("ppt/_rels/presentation.xml.rels", cab + rel("rId1", "slide", "slides/slide1.xml") + rel("rId2", "slide", "slides/slide2.xml") + "</Relationships>")
+                z.writestr("ppt/slides/_rels/slide2.xml.rels", cab + rel("rId1", "notesSlide", "../notesSlides/notesSlide2.xml") + "</Relationships>")
+                z.writestr("ppt/slides/slide2.xml", "<x/>")
+                z.writestr("ppt/slides/slide1.xml", "<x/>")
+                z.writestr("ppt/notesSlides/notesSlide2.xml", nota("fala do primeiro slide da ordem"))
+            self.assertEqual(P.notas_pptx(f), {"p1": "fala do primeiro slide da ordem"})
+
+
+class NotasSessaoTest(unittest.TestCase):
+    def test_salvar_persistir_e_mesclar_com_o_arquivo(self):
+        with tempfile.TemporaryDirectory() as d:
+            P.NOTAS_ARQ = Path(d) / "notas.json"
+            e = P.Estado(None, 9999, "slide", "tok")
+            e.carregar_notas_sessao({"p1": "do arquivo", "p2": "outra"})
+            self.assertIsNone(e.salvar_nota("abc", "x"))
+            self.assertEqual(e.salvar_nota("1", "digitada")["p1"], "digitada")
+            self.assertEqual(e.notas["p2"], "outra")
+            e2 = P.Estado(None, 9999, "slide", "tok")
+            e2.carregar_notas_sessao({"p1": "do arquivo", "p2": "outra"})
+            self.assertEqual(e2.notas, {"p1": "digitada", "p2": "outra"})
+            e2.salvar_nota("p2", "")
+            self.assertNotIn("p2", e2.notas)
+            n = e2.salvar_todas("## 3\nsó esta\n\n## p4\nquarta")
+            self.assertEqual(n, {"3": "só esta", "p4": "quarta"})
+            e3 = P.Estado(None, 9999, "slide", "tok")
+            e3.carregar_notas_sessao({"p1": "do arquivo"})
+            self.assertEqual(e3.notas, {"3": "só esta", "p4": "quarta"})
+
+
 class NotasTest(unittest.TestCase):
     def test_ler_notas(self):
         with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False, encoding="utf-8") as f:

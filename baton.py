@@ -64,6 +64,7 @@ CFG_PADRAO = {"laser_tam": 24, "laser_cor": "#ff2d2d", "foco_raio": 12, "foco_bl
               "pen_larg": 3.5, "hl_larg": 14, "hl_alpha": 38, "meta_min": 50}
 CFG_LIM = {"laser_tam": (6, 120), "foco_raio": (3, 35), "foco_blur": (0, 100), "foco_escuro": (0, 90),
            "pen_larg": (0.5, 20), "hl_larg": (3, 60), "hl_alpha": (5, 90), "meta_min": (1, 300)}
+NOTAS_ARQ = Path.home() / ".cache" / "baton" / "notas-sessao.json"
 CFG_ARQ = Path.home() / ".cache" / "baton" / "config.json"
 
 
@@ -276,6 +277,7 @@ class Estado:
         self.token = token
         self.externo = externo
         self.remote_url = remote_url
+        self.local_url = ""
         self.proporcao = proporcao
         self.remotos = 0
         self.zoom, self.zx, self.zy = 1.0, 0.5, 0.5
@@ -284,6 +286,8 @@ class Estado:
         self.t_rodando, self.t_base, self.t_desde = False, 0.0, 0.0  # cronometro da apresentacao
         self.tracos = []  # tracos da caneta/marca-texto do slide atual
         self.notas = {}
+        self.notas_id = "livre"  # sessao das notas digitadas no celular (por apresentacao)
+        self._edits, self._base_vazia = {}, False
         self.cfg = cfg_carregar()
         self.pagina = 1
         self.transicao = transicao
@@ -365,7 +369,8 @@ class Estado:
         self.pedido = {"app": app}
         self._mudou()
         if not self.remotos:
-            residente.notificar("Baton", f"Apresentacao detectada em {app}. Abra o Baton no celular para controlar: {self.remote_url}")
+            residente.notificar("Baton", f"Apresentacao detectada em {app}. Clique para abrir o Baton (QR code) ou abra no celular: {self.remote_url}",
+                                self.local_url or None)
 
     def consentir(self, acao):
         app = (self.pedido or {}).get("app")
@@ -490,6 +495,65 @@ class Estado:
             self.publicar({"limpar": 1})
         self.publicar(snap)
         return True
+
+    def carregar_notas_sessao(self, base):
+        """Notas do arquivo/pptx (base) + o que foi digitado no celular nesta apresentacao (salvo em disco)."""
+        self._base = dict(base)
+        try:
+            d = json.loads(NOTAS_ARQ.read_text(encoding="utf-8")).get(self.notas_id, {})
+            self._edits = {str(k): str(v) for k, v in d.get("notas", {}).items()}
+            self._base_vazia = bool(d.get("limpar_base"))
+        except (OSError, ValueError, AttributeError):
+            pass
+        self._notas_efetivas()
+
+    def _notas_efetivas(self):
+        base = {} if self._base_vazia else getattr(self, "_base", {})
+        self.notas = {**base, **{k: v for k, v in self._edits.items() if v}}
+        for k, v in self._edits.items():
+            if not v:
+                self.notas.pop(k, None)  # texto apagado no celular esconde a nota do arquivo
+
+    def _persistir_notas(self):
+        try:
+            todos = json.loads(NOTAS_ARQ.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            todos = {}
+        todos[self.notas_id] = {"notas": self._edits, "limpar_base": self._base_vazia}
+        try:
+            NOTAS_ARQ.parent.mkdir(parents=True, exist_ok=True)
+            NOTAS_ARQ.write_text(json.dumps(todos, ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            pass
+
+    def salvar_nota(self, chave, texto):
+        """Grava a nota de um slide digitada no celular; devolve as notas atuais (ou None se a chave for invalida)."""
+        if not re.fullmatch(r"p?\d{1,5}", str(chave)):
+            return None
+        with self.lock:
+            chave = chave if str(chave).startswith("p") else "p" + str(chave)
+            self._edits[chave] = str(texto)[:6000].strip()
+            self._notas_efetivas()
+            self._persistir_notas()
+            return dict(self.notas)
+
+    def salvar_todas(self, texto):
+        """Substitui todas as notas por um Markdown colado no celular ('## 1', '## p12'...)."""
+        with self.lock:
+            self._edits = {k: v[:6000] for k, v in notas_de_texto(str(texto)[:200000]).items()}
+            self._base_vazia = True
+            self._notas_efetivas()
+            self._persistir_notas()
+            return dict(self.notas)
+
+    def importar_notas(self, notas):
+        """Substitui as notas da sessao pelas lidas de um arquivo (.pptx ou .md) escolhido no painel ou na linha de comando."""
+        with self.lock:
+            self._edits = {str(k): str(v)[:6000] for k, v in notas.items() if re.fullmatch(r"p?\d{1,5}", str(k))}
+            self._base_vazia = True
+            self._notas_efetivas()
+            self._persistir_notas()
+            return dict(self.notas)
 
     def set_cfg(self, d):
         """Aplica ajustes de personalizacao, grava em disco e repassa para a tela e a camada."""
@@ -844,17 +908,21 @@ def proporcao_pdf(pdf):
             w = float(m.group(3)) - float(m.group(1))
             h = float(m.group(4)) - float(m.group(2))
             if w > 0 and h > 0:
-                return w / h
+                return w / h / 2 if w / h > 2.2 else w / h  # beamer com notas ao lado: o slide e a metade esquerda
     except Exception:
         pass
     return 16 / 9
 
 
 def ler_notas(caminho):
+    return notas_de_texto(Path(caminho).read_text(encoding="utf-8"))
+
+
+def notas_de_texto(texto):
     """Markdown simples: '## 5' = notas do slide 5 (frames, passos de um frame contam como um);
     '## p12' = notas da pagina 12 do PDF. O texto vai ate o proximo '##'."""
     notas, chave, buf = {}, None, []
-    for linha in Path(caminho).read_text(encoding="utf-8").splitlines():
+    for linha in texto.splitlines():
         m = re.match(r"^##\s+(p?\d+)\s*$", linha.strip())
         if m:
             if chave is not None:
@@ -917,7 +985,7 @@ INFO_PLIST_APP = """<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>CFBundleName</key><string>Baton</string><key>CFBundleDisplayName</key><string>Baton</string>
-<key>CFBundleIdentifier</key><string>com.pedroiff0.baton</string><key>CFBundleExecutable</key><string>Baton</string>
+<key>CFBundleIdentifier</key><string>com.baton.app</string><key>CFBundleExecutable</key><string>Baton</string>
 <key>CFBundlePackageType</key><string>APPL</string><key>CFBundleIconFile</key><string>Baton</string>
 <key>CFBundleShortVersionString</key><string>0.1</string><key>LSUIElement</key><true/>
 <key>NSAppleEventsUsageDescription</key><string>O Baton detecta apresentacoes em tela cheia para perguntar se deve controla-las.</string>
@@ -1058,6 +1126,16 @@ def ip_tailscale():
     return None
 
 
+def ip_lan():
+    """IP do computador na rede local (Wi-Fi/cabo): descobre pela rota padrao, sem enviar nenhum pacote."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sk:
+            sk.connect(("192.0.2.1", 9))
+            return _ip_valido(sk.getsockname()[0])
+    except OSError:
+        return None
+
+
 PAGINA_BASE = """<!doctype html><html lang="pt-br"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
 <meta name="theme-color" content="#000"><title>__TITULO__</title>
@@ -1125,11 +1203,32 @@ function desenharQR(){
 JS_PASSOS = r"""
 // Agrupa paginas do PDF em frames: as paginas de um frame com aparicao progressiva (\\pause, <+->) mostram o mesmo
 // conteudo com mais itens a cada passo. Ignora numeros de rodape e a marca de rascunho.
+let LADO=false;
+const larguraUtil=w=>LADO?w/2:w;
+async function detectaLado(d){const v=(await d.getPage(1)).getViewport({scale:1});LADO=v.width/v.height>2.2}
+async function notasDoPdf(d){
+  if(!LADO)return{};const out={};
+  for(let i=1;i<=d.numPages;i++){
+    const p=await d.getPage(i),v=p.getViewport({scale:1}),W=v.width,H=v.height,tc=await p.getTextContent();
+    let it=tc.items.filter(x=>x.str.trim()&&x.transform[4]>=W/2&&x.transform[5]<=H*0.75);
+    if(!it.length)it=tc.items.filter(x=>x.str.trim()&&x.transform[4]>=W/2);
+    it.sort((a,b)=>b.transform[5]-a.transform[5]||a.transform[4]-b.transform[4]);
+    const linhas=[];
+    for(const x of it){const y=x.transform[5],l=linhas[linhas.length-1];
+      if(l&&Math.abs(l.y-y)<2.5){l.t.push(x.str);l.h=Math.max(l.h,x.height||0)}else linhas.push({y,t:[x.str],h:x.height||10})}
+    let txt='',prev=null;
+    for(const l of linhas){
+      const s=l.t.join(' ').replace(/\s+/g,' ').trim().replace(/^[•▶‣▸◦·]\s*/,'- ');
+      if(!s)continue;if(prev!==null)txt+=(prev-l.y>l.h*2.2?'\n\n':'\n');txt+=s;prev=l.y}
+    if(txt)out['p'+i]=txt;
+  }
+  return out;
+}
 async function agruparPassos(pdf){
   const n=pdf.numPages,tok=[];
   for(let i=1;i<=n;i++){
-    const tc=await (await pdf.getPage(i)).getTextContent();const m=new Map();
-    tc.items.forEach(x=>{const t=x.str.trim();if(!t||/^[\\d\\s\\/]+$/.test(t)||/^(RASCUNHO|DRAFT)$/i.test(t))return;m.set(t,(m.get(t)||0)+1)});
+    const pg=await pdf.getPage(i),W=pg.getViewport({scale:1}).width,tc=await pg.getTextContent();const m=new Map();
+    tc.items.filter(x=>!LADO||x.transform[4]<W/2).forEach(x=>{const t=x.str.trim();if(!t||/^[\d\s\/]+$/.test(t)||/^(RASCUNHO|DRAFT)$/i.test(t))return;m.set(t,(m.get(t)||0)+1)});
     tok.push(m);
   }
   const contido=(a,b)=>{let tb=0,ta=0;for(const[k,v]of b)tb+=v;for(const[k,v]of a){ta+=v;if((b.get(k)||0)<v)return false}return ta>0&&tb>ta};
@@ -1157,8 +1256,8 @@ const ov=document.createElement('canvas');ov.id='ov';stage.appendChild(ov);
 function mk(){const c=document.createElement('canvas');c.className='pg';stage.insertBefore(c,ov);return c}
 async function render(n,c){
   const p=await pdf.getPage(n),v0=p.getViewport({scale:1});
-  const esc=Math.min(innerWidth/v0.width,innerHeight/v0.height),dpr=Math.min(devicePixelRatio||1,2),v=p.getViewport({scale:esc*dpr});
-  c.width=v.width;c.height=v.height;c.style.width=v0.width*esc+'px';c.style.height=v0.height*esc+'px';
+  const uw=larguraUtil(v0.width),esc=Math.min(innerWidth/uw,innerHeight/v0.height),dpr=Math.min(devicePixelRatio||1,2),v=p.getViewport({scale:esc*dpr});
+  c.width=larguraUtil(v.width);c.height=v.height;c.style.width=uw*esc+'px';c.style.height=v0.height*esc+'px';
   await p.render({canvasContext:c.getContext('2d'),viewport:v}).promise;
 }
 function geom(){const w=parseFloat(atual.style.width),h=parseFloat(atual.style.height);return{w,h,left:(innerWidth-w)/2,top:(innerHeight-h)/2}}
@@ -1272,7 +1371,7 @@ function conectar(){
 }
 setInterval(()=>{if(Date.now()-ultimaMsg>12000)conectar()},3000);
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')conectar()});
-pdfjsLib.getDocument('/pdf').promise.then(async d=>{pdf=d;try{mapa=await agruparPassos(d)}catch(e){}conectar()});
+pdfjsLib.getDocument('/pdf').promise.then(async d=>{pdf=d;try{await detectaLado(d);mapa=await agruparPassos(d)}catch(e){}conectar()});
 """
 
 # ------------------------------------------------------------------ celular (iPhone)
@@ -1321,6 +1420,8 @@ select{background:#1d1d1f;color:#fff;border:0;border-radius:12px;font-size:14px;
 #nhead{display:flex;justify-content:space-between;align-items:center;padding:4px 10px;font-size:12px;color:#888;flex:0 0 auto}
 #nhead button{padding:3px 10px;font-size:13px;border-radius:8px;margin-left:4px}
 #ntxt{flex:1;overflow:auto;padding:2px 12px 10px;line-height:1.35;touch-action:pan-y;-webkit-overflow-scrolling:touch;user-select:text;-webkit-user-select:text}
+#ned{flex:1;width:100%;box-sizing:border-box;background:#1d1d1f;color:#fff;border:0;border-radius:8px;font:inherit;line-height:1.35;padding:8px 10px;resize:none;min-height:0}
+#nbt{display:none;gap:6px;padding:6px 10px 8px}#nbt button{flex:1;padding:8px;font-size:14px;border-radius:10px}#nsv{background:#0a84ff}
 #ntxt p{margin:0 0 .6em}#ntxt ul{margin:0 0 .6em 1.1em}#ntxt .vazio{color:#666}
 #botoes{display:flex;gap:10px;height:84px;flex:0 0 auto}#botoes button{font-size:19px;border-radius:16px}
 #ant{flex:1}#seg{flex:2;background:#0a84ff}#seg:active{background:#006fe0}
@@ -1344,12 +1445,12 @@ HTML_REMOTO = """<div id="aviso"></div><div id="topo"><span><i id="dot"></i><spa
 <div class="exg" id="exs"><button data-s="confete">Confete</button><button data-s="ding">Ding</button><button data-s="tambor">Tambor</button><button data-s="aplausos">Aplausos</button><button data-s="fanfarra">Fanfarra</button><button data-s="buzina">Buzina</button><button data-s="suspense">Suspense</button><button data-s="stop">Parar som</button></div>
 </div></div>
 <div id="irbox"><div id="irhead"><input id="irn" type="number" inputmode="numeric" min="1" placeholder="no do slide"><button id="irgo">Ir</button><button id="irx">Fechar</button></div><div id="irgrid"></div></div>
-<div id="notas"><div id="nhead"><span id="nt">Notas do apresentador</span><span><button id="nm">A&minus;</button><button id="np">A+</button></span></div><div id="ntxt"></div></div>
+<div id="notas"><div id="nhead"><span id="nt">Notas do apresentador</span><span><button id="ne">Editar</button><button id="nm">A&minus;</button><button id="np">A+</button></span></div><div id="ntxt"></div><textarea id="ned" style="display:none" placeholder="Digite a nota deste slide"></textarea><div id="nbt"><button id="nsv">Salvar</button><button id="ntd">Todas</button><button id="ncn">Cancelar</button></div></div>
 <div id="botoes"><button id="ant">&#9664; Anterior</button><button id="seg">Proximo &#9654;</button></div>"""
 JS_REMOTO = r"""
 const $=id=>document.getElementById(id);
 let raioFoco=0.12;try{raioFoco=(parseInt(localStorage.getItem('baton-raio'))||12)/100}catch(e){}
-let pdf=null,mapa=null,pag=1,total=0,ferr=null,ultimo=0,zoom={z:1,x:.5,y:.5},es=null,ultimaMsg=Date.now(),seqVisto=-1,notas={},fonte=17,desenhado=0;
+let pdf=null,mapa=null,pag=1,total=0,ferr=null,ultimo=0,zoom={z:1,x:.5,y:.5},es=null,ultimaMsg=Date.now(),seqVisto=-1,notas={},notasPdf={},fonte=17,desenhado=0;
 const NIVEIS=[1,1.5,2,3,4],cores={pen:'#ff3b30',hl:'#ffd60a'};
 const PADRAO={meta_min:50,laser_tam:24,laser_cor:'#ff2d2d',foco_raio:12,foco_blur:100,foco_escuro:25,pen_larg:3.5,hl_larg:14,hl_alpha:38};
 const DEFS=[['meta_min','Meta de tempo (min)',5,120,5],['laser_tam','Laser: tamanho',6,80,1],['foco_raio','Foco: raio',3,35,1],['foco_blur','Foco: desfoque',0,100,5],['foco_escuro','Foco: escurecer',0,90,5],['pen_larg','Caneta: espessura',0.5,12,0.5],['hl_larg','Marca: espessura',3,40,1],['hl_alpha','Marca: opacidade',10,80,5]];
@@ -1372,8 +1473,8 @@ async function cmd(c,v){
   status(false,'sem conexao');conectar();return false;
 }
 async function desenha(n,cv,larg){
-  const p=await pdf.getPage(n),v0=p.getViewport({scale:1}),dpr=Math.min(devicePixelRatio||1,3),esc=larg*dpr/v0.width,v=p.getViewport({scale:esc});
-  cv.width=v.width;cv.height=v.height;await p.render({canvasContext:cv.getContext('2d'),viewport:v}).promise;
+  const p=await pdf.getPage(n),v0=p.getViewport({scale:1}),dpr=Math.min(devicePixelRatio||1,3),esc=larg*dpr/larguraUtil(v0.width),v=p.getViewport({scale:esc});
+  cv.width=larguraUtil(v.width);cv.height=v.height;await p.render({canvasContext:cv.getContext('2d'),viewport:v}).promise;
 }
 function fq(){if(!mapa)return{f:pag,t:total,passo:1,np:1};const f=mapa.frameDe[pag],ps=mapa.paginas[f];return{f,t:mapa.total,passo:ps.indexOf(pag)+1,np:ps.length}}
 function rotulo(){const q=fq();$('pos').textContent=(TEM_PDF?q.f+' / '+q.t:'slide '+pag)+(q.np>1?'  passo '+q.passo+'/'+q.np:'')}
@@ -1385,8 +1486,10 @@ function md(t){
     else{if(lista){h+='</ul>';lista=false}if(l.trim())h+='<p>'+il(l)+'</p>'}});
   return h+(lista?'</ul>':'');
 }
+let editando=null;
 function mostraNotas(){
-  const q=fq(),t=notas['p'+pag]??notas[String(q.f)];
+  if(editando)return;
+  const q=fq(),t=notas['p'+pag]??notas[String(q.f)]??notasPdf['p'+pag];
   $('ntxt').style.fontSize=fonte+'px';
   $('ntxt').innerHTML=t?md(t):'<p class="vazio">Sem notas para este slide.</p>';$('ntxt').scrollTop=0;
 }
@@ -1396,8 +1499,8 @@ async function mostra(){
   if(!pdf){$('vista').style.width=larg+'px';$('vista').style.height=(larg*9/16)+'px';ajustaOvp();return}
   if(desenhado===pag)return;desenhado=pag;limpaLocal();
   const p=await pdf.getPage(pag),v0=p.getViewport({scale:1});
-  const w=Math.min(larg,(innerHeight*0.24)*v0.width/v0.height);
-  $('vista').style.width=w+'px';$('vista').style.height=(w*v0.height/v0.width)+'px';ajustaOvp();
+  const uw=larguraUtil(v0.width),w=Math.min(larg,(innerHeight*0.24)*uw/v0.height);
+  $('vista').style.width=w+'px';$('vista').style.height=(w*v0.height/uw)+'px';ajustaOvp();
   desenha(pag,$('cv'),w);
   previa();
 }
@@ -1449,9 +1552,12 @@ function riscaLocal(t,pts,de){
   g.lineWidth=t==='hl'?Math.max(6,w*0.022):Math.max(2,w*0.004);g.strokeStyle=cores[t==='hl'?'hl':'pen'];if(t==='hl')g.globalAlpha=.4;
   g.beginPath();g.moveTo(pts[de][0]*w,pts[de][1]*h);for(let i=de+1;i<pts.length;i++)g.lineTo(pts[i][0]*w,pts[i][1]*h);if(pts.length===1)g.lineTo(pts[0][0]*w+.1,pts[0][1]*h);g.stroke();g.restore();
 }
-function envLaser(x,y,on,m){const t=performance.now();if(on&&t-ultimo<25)return;ultimo=t;
-  const ac=new AbortController();setTimeout(()=>ac.abort(),1500);
-  fetch('/laser',{method:'POST',headers:{'Content-Type':'application/json','X-Token':TOKEN},body:JSON.stringify({x,y,on,m,r:raioFoco}),keepalive:true,signal:ac.signal}).catch(()=>{})}
+let lsEnv=false,lsPend=null;
+function envLaser(x,y,on,m){const t=performance.now();if(on&&t-ultimo<25)return;ultimo=t;lsPend={x,y,on,m,r:raioFoco};if(!lsEnv)bombeiaLaser()}
+function bombeiaLaser(){
+  if(!lsPend){lsEnv=false;return}lsEnv=true;const d=lsPend;lsPend=null;
+  const ac=new AbortController(),to=setTimeout(()=>ac.abort(),1500);
+  fetch('/laser',{method:'POST',headers:{'Content-Type':'application/json','X-Token':TOKEN},body:JSON.stringify(d),keepalive:true,signal:ac.signal}).catch(()=>{}).finally(()=>{clearTimeout(to);bombeiaLaser()})}
 function pos(e){const r=$('vista').getBoundingClientRect();return{x:Math.max(0,Math.min(1,(e.clientX-r.left)/r.width)),y:Math.max(0,Math.min(1,(e.clientY-r.top)/r.height))}}
 function ponto(e,on){const{x,y}=pos(e);const p=$('ponto');p.style.display=on?'block':'none';p.style.left=x*100+'%';p.style.top=y*100+'%';envLaser(x,y,on,ferr==='foco'?'foco':'laser')}
 let ultZ=0;
@@ -1556,6 +1662,24 @@ function passo(d){let i=NIVEIS.findIndex(n=>n>=zoom.z-1e-6);if(i<0)i=NIVEIS.leng
 $('zp').onclick=()=>passo(1);$('zm').onclick=()=>passo(-1);$('z1').onclick=()=>enviaZoom(1,.5,.5,true);
 function tam(d){fonte=Math.max(12,Math.min(34,fonte+d));try{localStorage.setItem('baton-fonte',fonte)}catch(e){}$('ntxt').style.fontSize=fonte+'px'}
 $('np').onclick=()=>tam(2);$('nm').onclick=()=>tam(-2);
+function textoTodas(){const todas=Object.assign({},notasPdf,notas);return Object.keys(todas).sort((a,b)=>parseInt(a.replace(/\D/g,''))-parseInt(b.replace(/\D/g,''))).map(k=>'## '+k+'\n'+todas[k]).join('\n\n')}
+function editor(modo){
+  editando=modo;const q=fq(),ed=$('ned');
+  ed.value=modo==='todas'?textoTodas():(notas['p'+pag]??notas[String(q.f)]??notasPdf['p'+pag]??'');ed.style.fontSize=fonte+'px';
+  ed.placeholder=modo==='todas'?'## 1\nnota do slide 1\n\n## 2\nnota do slide 2':'Digite a nota do slide '+pag;
+  $('ntxt').style.display='none';ed.style.display='block';$('nbt').style.display='flex';$('ne').style.display='none';
+  $('ntd').textContent=modo==='todas'?'So este':'Todas';$('nt').textContent=modo==='todas'?'Todas as notas (Markdown)':'Editando slide '+pag;ed.focus();
+}
+function fechaEditor(){editando=null;$('ned').style.display='none';$('nbt').style.display='none';$('ntxt').style.display='';$('ne').style.display='';$('nt').textContent='Notas do apresentador';mostraNotas()}
+$('ne').onclick=()=>editor('slide');
+$('ntd').onclick=()=>{if(editando==='todas'){fechaEditor();editor('slide')}else editor('todas')};
+$('ncn').onclick=fechaEditor;
+$('nsv').onclick=async()=>{
+  const corpo=editando==='todas'?{tudo:$('ned').value}:{p:'p'+pag,t:$('ned').value};
+  try{const r=await fetch('/notas',{method:'POST',headers:{'Content-Type':'application/json','X-Token':TOKEN},body:JSON.stringify(corpo)});
+    if(r.ok){notas=(await r.json()).notas||{};fechaEditor();return}}catch(e){}
+  $('nt').textContent='Falha ao salvar: tente de novo';
+};
 $('pos').onclick=abreIr;
 async function carregaCfg(){try{const r=await fetch('/cfg?k='+encodeURIComponent(TOKEN));if(r.ok)recebeCfg(await r.json())}catch(e){}}
 async function carregaNotas(){try{const r=await fetch('/notas?k='+encodeURIComponent(TOKEN));if(r.ok){notas=(await r.json()).notas||{};mostraNotas()}}catch(e){}}
@@ -1570,7 +1694,7 @@ function conectar(){
 setInterval(()=>{if(Date.now()-ultimaMsg>12000)conectar()},3000);
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){wake();conectar()}});
 addEventListener('online',conectar);addEventListener('pageshow',conectar);wake();carregaNotas();montaAjustes();carregaCfg();
-if(TEM_PDF){pdfjsLib.getDocument('/pdf').promise.then(async d=>{pdf=d;total=d.numPages;try{mapa=await agruparPassos(d)}catch(e){}conectar()})}
+if(TEM_PDF){pdfjsLib.getDocument('/pdf').promise.then(async d=>{pdf=d;total=d.numPages;try{await detectaLado(d);notasPdf=await notasDoPdf(d);mapa=await agruparPassos(d)}catch(e){}mostraNotas();conectar()})}
 else{$('vista').style.background='#1a1a1c';$('vista').insertAdjacentHTML('beforeend','<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#666;font-size:14px;text-align:center;padding:12px;pointer-events:none">area do laser<br>(mapeada na tela do Mac)</div>');conectar()}
 """
 
@@ -1657,9 +1781,10 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
             self.send_header("Cache-Control", "no-store")
             for k, v in (extra or {}).items():
                 self.send_header(k, v)
-            self.end_headers()
+            self._headers_buffer.append(b"\r\n")
             try:
-                self.wfile.write(corpo)
+                self.wfile.write(b"".join(self._headers_buffer) + corpo)  # um unico pacote TCP
+                self._headers_buffer = []
             except (BrokenPipeError, ConnectionResetError, OSError):
                 self.close_connection = True
 
@@ -1749,9 +1874,34 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
                     estado.clientes.remove(q)
             self.close_connection = True
 
+        def _importar(self):
+            if not self._local():
+                return self._enviar(403, '{"erro":"local"}')
+            n = int(self.headers.get("Content-Length", "0"))
+            if n > 60 * 1024 * 1024:
+                return self._enviar(413, '{"erro":"arquivo grande"}')
+            dados = self.rfile.read(n)
+            nome = parse_qs(urlparse(self.path).query).get("nome", ["x"])[0]
+            ext = Path(nome).suffix.lower()[:8]
+            with tempfile.TemporaryDirectory() as d:
+                arq = Path(d) / ("notas" + ext)
+                arq.write_bytes(dados)
+                try:
+                    notas = notas_de_arquivo(arq)
+                except Exception as e:
+                    return self._enviar(400, json.dumps({"erro": str(e)[:120]}))
+            if not notas:
+                return self._enviar(422, '{"erro":"nenhuma nota encontrada no arquivo"}')
+            return self._enviar(200, json.dumps({"importadas": len(estado.importar_notas(notas))}))
+
         def do_POST(self):
             if not self._autorizado():
                 return self._enviar(403, '{"erro":"token"}')
+            if urlparse(self.path).path == "/painel/importar":
+                try:
+                    return self._importar()
+                except (ValueError, OSError):
+                    return self._enviar(400, '{"erro":"leitura"}')
             try:
                 n = int(self.headers.get("Content-Length", "0"))
                 dados = json.loads(self.rfile.read(n) or b"{}")
@@ -1779,6 +1929,14 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
                 estado.laser(x, y, bool(dados.get("on")), "foco" if dados.get("m") == "foco" else "laser",
                              dados.get("r"))
                 return self._enviar(200, "{}")
+            if self.path == "/notas":
+                if "tudo" in dados:
+                    notas = estado.salvar_todas(dados["tudo"])
+                else:
+                    notas = estado.salvar_nota(dados.get("p"), dados.get("t", ""))
+                if notas is None:
+                    return self._enviar(400, '{"erro":"chave"}')
+                return self._enviar(200, json.dumps({"notas": notas}))
             if self.path == "/cfg":
                 return self._enviar(200, json.dumps(estado.set_cfg(dados)))
             if self.path == "/draw":
@@ -1787,6 +1945,82 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
             self._enviar(404, "{}")
 
     return H
+
+
+DECKS = (".pptx", ".ppt", ".odp", ".key")
+
+
+def notas_de_arquivo(caminho):
+    """Notas de um .pptx (notas do apresentador) ou de um .md (## 1, ## p12). Outros formatos: ValueError."""
+    c = str(caminho).lower()
+    if c.endswith(".pptx"):
+        return notas_pptx(caminho)
+    if c.endswith((".md", ".txt")):
+        return ler_notas(caminho)
+    raise ValueError("formato sem notas legiveis: use .pptx ou .md")
+
+
+def notas_pptx(caminho):
+    """Notas do apresentador de um .pptx (ppt/notesSlides) na ordem dos slides: {'p1': texto, ...}."""
+    import posixpath
+    import zipfile
+    import xml.etree.ElementTree as ET
+    ns = {"p": "http://schemas.openxmlformats.org/presentationml/2006/main",
+          "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
+          "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+          "rel": "http://schemas.openxmlformats.org/package/2006/relationships"}
+    notas = {}
+    with zipfile.ZipFile(caminho) as z:
+        def rels(parte):
+            pasta, nome = posixpath.split(parte)
+            arq = posixpath.join(pasta, "_rels", nome + ".rels")
+            if arq not in z.namelist():
+                return {}
+            return {r.get("Id"): (r.get("Type", ""), posixpath.normpath(posixpath.join(pasta, r.get("Target", ""))))
+                    for r in ET.fromstring(z.read(arq)).findall("rel:Relationship", ns)}
+        pres = ET.fromstring(z.read("ppt/presentation.xml"))
+        rp = rels("ppt/presentation.xml")
+        for n, sld in enumerate(pres.findall(".//p:sldId", ns), 1):
+            alvo = rp.get(sld.get("{%s}id" % ns["r"]))
+            if not alvo:
+                continue
+            nota = next((t for tipo, t in rels(alvo[1]).values() if tipo.endswith("/notesSlide")), None)
+            if not nota or nota not in z.namelist():
+                continue
+            raiz = ET.fromstring(z.read(nota))
+            paragrafos = []
+            for sp in raiz.findall(".//p:sp", ns):
+                ph = sp.find(".//p:nvPr/p:ph", ns)
+                if ph is not None and ph.get("type") in ("sldImg", "sldNum", "hdr", "ftr", "dt"):
+                    continue
+                for par in sp.findall(".//a:p", ns):
+                    t = "".join(x.text or "" for x in par.findall(".//a:t", ns)).strip()
+                    if t:
+                        paragrafos.append(t)
+            if paragrafos:
+                notas[f"p{n}"] = "\n\n".join(paragrafos)
+    return notas
+
+
+def deck_para_pdf(caminho):
+    """Converte .pptx/.ppt/.odp em PDF com o LibreOffice (cache em ~/.cache/baton/decks); devolve o caminho do PDF."""
+    exe = shutil.which("soffice") or shutil.which("libreoffice") or next(
+        (p for p in ("/Applications/LibreOffice.app/Contents/MacOS/soffice",
+                     r"C:\Program Files\LibreOffice\program\soffice.exe") if os.path.exists(p)), None)
+    if not exe:
+        sys.exit("para abrir .pptx instale o LibreOffice (ou exporte o PDF no PowerPoint/Keynote e passe o PDF)")
+    src = Path(caminho)
+    h = hashlib.sha1(src.read_bytes()).hexdigest()[:10]
+    pasta = CACHE.parent / "decks" / h
+    pdf = pasta / (src.stem + ".pdf")
+    if not pdf.exists():
+        pasta.mkdir(parents=True, exist_ok=True)
+        print("Convertendo a apresentacao em PDF (so na primeira vez)...", flush=True)
+        r = subprocess.run([exe, "--headless", "--convert-to", "pdf", "--outdir", str(pasta), str(src)],
+                           capture_output=True, text=True, timeout=300)
+        if not pdf.exists():
+            sys.exit("falha ao converter a apresentacao:\n" + (r.stderr or r.stdout)[-600:])
+    return str(pdf)
 
 
 def contar_paginas(pdf):
@@ -1828,6 +2062,10 @@ def main():
     ap.add_argument("--sem-overlay", action="store_true", help="modo externo: nao usa a camada de desenho (laser = cursor)")
     ap.add_argument("--cursor", action="store_true", help="modo externo: move tambem o cursor do mouse com o laser")
     ap.add_argument("--notas", help="arquivo Markdown com as notas do apresentador (padrao: <pdf>.notas.md)")
+    ap.add_argument("--importar-notas", metavar="ARQUIVO",
+                    help="importa as notas de um .pptx (notas do apresentador) ou .md para a sessao do Baton e sai")
+    ap.add_argument("--rede", action="store_true",
+                    help="escuta tambem na rede local (Wi-Fi) e usa o IP dela no QR code: funciona sem Tailscale, no mesmo Wi-Fi")
     ap.add_argument("--residente", action="store_true",
                     help="segundo plano: fica em espera e pergunta no celular quando uma apresentacao abrir em tela cheia")
     ap.add_argument("--pausar", action="store_true", help="pausa o Baton em execucao (nao controla nada ate --retomar)")
@@ -1842,6 +2080,22 @@ def main():
         p["ativo"] = a.retomar
         residente.prefs_salvar(p)
         return print("Baton retomado" if a.retomar else "Baton pausado")
+    if a.importar_notas:
+        try:
+            notas = notas_de_arquivo(a.importar_notas)
+        except (OSError, ValueError, KeyError) as e:
+            sys.exit(f"nao consegui ler as notas: {e}")
+        if not notas:
+            sys.exit("nenhuma nota encontrada no arquivo")
+        corpo = Path(a.importar_notas).read_bytes()
+        try:  # Baton rodando: importa nele (vale na hora); senao grava na sessao em disco
+            rq = urllib.request.Request(f"http://127.0.0.1:{a.porta}/painel/importar?nome={Path(a.importar_notas).name}", data=corpo, method="POST")
+            urllib.request.urlopen(rq, timeout=10).read()
+            return print(f"{len(notas)} notas importadas no Baton em execucao")
+        except OSError:
+            e = Estado(None, 9999, "slide", "")
+            e.importar_notas(notas)
+            return print(f"{len(notas)} notas salvas na sessao; valem na proxima vez que o Baton abrir")
     if a.detectar:
         print(residente.detectar() or "nenhum app em tela cheia")
         return
@@ -1849,14 +2103,23 @@ def main():
         a.externo, a.sem_abrir = True, True
     if not a.pdf:
         a.externo = True  # sem PDF: plug and play, como um passador de slides USB
-    pdf = None
+    pdf, notas_deck = None, {}
     if a.pdf:
         pdf = os.path.abspath(a.pdf)
         if not os.path.isfile(pdf):
             sys.exit(f"arquivo nao encontrado: {pdf}")
+        if pdf.lower().endswith(DECKS):
+            if pdf.lower().endswith(".pptx"):
+                try:
+                    notas_deck = notas_pptx(pdf)
+                except Exception as e:
+                    print(f"aviso: nao consegui ler as notas do pptx ({e})", file=sys.stderr)
+            pdf = deck_para_pdf(pdf)
     ts = a.host or ip_tailscale()
+    lan = (not ts or a.rede) and not a.host
+    ip_url = (ip_lan() if lan else ts) or ts or "IP-DO-COMPUTADOR"
     token = token_estavel(a.novo_token)
-    remoto = f"http://{ts or 'IP-DO-MAC'}:{a.porta}/remote?k={token}"
+    remoto = f"http://{ip_url}:{a.porta}/remote?k={token}"
     prop = 16 / 9
     if a.proporcao:
         try:
@@ -1876,11 +2139,18 @@ def main():
     total = contar_paginas(pdf) if pdf else 9999
     estado = Estado(pdf, total, a.transicao, token, externo, remoto, prop)
     caminho_notas = a.notas or (str(Path(pdf).with_suffix(".notas.md")) if pdf else None)
-    if caminho_notas and os.path.isfile(caminho_notas):
-        estado.notas = ler_notas(caminho_notas)
-        print(f"Notas: {caminho_notas} ({len(estado.notas)} entradas)")
+    base = {}
+    if notas_deck and not a.notas:
+        base = notas_deck
+        print(f"Notas do pptx: {len(notas_deck)} slides")
+    elif caminho_notas and os.path.isfile(caminho_notas):
+        base = ler_notas(caminho_notas)
+        print(f"Notas: {caminho_notas} ({len(base)} entradas)")
     elif a.notas:
         sys.exit(f"arquivo de notas nao encontrado: {a.notas}")
+    if pdf:
+        estado.notas_id = hashlib.sha1(pdf.encode()).hexdigest()[:10]
+    estado.carregar_notas_sessao(base)
     estado.sincronizar_overlay()
     estado.som.preparar()
     if a.residente:
@@ -1888,10 +2158,10 @@ def main():
         residente.Vigia(estado).start()
     usar_cache = baixar_pdfjs() if pdf else False
     usar_qr = baixar_qr()
-    hosts = ["127.0.0.1"] + ([ts] if ts else [])
-    if not ts:
-        print("aviso: Tailscale nao encontrado; escutando em 0.0.0.0 (rede local)", file=sys.stderr)
-        hosts = ["0.0.0.0"]
+    hosts = ["0.0.0.0"] if lan else ["127.0.0.1", ts]
+    if lan:
+        print("Rede local: escutando em todas as interfaces; o celular precisa estar no mesmo Wi-Fi. "
+              "O token vai sem criptografia (HTTP): use so em rede de confianca.", file=sys.stderr)
     handler = criar_handler(estado, usar_cache, usar_qr)
     servidores = []
     for h in hosts:
@@ -1899,12 +2169,13 @@ def main():
             s = Servidor((h, a.porta), handler)
         except OSError as e:
             print(f"aviso: nao consegui escutar em {h}:{a.porta} ({e})", file=sys.stderr)
-            if h == "127.0.0.1":
+            if h in ("127.0.0.1", "0.0.0.0"):
                 sys.exit(f"a porta {a.porta} esta ocupada ou indisponivel (outro Baton rodando? use --porta)")
             continue
         threading.Thread(target=s.serve_forever, daemon=True).start()
         servidores.append(s)
     local = f"http://localhost:{a.porta}/"
+    estado.local_url = local
     print(f"\nModo: {'externo (teclas e mouse para o app em primeiro plano)' if externo else 'tela do Baton'}")
     if pdf:
         print(f"PDF: {pdf} ({estado.total} paginas)")

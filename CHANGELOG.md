@@ -1,12 +1,19 @@
 # Changelog
 
 ## Não lançado
+- PDF do beamer com notas ao lado (`show notes on second screen=right`): detectado automaticamente; a prévia e o modo tela mostram só o slide e as notas vêm da metade direita da página. Exemplo: `exemplo-notas-beamer.tex`.
+- Correção: o agrupamento de passos ignorava mal os números de página (regex com barras duplas).
+- Importação de notas de `.pptx` (notas do apresentador) e `.md` para a sessão: `--importar-notas ARQUIVO` e seletor de arquivo no painel.
+- Notas do apresentador digitadas no celular (botão "Editar" por slide e "Todas" em Markdown), salvas em `~/.cache/baton/notas-sessao.json` e restauradas ao reabrir; funcionam sem PDF/pptx e somam-se às notas de arquivo.
+- Aceita `.pptx`, `.ppt` e `.odp` (converte em PDF com o LibreOffice) e lê as notas do apresentador do `.pptx`; com `--externo` o celular mostra slide atual, próximo, cronômetro e notas enquanto controla o PowerPoint/Keynote.
+- `--rede`: funciona sem Tailscale no mesmo Wi-Fi (escuta na rede local e o QR code usa o IP dela); sem Tailscale instalado isso é automático, no lugar do antigo "IP-DO-MAC".
+- Aviso do sistema clicável: clicar abre a página local do Baton (Linux via `notify-send --action`, Windows via balão, macOS via `terminal-notifier`, `brew install terminal-notifier`; sem ele o aviso é só informativo).
+- Menos atraso: detecção de tela cheia a cada 1 s (antes 2 s), laser do celular com uma requisição por vez (só a posição mais recente é enviada, sem fila) e respostas HTTP num único pacote.
 - macOS: `Baton.app` (launcher em Swift) para as permissões de Acessibilidade e Automação aparecerem como "Baton" em vez de `python3.x`.
 - Correção: o IP do Tailscale é validado (sob o launchd a CLI imprimia erro e o servidor não subia) e há fallback pelas interfaces de rede.
 - Modo residente (`--residente`): em segundo plano, detecta apresentação em tela cheia (macOS, Windows, Linux X11) e pergunta no celular antes de controlar; sem aceitar, nenhuma tecla é enviada.
 - Pausa e retomada (`--pausar`, `--retomar`), painel local `/painel`, apps lembrados (sempre/nunca) e modo (perguntar, sempre, nunca).
 - Instaladores `install.sh`/`uninstall.sh` e `install.ps1`/`uninstall.ps1`; o início automático agora usa o modo residente.
-- Projeto renomeado de passador para Baton (o cache de `~/.cache/passador` é migrado).
 - Windows e Linux: backend de teclas e cursor do Windows (user32), camada Tk (`overlay_tk.py`) e Gtk (`overlay_gtk.py`), som por `winsound`/`paplay`, `--instalar` na inicialização do Windows e no autostart do Linux.
 - Android: ícones 192 e 512 para instalar a página como app.
 - Cortina (preto, branco, teatro, fim com texto e confete), confete avulso e efeitos sonoros sintetizados (ding, tambor, aplausos, fanfarra, buzina, suspense), painel "Extras" no celular.
