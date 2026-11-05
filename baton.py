@@ -410,8 +410,7 @@ class Estado:
         elif acao in ("autorizar", "revogar"):
             return self.consentir(acao)
         elif acao == "abrir_acessibilidade":
-            if sys.platform == "darwin":
-                subprocess.Popen(["open", "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"])
+            threading.Thread(target=pedir_acessibilidade, daemon=True).start()
             return True
         elif acao == "testar_tecla":
             def _testar():  # 5 s para trazer o app (ex.: ReLaTeX em tela cheia) ao primeiro plano
@@ -1104,6 +1103,24 @@ def montar_app_mac():
         subprocess.run(["codesign", "--force", "--deep", "-s", "-", str(app)], check=False, capture_output=True)
     marca.write_text(h)
     return str(exe)
+
+
+def pedir_acessibilidade():
+    """macOS: garante o Baton.app, pede a permissao por ele (via LaunchServices, que faz o app aparecer na lista),
+    mostra o app no Finder (para arrastar para a lista com o +) e abre os Ajustes. Devolve uma mensagem."""
+    if sys.platform != "darwin":
+        return "so no macOS"
+    app = Path.home() / "Applications" / "Baton.app"
+    exe = montar_app_mac()
+    if not exe or not app.exists():
+        return ("nao consegui montar o Baton.app (precisa do swiftc: rode 'xcode-select --install' e tente de novo); "
+                "veja ~/.cache/baton/baton.log")
+    subprocess.Popen(["open", "-n", str(app), "--args", "--pedir-acesso"])
+    time.sleep(1.5)
+    subprocess.Popen(["open", "-R", str(app)])
+    subprocess.Popen(["open", "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"])
+    return ("pedi a permissao pelo Baton.app. Se ele nao aparecer na lista de Acessibilidade, clique em + e escolha "
+            f"{app} (ja mostrado no Finder)")
 
 
 def instalar_login(remover=False):
@@ -2218,6 +2235,7 @@ def main():
     ap.add_argument("--notas", help="arquivo Markdown com as notas do apresentador (padrao: <pdf>.notas.md)")
     ap.add_argument("--importar-notas", metavar="ARQUIVO",
                     help="importa as notas de um .pptx (notas do apresentador) ou .md para a sessao do Baton e sai")
+    ap.add_argument("--permissao", action="store_true", help="macOS: pede a permissao de Acessibilidade para o Baton.app e abre os Ajustes")
     ap.add_argument("--rede", action="store_true", help="(sem efeito: a rede local ja e o endereco principal)")
     ap.add_argument("--residente", action="store_true",
                     help="segundo plano: fica em espera e pergunta no celular quando uma apresentacao abrir em tela cheia")
@@ -2228,6 +2246,8 @@ def main():
     a = ap.parse_args()
     if a.instalar or a.desinstalar:
         return instalar_login(remover=a.desinstalar)
+    if a.permissao:
+        return print(pedir_acessibilidade())
     if a.pausar or a.retomar:
         p = residente.prefs_carregar()
         p["ativo"] = a.retomar

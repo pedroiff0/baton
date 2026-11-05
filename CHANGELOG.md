@@ -1,6 +1,7 @@
 # Changelog
 
 ## Não lançado
+- macOS: `baton --permissao` (e o botão do painel) pede a Acessibilidade pelo próprio `Baton.app` via LaunchServices, mostra o app no Finder para arrastar para a lista com o `+` e abre os Ajustes; corrige o Baton não aparecer na lista.
 - Carregar a apresentação pela interface: o painel aceita PDF, PPTX, ODP ou `.md` (arrastar e soltar); o celular recarrega com prévia, próximo slide e notas, sem terminal.
 - Rede: o endereço principal agora é o do Wi-Fi (funciona sem VPN) e o Tailscale vira o segundo; a página do QR mostra os dois, o celular mostra o atraso (ms) e troca sozinho de endereço quando a conexão cai. O `--rede` não é mais necessário.
 - Segurança: com a escuta em todas as interfaces, `/`, `/qr`, `/pdf`, `/events` e o manifesto passam a exigir o token (ou o próprio computador).

@@ -8,6 +8,15 @@ import ApplicationServices
 import Foundation
 
 let argumentos = Array(CommandLine.arguments.dropFirst())
+
+// Baton.app --pedir-acesso: so pede a permissao de Acessibilidade (o app passa a aparecer na lista) e sai.
+if argumentos.first == "--pedir-acesso" {
+    let opcoes = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+    let ok = AXIsProcessTrustedWithOptions(opcoes)
+    print(ok ? "Acessibilidade: liberada" : "Acessibilidade: pendente, ative o Baton nos Ajustes")
+    Thread.sleep(forTimeInterval: 1.5)
+    exit(ok ? 0 : 1)
+}
 guard argumentos.count >= 2 else {
     FileHandle.standardError.write("uso: Baton <python> <baton.py> [argumentos...]\n".data(using: .utf8)!)
     exit(2)

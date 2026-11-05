@@ -249,7 +249,7 @@ select{background:#3a3a3c;color:#fff;border:0;border-radius:10px;padding:10px;fo
 </style></head><body><h1>Baton</h1><div class="cartao" id="st">...</div>
 <div class="cartao" id="acess" style="display:none;border:1px solid #ff453a"><b>O Mac nao deixou o Baton enviar teclas</b>
 <p><small>Sem essa permissao o Proximo/Anterior do celular nao funciona. Ative o Baton em Acessibilidade (se houver uma entrada antiga, remova e adicione de novo).</small></p>
-<button id="bac">Abrir Ajustes de Acessibilidade</button></div>
+<button id="bac">Pedir permissao e abrir Ajustes</button></div>
 <h2>Apresentacao</h2><div class="cartao"><div id="drop" style="border:2px dashed #3a3a3c;border-radius:12px;padding:22px;text-align:center;cursor:pointer">
 <b>Solte aqui o arquivo da apresentacao</b><br><small>PDF, PowerPoint (.pptx), ODP, ou um .md de notas. Ou clique para escolher.</small></div>
 <input type="file" id="nf" accept=".pdf,.pptx,.ppt,.odp,.md,.txt" style="display:none">
