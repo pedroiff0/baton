@@ -9,6 +9,7 @@ if (-not $py) { Write-Error "Python 3 nao encontrado. Instale em python.org (com
 New-Item -ItemType Directory -Force $dest | Out-Null
 Copy-Item "$src\baton.py", "$src\residente.py", "$src\overlay_tk.py", "$src\tray_win.ps1", "$src\LICENSE" $dest -Force
 & $py "$dest\baton.py" --instalar
+& $py "$dest\baton.py" --preparar-offline
 $pyw = Join-Path (Split-Path -Parent $py) "pythonw.exe"
 if (-not (Test-Path $pyw)) { $pyw = $py }
 Start-Process $pyw -ArgumentList "`"$dest\baton.py`" --residente" -WindowStyle Hidden

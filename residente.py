@@ -287,6 +287,11 @@ select{background:#3a3a3c;color:#fff;border:0;border-radius:10px;padding:10px;fo
 <h2>Celulares</h2><div class="cartao"><ul id="cels"></ul>
 <button id="bpn">Parear novo celular</button> <button class="cinza" id="bqr2">Mostrar QR code</button>
 <p><small>Cada QR vale para um celular e muda depois de usado. Desconectar tira o acesso daquele celular.</small></p></div>
+<h2>Sem internet (Bluetooth)</h2><div class="cartao"><div id="btst"></div>
+<div style="margin:8px 0"><button class="cinza" id="tbi">iPhone</button> <button class="cinza" id="tba">Android</button></div>
+<ol id="btpassos"></ol>
+<button class="cinza" id="bbq">Mostrar QR code desta rede</button>
+<p><small>O celular compartilha a internet por Bluetooth e o computador entra nessa rede: nao precisa de Wi-Fi nem de Tailscale. A conexao e lenta (1 a 2 Mb/s), por isso o celular entra em modo leve: passa slides e mostra notas; o PDF e lido aos poucos.</small></p></div>
 <h2>Execucao</h2><div class="cartao"><button id="bp">Pausar</button><button class="cinza" id="bq">Mostrar QR code</button>
 <button class="cinza" id="ba">Autorizar agora</button></div>
 <h2>Quando uma apresentacao em tela cheia abrir</h2><div class="cartao"><select id="modo">
@@ -300,6 +305,17 @@ const $=id=>document.getElementById(id);let est={};
 async function acao(a,v){const r=await fetch('/painel/acao',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({acao:a,valor:v})});if(r.ok)est=await r.json();ver()}
 function lista(el,itens,tipo){el.innerHTML='';if(!itens.length){el.innerHTML='<li><small>nenhum</small></li>';return}
   itens.forEach(a=>{const li=document.createElement('li');li.textContent=a+' ';const b=document.createElement('button');b.className='cinza';b.textContent='Esquecer';b.onclick=()=>acao('esquecer',a);li.appendChild(b);el.appendChild(li)})}
+const BT={iphone:['Pareie o iPhone com o computador (Ajustes do Bluetooth nos dois).','No iPhone: Ajustes > Ponto de Acesso Pessoal > ative "Permitir que outros entrem".','__CONECTAR__','Quando este cartao mostrar "Conectado por Bluetooth", escaneie o QR code desta rede.'],
+android:['Pareie o Android com o computador (Bluetooth nos dois).','No Android: Ajustes > Conexoes (ou Rede e internet) > Ponto de acesso e compartilhamento > ative "Tethering Bluetooth".','__CONECTAR__','Quando este cartao mostrar "Conectado por Bluetooth", escaneie o QR code desta rede.']};
+const CONECTAR={darwin:'No Mac: Ajustes do Sistema > Bluetooth > ao lado do celular, "Conectar a rede" (ou clique no icone de Bluetooth na barra de menus).',
+win32:'No Windows: Configuracoes > Bluetooth e dispositivos > Dispositivos > Mais configuracoes > Dispositivos e Impressoras > botao direito no celular > Conectar usando > Ponto de acesso.',
+linux:'No Linux: Configuracoes > Bluetooth > clique no celular > Conectar a rede (ou: nmcli device connect <MAC>).'};
+let btAba='iphone';
+function verBt(){
+  const b=est.rede_bluetooth;$('btst').innerHTML=b?'<span class="ok">Conectado por Bluetooth</span> <small>('+b.interface+', '+b.ip+')</small>':'<span class="pausa">Aguardando o computador entrar na rede do celular...</span>';
+  $('btpassos').innerHTML=BT[btAba].map(t=>'<li>'+(t==='__CONECTAR__'?(CONECTAR[est.plataforma]||CONECTAR.linux):t)+'</li>').join('');
+  $('tbi').className=btAba==='iphone'?'':'cinza';$('tba').className=btAba==='android'?'':'cinza'}
+$('tbi').onclick=()=>{btAba='iphone';verBt()};$('tba').onclick=()=>{btAba='android';verBt()};$('bbq').onclick=()=>window.open('/qr','_blank');
 function ver(){
   $('st').innerHTML=est.ativo?'<span class="ok">Ativo</span>'+(est.autorizado?' - controlando':' - em espera')+(est.pedido?'<br><small>Pedido pendente: '+est.pedido.app+'</small>':''):'<span class="pausa">Pausado</span>';
   $('bp').textContent=est.ativo?'Pausar':'Retomar';$('modo').value=est.modo;
@@ -309,6 +325,7 @@ function ver(){
     li.textContent=d.nome+(d.conectado?' - conectado':' - desconectado')+' ';const b=document.createElement('button');b.className='cinza';
     b.textContent='Desconectar';b.onclick=()=>acao('revogar_celular',d.id);li.appendChild(b);cl.appendChild(li)});
   if(!(est.dispositivos||[]).length)cl.innerHTML='<li><small>nenhum celular pareado</small></li>';
+  verBt();
   lista($('ok'),est.apps_ok||[]);lista($('nao'),est.apps_nao||[]);$('ba').textContent=est.autorizado?'Revogar autorizacao':'Autorizar agora'}
 $('bp').onclick=()=>acao(est.ativo?'pausar':'retomar');$('ba').onclick=()=>acao(est.autorizado?'revogar':'autorizar');
 $('modo').onchange=e=>acao('modo',e.target.value);$('bi').onclick=()=>acao('instalar');$('br').onclick=()=>acao('desinstalar');

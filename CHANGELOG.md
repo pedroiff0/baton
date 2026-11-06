@@ -1,6 +1,10 @@
 # Changelog
 
 ## Não lançado
+- Bluetooth sem internet: o painel ganhou o cartão **Sem internet (Bluetooth)** (abas iPhone/Android, passos por sistema e status ao vivo); os endereços do QR são recalculados a cada ~3 s e ordenados Bluetooth, hotspot, Wi-Fi, Tailscale; no macOS a porta "Bluetooth PAN" (`enN`) é reconhecida pelo `networksetup`.
+- Modo leve (rede Bluetooth/hotspot): `/pdf` aceita `Range` (206) e o celular lê o PDF em blocos de 64 KB, com notas do beamer e prévia por página sob demanda; o SSE não envia laser/desenho aos celulares.
+- `--preparar-offline` (e `--vendor`) baixa pdf.js e o gerador de QR; `install.sh`/`install.ps1` rodam no fim; `vendor/` ao lado do `baton.py` tem prioridade sobre `~/.cache/baton`.
+- Celular na horizontal: layout em duas colunas (slide atual e próximo à esquerda, cronômetro e notas à direita). Cronômetro com **Volta** (laps, até 60) e **Zerar**, sincronizado entre os celulares.
 - Pareamento por celular: o QR code é de uso único (`/p/<codigo>`, vale 10 min e muda depois de usado); cada celular recebe seu próprio token e aparece no painel com **Desconectar** e **Parear novo celular**. O token único antigo deixou de valer: celulares já pareados precisam escanear um QR novo uma vez. `/cfg`, `/notas`, `/events`, `/pdf` e o manifesto validam o token do dispositivo; `--novo-token` revoga todos.
 - Correção (macOS): o `Baton.app` é compilado com alvo fixo (`-target <arch>-apple-macos12.0`) e `LSMinimumSystemVersion`; antes o `swiftc` usava a versão do SDK instalado, e se fosse mais nova que o macOS o Finder recusava o app ("You can't use this version of the application with this version of macOS"), o `+` de Acessibilidade não aceitava e ele não aparecia na lista. `--diagnostico` mostra a versão mínima gravada no binário.
 - macOS: o pedido de Acessibilidade agora sai de dentro do laço de eventos do aplicativo (1,5 s depois de abrir) e inclui `CGRequestPostEventAccess`; o item "Permissão de teclas..." do ícone na barra de menu repete o pedido e abre os Ajustes.

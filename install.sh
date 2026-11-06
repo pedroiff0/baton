@@ -15,6 +15,7 @@ printf '#!/bin/sh\nexec python3 "%s/baton.py" "$@"\n' "$DEST" > "$HOME/.local/bi
 chmod +x "$HOME/.local/bin/baton"
 
 python3 "$DEST/baton.py" --instalar
+python3 "$DEST/baton.py" --preparar-offline || echo "aviso: sem internet agora; rode 'baton --preparar-offline' quando estiver online (o celular usa a CDN ate la)"
 if [ "$(uname)" != "Darwin" ] && [ -z "$BATON_SEM_INICIAR" ]; then
   nohup python3 "$DEST/baton.py" --residente >"$HOME/.cache/baton.log" 2>&1 &  # no Mac o launchd ja iniciou
 fi

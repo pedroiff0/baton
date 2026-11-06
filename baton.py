@@ -58,6 +58,17 @@ _migrar_cache()
 CACHE = Path.home() / ".cache" / "baton" / f"pdfjs-{PDFJS_VERSION}"
 QR_CDN = "https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"
 QR_FILE = Path.home() / ".cache" / "baton" / "qrcode.min.js"
+VENDOR = Path(__file__).resolve().parent / "vendor"  # copia embutida (pendrive/offline): tem prioridade sobre ~/.cache
+
+
+def pasta_pdfjs():
+    return VENDOR / "pdfjs" if VENDOR.is_dir() else CACHE
+
+
+def arquivo_qr():
+    return VENDOR / "qrcode.min.js" if VENDOR.is_dir() else QR_FILE
+
+
 TRANSICOES = ("fade", "slide", "zoom", "nenhuma")
 
 
@@ -282,7 +293,7 @@ class Estado:
         self.externo = externo
         self.remote_url = remote_url
         self.local_url = ""
-        self.bases = []  # [{"nome","base"}]: enderecos do computador (rede local primeiro, Tailscale depois)
+        self._bases_fixas, self.bases_fn, self._bases_cache = [], None, (0.0, [])  # enderecos do computador (ver calcular_bases)
         self.dispositivos = []  # celulares pareados: {id, nome, token, criado, ultimo_visto, ua}
         self.pareamento = None  # {"codigo", "expira"}: QR de uso unico
         self._salvo_em = 0.0
@@ -293,6 +304,7 @@ class Estado:
         self.seq = 0
         self.vistos = collections.deque(maxlen=400)
         self.t_rodando, self.t_base, self.t_desde = False, 0.0, 0.0  # cronometro da apresentacao
+        self.voltas = []  # tempos (s) marcados no cronometro
         self.tracos = []  # tracos da caneta/marca-texto do slide atual
         self.notas = {}
         self.notas_id = "livre"  # sessao das notas digitadas no celular (por apresentacao)
@@ -320,8 +332,11 @@ class Estado:
             self.t_desde, self.t_rodando = agora, True
         elif acao in ("pause", "toggle") and self.t_rodando:
             self.t_base, self.t_rodando = self.decorrido(), False
+        elif acao == "lap":
+            if (self.t_rodando or self.t_base > 0) and len(self.voltas) < 60:
+                self.voltas.append(round(self.decorrido(), 1))
         elif acao == "reset":
-            self.t_base, self.t_rodando = 0.0, False
+            self.t_base, self.t_rodando, self.voltas = 0.0, False, []
 
     def snapshot(self):
         return {"pagina": self.pagina, "total": self.total, "transicao": self.transicao, "preto": self.cortina == "preto",
@@ -329,10 +344,13 @@ class Estado:
                 "auth": self.autorizado, "ativo": self.prefs["ativo"], "pedido": self.pedido,
                 "acess": self.acessibilidade(),
                 "remotos": self.remotos, "zoom": self.zoom, "zx": self.zx, "zy": self.zy, "seq": self.seq,
-                "timer": {"rodando": self.t_rodando, "elapsed": round(self.decorrido(), 1)}}
+                "timer": {"rodando": self.t_rodando, "elapsed": round(self.decorrido(), 1), "voltas": self.voltas}}
 
     def publicar(self, msg):
+        pesado = "laser" in msg or "draw" in msg  # so a tela local desenha; poupa a banda do celular
         for q in list(self.clientes):
+            if pesado and getattr(q, "dispositivo", None) is not None:
+                continue
             try:
                 q.put_nowait(msg)
             except queue.Full:
@@ -453,6 +471,7 @@ class Estado:
                 "pedido": self.pedido, "apps_ok": self.prefs["apps_ok"], "apps_nao": self.prefs["apps_nao"],
                 "residente": self.residente, "acessibilidade": self.acessibilidade(), "deck": self.deck_info(),
                 "conexoes": len(self.conectados()), "dispositivos": self.dispositivos_info(),
+                "plataforma": sys.platform, "rede_bluetooth": self.rede_bluetooth(),
                 "pareamento_urls": self.urls_pareamento()}
 
     def comando(self, cmd, valor=None, cid=None):
@@ -658,6 +677,26 @@ class Estado:
     def conectados(self):
         return {getattr(q, "dispositivo", None) for q in self.clientes} - {None}
 
+    @property
+    def bases(self):
+        """[{"nome","base"}]: dinamico (recalcula a cada ~3 s) para o QR ganhar a rede Bluetooth assim que o computador conectar."""
+        if self.bases_fn is None:
+            return self._bases_fixas
+        agora = time.time()
+        if agora - self._bases_cache[0] > 3:
+            self._bases_cache = (agora, self.bases_fn())
+        return self._bases_cache[1]
+
+    @bases.setter
+    def bases(self, valor):
+        self._bases_fixas, self.bases_fn = valor, None
+
+    def rede_bluetooth(self):
+        for r, ip in ips_locais():
+            if r.startswith("Bluetooth"):
+                return {"interface": r, "ip": ip}
+        return None
+
     def urls_remoto(self, token):
         return [{"nome": b["nome"], "url": f"{b['base']}/remote?k={token}"} for b in self.bases]
 
@@ -685,7 +724,7 @@ class Estado:
             self.notas_id = hashlib.sha1(pdf.encode()).hexdigest()[:10]
             self._edits, self._base_vazia = {}, False
             self.pagina, self.zoom, self.zx, self.zy, self.tracos = 1, 1.0, 0.5, 0.5, []
-            self.t_base, self.t_rodando = 0.0, False
+            self.t_base, self.t_rodando, self.voltas = 0.0, False, []
         self.carregar_notas_sessao(notas_base)
         self._mudou()
         self.publicar({"deck": 1})
@@ -755,9 +794,10 @@ class Estado:
 
 
 def baixar_pdfjs():
-    CACHE.mkdir(parents=True, exist_ok=True)
+    pasta = pasta_pdfjs()
+    pasta.mkdir(parents=True, exist_ok=True)
     for nome in PDFJS_FILES:
-        destino = CACHE / nome
+        destino = pasta / nome
         if destino.exists() and destino.stat().st_size > 1000:
             continue
         try:
@@ -770,12 +810,13 @@ def baixar_pdfjs():
 
 
 def baixar_qr():
-    if QR_FILE.exists() and QR_FILE.stat().st_size > 1000:
+    arq = arquivo_qr()
+    if arq.exists() and arq.stat().st_size > 1000:
         return True
     try:
-        QR_FILE.parent.mkdir(parents=True, exist_ok=True)
+        arq.parent.mkdir(parents=True, exist_ok=True)
         with urllib.request.urlopen(QR_CDN, timeout=15) as r:
-            QR_FILE.write_bytes(r.read())
+            arq.write_bytes(r.read())
         return True
     except Exception as e:
         print(f"aviso: nao baixei o gerador de QR ({e}); o navegador usara a CDN", file=sys.stderr)
@@ -1441,8 +1482,41 @@ def parse_interfaces(saida):
     return achados
 
 
-def rotulo_interface(nome, ip):
+def faixa_http(cabecalho, total):
+    """Range 'bytes=a-b' -> (a, b) inclusivo; None se nao ha Range; 'invalida' se fora do arquivo."""
+    if not cabecalho:
+        return None
+    m = re.fullmatch(r"\s*bytes=(\d*)-(\d*)\s*", cabecalho)
+    if not m or (m.group(1) == "" and m.group(2) == ""):
+        return None
+    if m.group(1) == "":
+        n = int(m.group(2))
+        return (max(0, total - n), total - 1) if n > 0 and total else "invalida"
+    a = int(m.group(1))
+    b = int(m.group(2)) if m.group(2) else total - 1
+    if a >= total or b < a:
+        return "invalida"
+    return (a, min(b, total - 1))
+
+
+def portas_mac():
+    """macOS: {dispositivo: nome da porta} pelo networksetup ('en6' -> 'Bluetooth PAN'); a PAN nao se chama bnep no Mac."""
+    if sys.platform != "darwin" or not shutil.which("networksetup"):
+        return {}
+    try:
+        saida = subprocess.run(["networksetup", "-listallhardwareports"], capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return {}
+    return {m.group(2): m.group(1).strip() for m in re.finditer(r"Hardware Port:\s*(.+)\nDevice:\s*(\S+)", saida)}
+
+
+def rotulo_interface(nome, ip, portas=None):
     """Nome amigavel do caminho (ou None para o que nao serve: loopback, Docker, VPN, Tailscale)."""
+    porta = ((portas or {}).get(nome) or "").lower()
+    if "bluetooth" in porta:
+        return f"Bluetooth ({nome})"
+    if "iphone" in porta or "hotspot" in porta or "android" in porta:
+        return f"Hotspot ({nome})"
     n = nome.lower()
     if (n.startswith(IGNORAR_IFACE) or any(k in n for k in ("vethernet", "wsl", "docker", "vmware", "virtualbox", "loopback", "tailscale"))
             or ip.startswith("127.") or re.match(r"100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.", ip)):
@@ -1465,13 +1539,55 @@ def ips_locais():
                     break
             except Exception:
                 pass
-    vistos, lista = set(), []
+    vistos, lista, portas = set(), [], portas_mac()
     for iface, ip in parse_interfaces(saida):
-        r = rotulo_interface(iface, ip)
+        r = rotulo_interface(iface, ip, portas)
         if r and _ip_valido(ip) and ip not in vistos:
             vistos.add(ip)
             lista.append((r, ip))
     return lista
+
+
+_TS_CACHE = [0.0, None]
+
+
+def ip_tailscale_cache(validade=30):
+    if time.time() - _TS_CACHE[0] > validade:
+        _TS_CACHE[:] = [time.time(), ip_tailscale()]
+    return _TS_CACHE[1]
+
+
+def e_rede_lenta(rotulo):
+    return rotulo.startswith(("Bluetooth", "Hotspot"))
+
+
+def calcular_bases(porta, host=None):
+    """Enderecos do computador, do melhor para o pior: Bluetooth > hotspot do celular > Wi-Fi/rota padrao > outras > Tailscale."""
+    if host:
+        return [{"nome": "Rede local", "base": f"http://{host}:{porta}"}]
+    rota = ip_lan()
+
+    def prioridade(item):
+        r, ip = item
+        return 0 if r.startswith("Bluetooth") else 1 if r.startswith("Hotspot") else 2 if ip == rota else 3
+    locais = sorted(ips_locais(), key=prioridade)
+    bases = []
+    for r, ip in locais[:4]:
+        nome = "Wi-Fi / rede local" if (ip == rota and not e_rede_lenta(r)) else r
+        if r.startswith("Bluetooth"):
+            nome = r + " - recomendado sem internet"
+        bases.append({"nome": nome, "base": f"http://{ip}:{porta}"})
+    if rota and rota not in [b["base"].split("//")[1].split(":")[0] for b in bases]:
+        bases.insert(0, {"nome": "Wi-Fi / rede local", "base": f"http://{rota}:{porta}"})
+    ts = ip_tailscale_cache()
+    if ts:
+        bases.append({"nome": "Tailscale (fora do Wi-Fi)", "base": f"http://{ts}:{porta}"})
+    return bases or [{"nome": "Rede local", "base": f"http://IP-DO-COMPUTADOR:{porta}"}]
+
+
+def rede_lenta_do_ip(ip_local):
+    """True se o IP (o da interface por onde o celular se conectou) e de uma rede Bluetooth/hotspot."""
+    return any(e_rede_lenta(r) and i == ip_local for r, i in ips_locais())
 
 
 def ip_lan():
@@ -1493,7 +1609,7 @@ PAGINA_BASE = """<!doctype html><html lang="pt-br"><head><meta charset="utf-8">
 <script src="__QRJS__"></script>
 <style>__CSS__</style></head><body class="__CLASSE__">__HTML__
 <script>
-const BASE="__PDFJS__", TOKEN="__TOKEN__", REMOTE_URL="__REMOTE__", URLS=__URLS__, TEM_PDF=__TEMPDF__, EXTERNO=__EXTERNO__, OVERLAY=__OVERLAY__;
+const BASE="__PDFJS__", TOKEN="__TOKEN__", REMOTE_URL="__REMOTE__", URLS=__URLS__, TEM_PDF=__TEMPDF__, LEVE=__LEVE__, EXTERNO=__EXTERNO__, OVERLAY=__OVERLAY__;
 pdfjsLib.GlobalWorkerOptions.workerSrc = BASE+"pdf.worker.min.js";
 __JS__
 </script></body></html>"""
@@ -1558,7 +1674,11 @@ const larguraUtil=w=>LADO?w/2:w;
 async function detectaLado(d){const v=(await d.getPage(1)).getViewport({scale:1});LADO=v.width/v.height>2.2}
 async function notasDoPdf(d){
   if(!LADO)return{};const out={};
-  for(let i=1;i<=d.numPages;i++){
+  for(let i=1;i<=d.numPages;i++){const t=await notaDaPagina(d,i);if(t)out['p'+i]=t}
+  return out;
+}
+async function notaDaPagina(d,i){
+  {
     const p=await d.getPage(i),v=p.getViewport({scale:1}),W=v.width,H=v.height,tc=await p.getTextContent();
     let it=tc.items.filter(x=>x.str.trim()&&x.transform[4]>=W/2&&x.transform[5]<=H*0.75);
     if(!it.length)it=tc.items.filter(x=>x.str.trim()&&x.transform[4]>=W/2);
@@ -1570,9 +1690,8 @@ async function notasDoPdf(d){
     for(const l of linhas){
       const s=l.t.join(' ').replace(/\s+/g,' ').trim().replace(/^[•▶‣▸◦·]\s*/,'- ');
       if(!s)continue;if(prev!==null)txt+=(prev-l.y>l.h*2.2?'\n\n':'\n');txt+=s;prev=l.y}
-    if(txt)out['p'+i]=txt;
+    return txt;
   }
-  return out;
 }
 async function agruparPassos(pdf){
   const n=pdf.numPages,tok=[];
@@ -1726,7 +1845,9 @@ pdfjsLib.getDocument('/pdf?k='+encodeURIComponent(TOKEN)).promise.then(async d=>
 
 # ------------------------------------------------------------------ celular (iPhone)
 CSS_REMOTO = """
-body{display:flex;flex-direction:column;padding:env(safe-area-inset-top) 12px env(safe-area-inset-bottom);gap:8px;touch-action:none;user-select:none;-webkit-user-select:none}
+body{display:flex;flex-direction:column;padding:env(safe-area-inset-top) max(12px,env(safe-area-inset-right)) env(safe-area-inset-bottom) max(12px,env(safe-area-inset-left));gap:8px;touch-action:none;user-select:none;-webkit-user-select:none}
+#app,#colA,#colB{display:contents}
+#colA>*,#colB>*{order:3}#topo{order:0}#vista{order:1}#info{order:2}#colB>#ajustes,#colB>#extras,#colB>#notas,#colB>#botoes{order:4}
 #topo{display:flex;justify-content:space-between;align-items:center;padding-top:6px;font-size:14px;color:#aaa;flex:0 0 auto}
 #pos{font-size:19px;color:#fff;font-weight:600}
 #dot{width:10px;height:10px;border-radius:50%;background:#e33;display:inline-block;margin-right:6px}#dot.ok{background:#3c6}
@@ -1756,9 +1877,12 @@ select{background:#1d1d1f;color:#fff;border:0;border-radius:12px;font-size:14px;
 .ajc{display:flex;gap:12px;margin:8px 0 4px;align-items:center;font-size:13px;color:#ccc}.ajc i{width:26px;height:26px;border-radius:50%;border:3px solid transparent;display:block}.ajc i.sel{border-color:#fff}
 #info{display:flex;gap:10px;align-items:stretch;flex:0 0 auto}
 #prevbox{flex:1;display:flex;align-items:center;gap:8px;background:#111;border-radius:12px;padding:6px 10px;min-width:0}
-#prevbox canvas{height:62px;max-width:60%;border-radius:6px;background:#1a1a1c}#prevlbl{font-size:12px;color:#888}
+#prevbox canvas{height:78px;max-width:62%;border-radius:6px;background:#1a1a1c}#prevlbl{font-size:12px;color:#888}
 #relogio{flex:0 0 40%;background:#111;border-radius:12px;padding:6px 10px;display:flex;flex-direction:column;justify-content:center;align-items:center}
 #tempo{font-size:30px;font-weight:700;font-variant-numeric:tabular-nums;color:#fff;line-height:1.1}#restante{font-size:12px;color:#888;margin-top:2px}
+#rlbt{display:flex;gap:6px;margin-top:5px;width:100%}#rlbt button{flex:1;padding:5px 0;font-size:12px;border-radius:8px}
+#voltas{width:100%;max-height:38px;overflow:auto;font-size:11px;color:#aaa;font-variant-numeric:tabular-nums;text-align:center;margin-top:3px;touch-action:pan-y}
+#voltas div{line-height:1.25}#voltas:empty{display:none}
 #relogio.alerta #tempo{color:#ffd60a}#relogio.estouro #tempo{color:#ff453a}#relogio.pausado #tempo{opacity:.55}
 #irbox{position:fixed;inset:0;background:rgba(0,0,0,.94);z-index:20;display:none;flex-direction:column;padding:env(safe-area-inset-top) 12px 12px;gap:10px}
 #irhead{display:flex;gap:8px;padding-top:10px}#irhead input{flex:1;background:#1d1d1f;color:#fff;border:0;border-radius:12px;font-size:20px;padding:12px;min-width:0}
@@ -1775,15 +1899,31 @@ select{background:#1d1d1f;color:#fff;border:0;border-radius:12px;font-size:14px;
 #ntxt p{margin:0 0 .6em}#ntxt ul{margin:0 0 .6em 1.1em}#ntxt .vazio{color:#666}
 #botoes{display:flex;gap:10px;height:84px;flex:0 0 auto}#botoes button{font-size:19px;border-radius:16px}
 #ant{flex:1}#seg{flex:2;background:#0a84ff}#seg:active{background:#006fe0}
+/* celular na horizontal: slide atual a esquerda; proximo, cronometro, notas e botoes a direita */
+@media (orientation:landscape) and (max-height:560px){
+  body{gap:0;padding-top:max(4px,env(safe-area-inset-top));padding-bottom:max(4px,env(safe-area-inset-bottom))}
+  #app{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:8px;flex:1;min-height:0}
+  #colA,#colB{display:flex;flex-direction:column;gap:5px;min-height:0}
+  #colA>*,#colB>*,#topo,#vista,#info{order:0}
+  #topo{padding-top:0}#pos{font-size:16px}
+  #vista{align-self:center}
+  .linha button,.linha select{padding:7px 0;font-size:13px}
+  #info{gap:6px}#prevbox canvas{height:64px}#relogio{flex:0 0 46%;padding:4px 8px}#tempo{font-size:24px}
+  #notas,#ajustes,#extras{min-height:0}
+  #botoes{height:54px;gap:8px}#botoes button{font-size:16px;border-radius:14px}
+  #irgrid{grid-template-columns:repeat(5,1fr)}
+}
 """
-HTML_REMOTO = """<div id="aviso"></div><div id="topo"><span><i id="dot"></i><span id="st">conectando</span></span><span id="pos">- / -</span></div>
+HTML_REMOTO = """<div id="aviso"></div><div id="app"><div id="colA"><div id="topo"><span><i id="dot"></i><span id="st">conectando</span></span><span id="pos">- / -</span></div>
 <div id="vista"><canvas id="cv"></canvas><canvas id="ovp"></canvas><div id="zrect"></div><div id="ponto"></div></div>
-<div id="info"><div id="prevbox"><canvas id="cvp"></canvas><span id="prevlbl">Proximo</span></div><div id="relogio"><div id="tempo">00:00</div><div id="restante">toque para iniciar</div></div></div>
 <div class="linha" id="tools"><button id="bl">Laser</button><button id="bf">Foco</button><button id="bc">Caneta</button><button id="bm">Marca</button><button id="bz">Zoom</button></div>
 <div class="linha" id="zbar"><button id="zm">&minus;</button><span id="zv">1x</span><button id="zp">+</button><button id="z1">1x</button></div>
 <div class="linha" id="raiobar"><span>Raio do foco</span><input id="raio" type="range" min="4" max="30" value="12"></div>
 <div id="cores"><i data-c="#ff3b30" style="background:#ff3b30"></i><i data-c="#0a84ff" style="background:#0a84ff"></i><i data-c="#30d158" style="background:#30d158"></i><i data-c="#ffd60a" style="background:#ffd60a"></i><i data-c="#ffffff" style="background:#fff"></i></div>
 <div class="linha" id="tools2"><button id="bx">Limpar</button><button id="bb">Preto</button><button id="bg">Ir para</button><button id="bk">Extras</button><button id="ba">Ajustes</button></div>
+</div><div id="colB">
+<div id="info"><div id="prevbox"><canvas id="cvp"></canvas><span id="prevlbl">Proximo</span></div><div id="relogio"><div id="tempo">00:00</div><div id="restante">toque para iniciar</div>
+<div id="rlbt"><button id="rvolta">Volta</button><button id="rzera">Zerar</button></div><div id="voltas"></div></div></div>
 <div id="ajustes"><div id="ajhead"><span>Ajustes</span><button id="ajrst">Restaurar padrao</button></div>
 <div class="ajc" id="ajtr"><span>Transicao</span><select id="tr"><option value="fade">Fade</option><option value="slide">Deslizar</option><option value="zoom">Zoom</option><option value="nenhuma">Sem transicao</option></select><button id="tz">Zerar cronometro</button></div>
 <div id="ajcorpo"></div></div>
@@ -1794,9 +1934,11 @@ HTML_REMOTO = """<div id="aviso"></div><div id="topo"><span><i id="dot"></i><spa
 <div class="exl">Efeitos</div>
 <div class="exg" id="exs"><button data-s="confete">Confete</button><button data-s="ding">Ding</button><button data-s="tambor">Tambor</button><button data-s="aplausos">Aplausos</button><button data-s="fanfarra">Fanfarra</button><button data-s="buzina">Buzina</button><button data-s="suspense">Suspense</button><button data-s="stop">Parar som</button></div>
 </div></div>
-<div id="irbox"><div id="irhead"><input id="irn" type="number" inputmode="numeric" min="1" placeholder="no do slide"><button id="irgo">Ir</button><button id="irx">Fechar</button></div><div id="irgrid"></div></div>
 <div id="notas"><div id="nhead"><span id="nt">Notas do apresentador</span><span><button id="ne">Editar</button><button id="nm">A&minus;</button><button id="np">A+</button></span></div><div id="ntxt"></div><textarea id="ned" style="display:none" placeholder="Digite a nota deste slide"></textarea><div id="nbt"><button id="nsv">Salvar</button><button id="ntd">Todas</button><button id="ncn">Cancelar</button></div></div>
-<div id="botoes"><button id="ant">&#9664; Anterior</button><button id="seg">Proximo &#9654;</button></div>"""
+<div id="botoes"><button id="ant">&#9664; Anterior</button><button id="seg">Proximo &#9654;</button></div>
+</div></div>
+<div id="irbox"><div id="irhead"><input id="irn" type="number" inputmode="numeric" min="1" placeholder="no do slide"><button id="irgo">Ir</button><button id="irx">Fechar</button></div><div id="irgrid"></div></div>
+"""
 JS_REMOTO = r"""
 const $=id=>document.getElementById(id);
 let raioFoco=0.12;try{raioFoco=(parseInt(localStorage.getItem('baton-raio'))||12)/100}catch(e){}
@@ -1840,20 +1982,26 @@ let editando=null;
 function mostraNotas(){
   if(editando)return;
   const q=fq(),t=notas['p'+pag]??notas[String(q.f)]??notasPdf['p'+pag];
+  if(LEVE&&LADO&&pdf&&notasPdf['p'+pag]===undefined){const p=pag;notasPdf['p'+p]=null;notaDaPagina(pdf,p).then(x=>{notasPdf['p'+p]=x||'';if(pag===p)mostraNotas()}).catch(()=>{})}
   $('ntxt').style.fontSize=fonte+'px';
   $('ntxt').innerHTML=t?md(t):'<p class="vazio">Sem notas para este slide.</p>';$('ntxt').scrollTop=0;
 }
 async function mostra(){
   rotulo();mostraNotas();
-  const larg=$('vista').parentElement.clientWidth-24;
-  if(!pdf){$('vista').style.width=larg+'px';$('vista').style.height=(larg*9/16)+'px';ajustaOvp();return}
-  if(desenhado===pag)return;desenhado=pag;limpaLocal();
+  const paisagem=innerWidth>innerHeight&&innerHeight<=560;
+  const larg=paisagem?$('colA').clientWidth:document.body.clientWidth-24;
+  const hmax=paisagem?Math.max(100,innerHeight-150):innerHeight*0.24;  // paisagem: sobra espaco para o slide; retrato: 24% da tela
+  if(!pdf){const w0=Math.min(larg,hmax*16/9);$('vista').style.width=w0+'px';$('vista').style.height=(w0*9/16)+'px';ajustaOvp();return}
+  if(desenhado===pag&&!window.__remedir)return;desenhado=pag;window.__remedir=false;limpaLocal();
   const p=await pdf.getPage(pag),v0=p.getViewport({scale:1});
-  const uw=larguraUtil(v0.width),w=Math.min(larg,(innerHeight*0.24)*uw/v0.height);
+  const uw=larguraUtil(v0.width),w=Math.min(larg,hmax*uw/v0.height);
   $('vista').style.width=w+'px';$('vista').style.height=(w*v0.height/uw)+'px';ajustaOvp();
   desenha(pag,$('cv'),w);
   previa();
 }
+function remedir(){window.__remedir=true;mostra()}
+addEventListener('resize',()=>{clearTimeout(window.__rt);window.__rt=setTimeout(remedir,150)});
+addEventListener('orientationchange',()=>setTimeout(remedir,250));
 function previa(){
   const prox=pag+1;
   if(!pdf||prox>total){const c=$('cvp'),g=c.getContext('2d');g.clearRect(0,0,c.width,c.height);c.style.visibility='hidden';
@@ -1869,7 +2017,14 @@ function retangulo(){
 }
 let tm={rodando:false,elapsed:0,rec:performance.now()};
 const mmss=t=>{t=Math.max(0,Math.floor(t));const h=Math.floor(t/3600),m=Math.floor(t%3600/60),s=t%60;return(h?h+':'+String(m).padStart(2,'0'):String(m).padStart(2,'0'))+':'+String(s).padStart(2,'0')};
-function sincTimer(t){if(t)tm={rodando:t.rodando,elapsed:t.elapsed,rec:performance.now()}}
+function sincTimer(t){if(t){tm={rodando:t.rodando,elapsed:t.elapsed,rec:performance.now()};mostraVoltas(t.voltas||[])}}
+let voltasVistas='';
+function mostraVoltas(v){
+  const chave=v.join(',');if(chave===voltasVistas)return;voltasVistas=chave;
+  const el=$('voltas');if(!el)return;el.innerHTML='';
+  v.forEach((x,i)=>{const d=document.createElement('div');d.textContent='V'+(i+1)+'  '+mmss(x)+'  (+'+mmss(x-(i?v[i-1]:0))+')';el.appendChild(d)});
+  el.scrollTop=el.scrollHeight;
+}
 function tick(){
   const el=tm.elapsed+(tm.rodando?(performance.now()-tm.rec)/1000:0),meta=cfg.meta_min*60,rest=meta-el,r=$('relogio');
   $('tempo').textContent=mmss(el);
@@ -1878,6 +2033,7 @@ function tick(){
 }
 setInterval(tick,500);
 $('relogio').onclick=()=>cmd('timer','toggle');$('tz').onclick=()=>cmd('timer','reset');
+$('rvolta').onclick=e=>{e.stopPropagation();cmd('timer','lap')};$('rzera').onclick=e=>{e.stopPropagation();cmd('timer','reset')};
 const esc=x=>String(x).replace(/&/g,'&amp;').replace(/</g,'&lt;');
 function avisoUI(s){
   const el=$('aviso');
@@ -2013,7 +2169,7 @@ function passo(d){let i=NIVEIS.findIndex(n=>n>=zoom.z-1e-6);if(i<0)i=NIVEIS.leng
 $('zp').onclick=()=>passo(1);$('zm').onclick=()=>passo(-1);$('z1').onclick=()=>enviaZoom(1,.5,.5,true);
 function tam(d){fonte=Math.max(12,Math.min(34,fonte+d));try{localStorage.setItem('baton-fonte',fonte)}catch(e){}$('ntxt').style.fontSize=fonte+'px'}
 $('np').onclick=()=>tam(2);$('nm').onclick=()=>tam(-2);
-function textoTodas(){const todas=Object.assign({},notasPdf,notas);return Object.keys(todas).sort((a,b)=>parseInt(a.replace(/\D/g,''))-parseInt(b.replace(/\D/g,''))).map(k=>'## '+k+'\n'+todas[k]).join('\n\n')}
+function textoTodas(){const todas=Object.assign({},notasPdf,notas);return Object.keys(todas).filter(k=>todas[k]).sort((a,b)=>parseInt(a.replace(/\D/g,''))-parseInt(b.replace(/\D/g,''))).map(k=>'## '+k+'\n'+todas[k]).join('\n\n')}
 function editor(modo){
   editando=modo;const q=fq(),ed=$('ned');
   ed.value=modo==='todas'?textoTodas():(notas['p'+pag]??notas[String(q.f)]??notasPdf['p'+pag]??'');ed.style.fontSize=fonte+'px';
@@ -2058,7 +2214,7 @@ setInterval(async()=>{
   trocando=false},4000);
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){wake();conectar()}});
 addEventListener('online',conectar);addEventListener('pageshow',conectar);wake();carregaNotas();montaAjustes();carregaCfg();
-if(TEM_PDF){pdfjsLib.getDocument('/pdf?k='+encodeURIComponent(TOKEN)).promise.then(async d=>{pdf=d;total=d.numPages;try{await detectaLado(d);notasPdf=await notasDoPdf(d);mapa=await agruparPassos(d)}catch(e){}mostraNotas();conectar()})}
+if(TEM_PDF){pdfjsLib.getDocument(Object.assign({url:'/pdf?k='+encodeURIComponent(TOKEN)},LEVE?{disableAutoFetch:true,disableStream:true,rangeChunkSize:65536}:{})).promise.then(async d=>{pdf=d;total=d.numPages;try{await detectaLado(d);if(!LEVE){notasPdf=await notasDoPdf(d);mapa=await agruparPassos(d)}}catch(e){}mostraNotas();conectar()})}
 else{$('vista').style.background='#1a1a1c';$('vista').insertAdjacentHTML('beforeend','<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#666;font-size:14px;text-align:center;padding:12px;pointer-events:none">area do laser<br>(mapeada na tela do Mac)</div>');conectar()}
 """
 
@@ -2097,7 +2253,7 @@ def montar_qr(estado, usar_qr_cache):
             .replace("__REMOTE__", estado.url_pareamento()).replace("__URLS__", json.dumps(estado.urls_pareamento()).replace("</", "<\\/")))
 
 
-def montar(modo, estado, usar_cache, usar_qr_cache=False, token=""):
+def montar(modo, estado, usar_cache, usar_qr_cache=False, token="", leve=False):
     pdfjs = "/vendor/" if usar_cache else PDFJS_CDN
     qrjs = "/vendor/qr.js" if usar_qr_cache else QR_CDN
     if modo == "tela":
@@ -2112,6 +2268,7 @@ def montar(modo, estado, usar_cache, usar_qr_cache=False, token=""):
             .replace("__QRJS__", qrjs).replace("__REMOTE__", (urls[0]["url"] if urls else ""))
             .replace("__URLS__", json.dumps(urls).replace("</", "<\\/"))
             .replace("__TEMPDF__", "true" if estado.pdf else "false")
+            .replace("__LEVE__", "true" if leve else "false")
             .replace("__EXTERNO__", "true" if estado.externo else "false")
             .replace("__OVERLAY__", "true" if (estado.externo and estado.externo.overlay) else "false")
             .replace("__TOKEN__", token if modo == "remoto" else ""))
@@ -2204,6 +2361,29 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
             except (BrokenPipeError, ConnectionResetError, OSError):
                 self.close_connection = True
 
+        def _pdf(self):
+            dados = Path(estado.pdf).read_bytes()
+            total = len(dados)
+            faixa = faixa_http(self.headers.get("Range"), total)
+            if faixa is None:  # em pedacos: o pdf.js cancela o GET inteiro ao ver que o servidor aceita Range, sem gastar a banda
+                self.send_response(200)
+                self.send_header("Content-Type", "application/pdf")
+                self.send_header("Content-Length", str(total))
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                try:
+                    for i in range(0, total, 32768):
+                        self.wfile.write(dados[i:i + 32768])
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    self.close_connection = True
+                return
+            if faixa == "invalida":
+                return self._enviar(416, b"", "application/pdf", {"Content-Range": f"bytes */{total}"})
+            a, b = faixa
+            return self._enviar(206, dados[a:b + 1], "application/pdf",
+                                {"Accept-Ranges": "bytes", "Content-Range": f"bytes {a}-{b}/{total}"})
+
         def do_GET(self):
             u = urlparse(self.path)
             if u.path in ("/", "/qr") and not self._local():
@@ -2233,7 +2413,7 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
                                {"src": "/icon.png", "sizes": "180x180", "type": "image/png"}]}
                 return self._enviar(200, json.dumps(m), "application/manifest+json")
             if u.path == "/vendor/qr.js" and usar_qr_cache:
-                return self._enviar(200, QR_FILE.read_bytes(), "application/javascript")
+                return self._enviar(200, arquivo_qr().read_bytes(), "application/javascript")
             if u.path.startswith("/p/"):
                 return self._parear(u.path[3:])
             if u.path == "/remote":
@@ -2243,14 +2423,15 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
                 if not self._local():
                     estado.remotos += 1
                     estado.publicar(estado.snapshot())
-                return self._enviar(200, montar("remoto", estado, usar_cache, usar_qr_cache, k), "text/html; charset=utf-8")
+                leve = rede_lenta_do_ip(self.connection.getsockname()[0]) if not self._local() else False
+                return self._enviar(200, montar("remoto", estado, usar_cache, usar_qr_cache, k, leve), "text/html; charset=utf-8")
             if u.path == "/pdf" and estado.pdf:
                 if not self._leitura_ok(u):
                     return self._enviar(403, "token invalido", "text/plain; charset=utf-8")
-                return self._enviar(200, Path(estado.pdf).read_bytes(), "application/pdf")
+                return self._pdf()
             if u.path.startswith("/vendor/") and usar_cache:
                 nome = u.path.split("/")[-1]
-                f = CACHE / nome
+                f = pasta_pdfjs() / nome
                 if nome in PDFJS_FILES and f.exists():
                     return self._enviar(200, f.read_bytes(), "application/javascript")
             if u.path == "/events":
@@ -2541,6 +2722,8 @@ def main():
     ap.add_argument("--tray", action="store_true", help="mostra o icone na bandeja (ja e o padrao no modo --residente)")
     ap.add_argument("--sem-tray", action="store_true", help="nao mostra o icone na bandeja")
     ap.add_argument("--recompilar-app", action="store_true", help="macOS: recompila o Baton.app e mostra os erros do compilador (a permissao de Acessibilidade precisa ser dada de novo)")
+    ap.add_argument("--preparar-offline", action="store_true", help="baixa pdf.js e o gerador de QR para o Baton funcionar sem internet")
+    ap.add_argument("--vendor", action="store_true", help="com --preparar-offline: grava em <pasta do baton>/vendor (pendrive)")
     ap.add_argument("--diagnostico", action="store_true", help="imprime um resumo do ambiente (Baton.app, permissao, log) para suporte")
     ap.add_argument("--permissao", action="store_true", help="macOS: pede a permissao de Acessibilidade para o Baton.app e abre os Ajustes")
     ap.add_argument("--rede", action="store_true", help="(sem efeito: a rede local ja e o endereco principal)")
@@ -2558,6 +2741,13 @@ def main():
         return print(f"pronto: {exe}\nAtive o Baton em Acessibilidade e rode: launchctl kickstart -k gui/$(id -u)/com.baton" if exe else "falhou (veja os avisos acima)")
     if a.diagnostico:
         return print(diagnostico())
+    if a.preparar_offline:
+        if a.vendor:
+            VENDOR.mkdir(exist_ok=True)
+        ok = baixar_pdfjs() and baixar_qr()
+        print(f"pronto para uso sem internet (arquivos em {pasta_pdfjs().parent})" if ok
+              else "falhou: conecte-se a internet uma vez e rode de novo", file=sys.stdout if ok else sys.stderr)
+        return 0 if ok else 1
     if a.permissao:
         return print(pedir_acessibilidade())
     if a.pausar or a.retomar:
@@ -2604,18 +2794,6 @@ def main():
             except RuntimeError as e:
                 sys.exit(str(e))
     token = secrets.token_urlsafe(9)  # so por compatibilidade: os celulares usam o token do proprio dispositivo
-    if a.host:
-        ips = [("Rede local", a.host)]
-    else:
-        rota = ip_lan()  # a que tem rota para fora (Wi-Fi/cabo) vem primeiro; sem internet, a primeira que existir
-        locais = sorted(ips_locais(), key=lambda x: x[1] != rota)
-        ips = [(("Wi-Fi / rede local" if ip == rota else r), ip) for r, ip in locais[:4]]
-        if rota and rota not in [ip for _, ip in ips]:
-            ips.insert(0, ("Wi-Fi / rede local", rota))
-        ips.append(("Tailscale (fora do Wi-Fi)", ip_tailscale()))
-    bases = [{"nome": n, "base": f"http://{ip}:{a.porta}"} for n, ip in ips if ip]  # rede local primeiro: funciona sem VPN
-    if not bases:
-        bases = [{"nome": "Rede local", "base": f"http://IP-DO-COMPUTADOR:{a.porta}"}]
     prop = 16 / 9
     if a.proporcao:
         try:
@@ -2634,7 +2812,7 @@ def main():
             pass
     total = contar_paginas(pdf) if pdf else 9999
     estado = Estado(pdf, total, a.transicao, token, externo, "", prop)
-    estado.bases = bases
+    estado.bases_fn = lambda: calcular_bases(a.porta, a.host)
     estado.carregar_dispositivos()
     if a.novo_token:
         estado.revogar_todos()  # --novo-token: desfaz o pareamento de todos os celulares

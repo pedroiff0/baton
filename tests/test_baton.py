@@ -63,6 +63,20 @@ class NotasPptxTest(unittest.TestCase):
             self.assertEqual(P.notas_pptx(f), {"p1": "fala do primeiro slide da ordem"})
 
 
+class VoltasTest(unittest.TestCase):
+    def test_voltas_e_zerar(self):
+        e = P.Estado(None, 9999, "slide", "tok")
+        e.comando("timer", "lap")
+        self.assertEqual(e.voltas, [])  # cronometro parado e zerado: sem volta
+        e.comando("timer", "start")
+        time.sleep(0.05)
+        e.comando("timer", "lap")
+        e.comando("timer", "lap")
+        self.assertEqual(len(e.snapshot()["timer"]["voltas"]), 2)
+        e.comando("timer", "reset")
+        self.assertEqual((e.voltas, e.t_rodando, e.t_base), ([], False, 0.0))
+
+
 class PareamentoTest(unittest.TestCase):
     def estado(self, d):
         P.DISPOSITIVOS_ARQ = Path(d) / "dispositivos.json"
@@ -142,6 +156,61 @@ class RedesTest(unittest.TestCase):
         w = ("Adaptador de Rede sem Fio Wi-Fi:\n\n   Endereco IPv4. . . . . . . . . . . . . . : 192.168.1.7\n"
              "Adaptador Ethernet vEthernet (WSL):\n   Endereco IPv4. . . : 172.20.0.1\n")
         self.assertEqual(self.lista(w), [("Rede (Adaptador de Rede sem Fio Wi-Fi)", "192.168.1.7")])
+
+
+class BluetoothTest(unittest.TestCase):
+    HW = ("Hardware Port: Wi-Fi\nDevice: en0\nEthernet Address: aa\n\n"
+          "Hardware Port: Bluetooth PAN\nDevice: en6\nEthernet Address: bb\n\n"
+          "Hardware Port: iPhone USB\nDevice: en7\nEthernet Address: cc\n")
+
+    def test_portas_mac_e_rotulo(self):
+        run = mock.Mock(stdout=self.HW)
+        with mock.patch.object(P.sys, "platform", "darwin"), mock.patch.object(P.shutil, "which", return_value="/x"), \
+                mock.patch.object(P.subprocess, "run", return_value=run):
+            portas = P.portas_mac()
+        self.assertEqual(portas, {"en0": "Wi-Fi", "en6": "Bluetooth PAN", "en7": "iPhone USB"})
+        self.assertEqual(P.rotulo_interface("en6", "10.0.0.2", portas), "Bluetooth (en6)")
+        self.assertEqual(P.rotulo_interface("en7", "172.20.10.2", portas), "Hotspot (en7)")
+        self.assertEqual(P.rotulo_interface("en0", "192.168.0.5", portas), "Rede (en0)")
+
+    def test_ordem_das_bases(self):
+        ips = [("Rede (en0)", "192.168.0.5"), ("Hotspot (en7)", "172.20.10.2"), ("Bluetooth (en6)", "10.0.0.2")]
+        with mock.patch.object(P, "ips_locais", return_value=ips), mock.patch.object(P, "ip_lan", return_value="192.168.0.5"), \
+                mock.patch.object(P, "ip_tailscale_cache", return_value="100.64.0.1"):
+            b = P.calcular_bases(8765)
+        self.assertEqual([x["base"].split("//")[1].split(":")[0] for x in b],
+                         ["10.0.0.2", "172.20.10.2", "192.168.0.5", "100.64.0.1"])
+        self.assertIn("Bluetooth", b[0]["nome"])
+        self.assertIn("Tailscale", b[-1]["nome"])
+
+    def test_rede_lenta_pelo_ip_local(self):
+        ips = [("Rede (en0)", "192.168.0.5"), ("Bluetooth (en6)", "10.0.0.2")]
+        with mock.patch.object(P, "ips_locais", return_value=ips):
+            self.assertTrue(P.rede_lenta_do_ip("10.0.0.2"))
+            self.assertFalse(P.rede_lenta_do_ip("192.168.0.5"))
+
+    def test_faixa_http(self):
+        self.assertIsNone(P.faixa_http(None, 100))
+        self.assertEqual(P.faixa_http("bytes=0-9", 100), (0, 9))
+        self.assertEqual(P.faixa_http("bytes=90-", 100), (90, 99))
+        self.assertEqual(P.faixa_http("bytes=50-500", 100), (50, 99))
+        self.assertEqual(P.faixa_http("bytes=-10", 100), (90, 99))
+        self.assertEqual(P.faixa_http("bytes=100-110", 100), "invalida")
+
+    def test_publicar_poupa_celular(self):
+        q_tela, q_cel = __import__("queue").Queue(), __import__("queue").Queue()
+        q_tela.dispositivo, q_cel.dispositivo = None, "d1"
+        e = P.Estado(None, 9999, "slide", "tok")
+        e.clientes += [q_tela, q_cel]
+        e.publicar({"laser": {"x": 1}})
+        e.publicar({"hb": 1})
+        self.assertEqual(q_tela.qsize(), 2)
+        self.assertEqual(q_cel.qsize(), 1)
+
+    def test_estado_painel_traz_bluetooth(self):
+        e = P.Estado(None, 9999, "slide", "tok")
+        with mock.patch.object(P, "ips_locais", return_value=[("Bluetooth (bnep0)", "10.251.0.1")]):
+            self.assertEqual(e.painel_estado()["rede_bluetooth"], {"interface": "Bluetooth (bnep0)", "ip": "10.251.0.1"})
 
 
 class BandejaTest(unittest.TestCase):
