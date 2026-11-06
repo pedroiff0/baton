@@ -62,6 +62,8 @@ def main():
     ap.add_argument("--python", default="3.12.8", help="versao do Python embutido (amd64)")
     ap.add_argument("--convite", default="", metavar="HOST/CODIGO",
                     help="inclui um convite de uso unico do relay (baton --criar-convite): no primeiro uso o Baton entra no relay sozinho")
+    ap.add_argument("--destino", default="", metavar="PASTA",
+                    help="copia a pasta pronta (sem zip) para PASTA/Baton, ex.: o pen-drive; roda direto de la, sem extrair. Dados e celulares pareados ja existentes em PASTA/Baton/dados sao mantidos")
     a = ap.parse_args()
     dist = RAIZ / "dist"
     pasta = dist / "Baton"
@@ -111,6 +113,12 @@ def main():
             elif not any(f.iterdir()):
                 z.write(f, str(Path("Baton") / f.relative_to(pasta)) + "/")
     shutil.rmtree(dist / "home-build", ignore_errors=True)
+    if a.destino:
+        alvo = Path(a.destino).expanduser() / "Baton"
+        for sub in ("python", "baton"):  # codigo novo por cima do velho; dados/ nao e tocado
+            shutil.rmtree(alvo / sub, ignore_errors=True)
+        shutil.copytree(pasta, alvo, dirs_exist_ok=True)
+        print(f"copiado para {alvo}: no Windows, abra {alvo.name}\\Baton.bat direto do pen-drive (nao precisa extrair)")
     print(f"pronto: {saida} ({saida.stat().st_size // 1024} KB)")
 
 
