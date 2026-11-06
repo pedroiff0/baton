@@ -284,6 +284,9 @@ select{background:#3a3a3c;color:#fff;border:0;border-radius:10px;padding:10px;fo
 <button class="cinza" id="bdk" style="display:none">Remover apresentacao</button>
 <button class="cinza" id="btt">Testar tecla (em 5 s)</button>
 <p><small>Com a apresentacao carregada o celular mostra o slide atual, o proximo e as notas; as teclas continuam indo para o app em primeiro plano (PowerPoint, Keynote, ReLaTeX...). Notas tambem podem ser digitadas no celular.</small></p></div>
+<h2>Celulares</h2><div class="cartao"><ul id="cels"></ul>
+<button id="bpn">Parear novo celular</button> <button class="cinza" id="bqr2">Mostrar QR code</button>
+<p><small>Cada QR vale para um celular e muda depois de usado. Desconectar tira o acesso daquele celular.</small></p></div>
 <h2>Execucao</h2><div class="cartao"><button id="bp">Pausar</button><button class="cinza" id="bq">Mostrar QR code</button>
 <button class="cinza" id="ba">Autorizar agora</button></div>
 <h2>Quando uma apresentacao em tela cheia abrir</h2><div class="cartao"><select id="modo">
@@ -302,6 +305,10 @@ function ver(){
   $('bp').textContent=est.ativo?'Pausar':'Retomar';$('modo').value=est.modo;
   $('acess').style.display=est.acessibilidade===false?'block':'none';
   $('dk').innerHTML=est.deck?'<b>'+est.deck.nome.replace(/</g,'&lt;')+'</b> - '+est.deck.paginas+' paginas':'<small>Nenhuma apresentacao carregada: o celular so passa os slides, sem previa nem notas.</small>';$('bdk').style.display=est.deck?'inline-block':'none';
+  const cl=$('cels');cl.innerHTML='';(est.dispositivos||[]).forEach(d=>{const li=document.createElement('li');
+    li.textContent=d.nome+(d.conectado?' - conectado':' - desconectado')+' ';const b=document.createElement('button');b.className='cinza';
+    b.textContent='Desconectar';b.onclick=()=>acao('revogar_celular',d.id);li.appendChild(b);cl.appendChild(li)});
+  if(!(est.dispositivos||[]).length)cl.innerHTML='<li><small>nenhum celular pareado</small></li>';
   lista($('ok'),est.apps_ok||[]);lista($('nao'),est.apps_nao||[]);$('ba').textContent=est.autorizado?'Revogar autorizacao':'Autorizar agora'}
 $('bp').onclick=()=>acao(est.ativo?'pausar':'retomar');$('ba').onclick=()=>acao(est.autorizado?'revogar':'autorizar');
 $('modo').onchange=e=>acao('modo',e.target.value);$('bi').onclick=()=>acao('instalar');$('br').onclick=()=>acao('desinstalar');
@@ -315,5 +322,6 @@ $('drop').onclick=()=>$('nf').click();$('nf').onchange=e=>{enviarDeck(e.target.f
 $('drop').addEventListener('drop',e=>enviarDeck(e.dataTransfer.files[0]));
 $('bdk').onclick=()=>acao('remover_deck');$('btt').onclick=()=>{acao('testar_tecla');$('dmsg').textContent='Troque para o app da apresentacao: em 5 s o Baton envia seta direita e esquerda.'};
 $('bac').onclick=()=>acao('abrir_acessibilidade');
+$('bpn').onclick=async()=>{await acao('parear_novo');window.open('/qr','_blank')};$('bqr2').onclick=()=>window.open('/qr','_blank');
 fetch('/painel/estado').then(r=>r.json()).then(e=>{est=e;ver()});setInterval(()=>fetch('/painel/estado').then(r=>r.json()).then(e=>{est=e;ver()}).catch(()=>{}),3000);
 </script></body></html>"""

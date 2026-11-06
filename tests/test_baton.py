@@ -63,6 +63,62 @@ class NotasPptxTest(unittest.TestCase):
             self.assertEqual(P.notas_pptx(f), {"p1": "fala do primeiro slide da ordem"})
 
 
+class PareamentoTest(unittest.TestCase):
+    def estado(self, d):
+        P.DISPOSITIVOS_ARQ = Path(d) / "dispositivos.json"
+        e = P.Estado(None, 9999, "slide", "tok")
+        e.bases = [{"nome": "Wi-Fi", "base": "http://192.168.0.2:8765"}, {"nome": "Tailscale", "base": "http://100.64.0.2:8765"}]
+        e.carregar_dispositivos()
+        return e
+
+    def test_qr_de_uso_unico_e_token_por_celular(self):
+        with tempfile.TemporaryDirectory() as d:
+            e = self.estado(d)
+            c1 = e.codigo_pareamento()
+            a = e.parear(c1, "iPhone")
+            self.assertEqual(a["nome"], "Celular 1")
+            self.assertIsNone(e.parear(c1, "Android"))  # o mesmo QR nao serve de novo
+            c2 = e.codigo_pareamento()
+            self.assertNotEqual(c1, c2)
+            b = e.parear(c2, "Android")
+            self.assertEqual(b["nome"], "Celular 2")
+            self.assertNotEqual(a["token"], b["token"])
+            self.assertEqual(e.dispositivo_do_token(a["token"])["id"], a["id"])
+            self.assertEqual(e.dispositivo_do_token(b["token"])["id"], b["id"])
+            self.assertIsNone(e.dispositivo_do_token("qualquer"))
+            self.assertIsNone(e.dispositivo_do_token(""))
+
+    def test_revogar_persistir_e_expirar(self):
+        with tempfile.TemporaryDirectory() as d:
+            e = self.estado(d)
+            a = e.parear(e.codigo_pareamento())
+            e2 = self.estado(d)  # recarrega do disco
+            self.assertEqual(e2.dispositivo_do_token(a["token"])["id"], a["id"])
+            self.assertTrue(oct(os.stat(P.DISPOSITIVOS_ARQ).st_mode)[-3:] == "600")
+            q = __import__("queue").Queue()
+            q.dispositivo = a["id"]
+            e2.clientes.append(q)
+            self.assertTrue(e2.revogar(a["id"]))
+            self.assertIsNone(q.get_nowait())  # fecha o SSE do celular
+            self.assertIsNone(e2.dispositivo_do_token(a["token"]))
+            self.assertFalse(e2.revogar("naoexiste"))
+            c = e2.codigo_pareamento()
+            e2.pareamento["expira"] = time.time() - 1
+            self.assertIsNone(e2.parear(c))  # expirado
+            self.assertNotEqual(e2.codigo_pareamento(), c)
+
+    def test_limite_e_urls(self):
+        with tempfile.TemporaryDirectory() as d:
+            e = self.estado(d)
+            for _ in range(P.MAX_DISPOSITIVOS):
+                self.assertIsNotNone(e.parear(e.codigo_pareamento()))
+            self.assertIsNone(e.parear(e.codigo_pareamento()))
+            self.assertEqual(len(e.dispositivos), P.MAX_DISPOSITIVOS)
+            self.assertEqual(e.urls_remoto("T")[1]["url"], "http://100.64.0.2:8765/remote?k=T")
+            self.assertTrue(e.urls_pareamento()[0]["url"].startswith("http://192.168.0.2:8765/p/"))
+            self.assertEqual(len(e.dispositivos_info()), P.MAX_DISPOSITIVOS)
+
+
 class RedesTest(unittest.TestCase):
     MAC = ("lo0: flags=8049<UP,LOOPBACK> mtu 16384\n\tinet 127.0.0.1 netmask 0xff000000\n"
            "en0: flags=8863<UP,BROADCAST> mtu 1500\n\tinet 192.168.0.5 netmask 0xffffff00 broadcast 192.168.0.255\n"

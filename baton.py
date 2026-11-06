@@ -65,6 +65,9 @@ CFG_PADRAO = {"laser_tam": 24, "laser_cor": "#ff2d2d", "foco_raio": 12, "foco_bl
               "pen_larg": 3.5, "hl_larg": 14, "hl_alpha": 38, "meta_min": 50}
 CFG_LIM = {"laser_tam": (6, 120), "foco_raio": (3, 35), "foco_blur": (0, 100), "foco_escuro": (0, 90),
            "pen_larg": (0.5, 20), "hl_larg": (3, 60), "hl_alpha": (5, 90), "meta_min": (1, 300)}
+DISPOSITIVOS_ARQ = Path.home() / ".cache" / "baton" / "dispositivos.json"
+MAX_DISPOSITIVOS = 8
+PAREAMENTO_VALIDADE = 600  # segundos
 NOTAS_ARQ = Path.home() / ".cache" / "baton" / "notas-sessao.json"
 CFG_ARQ = Path.home() / ".cache" / "baton" / "config.json"
 
@@ -279,7 +282,11 @@ class Estado:
         self.externo = externo
         self.remote_url = remote_url
         self.local_url = ""
-        self.urls = []  # [{"nome","url"}]: enderecos do celular (rede local primeiro, Tailscale depois)
+        self.bases = []  # [{"nome","base"}]: enderecos do computador (rede local primeiro, Tailscale depois)
+        self.dispositivos = []  # celulares pareados: {id, nome, token, criado, ultimo_visto, ua}
+        self.pareamento = None  # {"codigo", "expira"}: QR de uso unico
+        self._salvo_em = 0.0
+        self.falhas_pareamento = {}  # ip -> instantes de codigos errados (limite por minuto)
         self.proporcao = proporcao
         self.remotos = 0
         self.zoom, self.zx, self.zy = 1.0, 0.5, 0.5
@@ -372,7 +379,7 @@ class Estado:
         self.pedido = {"app": app}
         self._mudou()
         if not self.remotos:
-            residente.notificar("Baton", f"Apresentacao detectada em {app}. Clique para abrir o Baton (QR code) ou abra no celular: {self.remote_url}",
+            residente.notificar("Baton", f"Apresentacao detectada em {app}. Clique para abrir o Baton (QR code) ou abra no celular: {self.url_pareamento()}",
                                 self.local_url or None)
 
     def consentir(self, acao):
@@ -424,6 +431,11 @@ class Estado:
         elif acao == "remover_deck":
             self.remover_deck()
             return True
+        elif acao == "parear_novo":
+            self.novo_pareamento()
+            return True
+        elif acao == "revogar_celular":
+            return self.revogar(str(valor))
         elif acao == "instalar":
             instalar_login()
         elif acao == "desinstalar":
@@ -440,7 +452,8 @@ class Estado:
         return {"ativo": self.prefs["ativo"], "modo": self.prefs["modo"], "autorizado": self.autorizado,
                 "pedido": self.pedido, "apps_ok": self.prefs["apps_ok"], "apps_nao": self.prefs["apps_nao"],
                 "residente": self.residente, "acessibilidade": self.acessibilidade(), "deck": self.deck_info(),
-                "conexoes": len(self.clientes)}
+                "conexoes": len(self.conectados()), "dispositivos": self.dispositivos_info(),
+                "pareamento_urls": self.urls_pareamento()}
 
     def comando(self, cmd, valor=None, cid=None):
         if not self.permitido():
@@ -566,6 +579,100 @@ class Estado:
             self._notas_efetivas()
             self._persistir_notas()
             return dict(self.notas)
+
+    # ---- celulares: pareamento por QR de uso unico e um token por dispositivo
+    def carregar_dispositivos(self):
+        try:
+            d = json.loads(DISPOSITIVOS_ARQ.read_text(encoding="utf-8"))
+            self.dispositivos = [x for x in d if isinstance(x, dict) and x.get("token") and x.get("id")][:MAX_DISPOSITIVOS]
+        except (OSError, ValueError, TypeError):
+            self.dispositivos = []
+
+    def _salvar_dispositivos(self):
+        try:
+            DISPOSITIVOS_ARQ.parent.mkdir(parents=True, exist_ok=True)
+            DISPOSITIVOS_ARQ.write_text(json.dumps(self.dispositivos, ensure_ascii=False), encoding="utf-8")
+            os.chmod(DISPOSITIVOS_ARQ, 0o600)
+        except OSError:
+            pass
+        self._salvo_em = time.time()
+
+    def novo_pareamento(self):
+        self.pareamento = {"codigo": secrets.token_urlsafe(9), "expira": time.time() + PAREAMENTO_VALIDADE}
+        return self.pareamento["codigo"]
+
+    def codigo_pareamento(self):
+        if not self.pareamento or self.pareamento["expira"] < time.time():
+            self.novo_pareamento()
+        return self.pareamento["codigo"]
+
+    def parear(self, codigo, ua=""):
+        """Consome o codigo (uso unico) e cria o dispositivo; devolve o dispositivo ou None se o codigo nao vale."""
+        with self.lock:
+            p = self.pareamento
+            if not p or p["expira"] < time.time() or not secrets.compare_digest(str(codigo), p["codigo"]):
+                return None
+            if len(self.dispositivos) >= MAX_DISPOSITIVOS:
+                return None
+            usados = {d["nome"] for d in self.dispositivos}
+            n = next(i for i in range(1, MAX_DISPOSITIVOS + 2) if f"Celular {i}" not in usados)
+            d = {"id": secrets.token_hex(4), "nome": f"Celular {n}", "token": secrets.token_urlsafe(16),
+                 "criado": time.time(), "ultimo_visto": time.time(), "ua": str(ua)[:120]}
+            self.dispositivos.append(d)
+            self._salvar_dispositivos()
+            self.novo_pareamento()  # o QR muda na hora: o proximo celular precisa do novo
+        return d
+
+    def dispositivo_do_token(self, token):
+        """Dispositivo dono do token (comparacao em tempo constante) ou None."""
+        achado = None
+        for d in list(self.dispositivos):
+            if secrets.compare_digest(str(token), d["token"]):
+                achado = d
+        if achado:
+            agora = time.time()
+            achado["ultimo_visto"] = agora
+            if agora - self._salvo_em > 60:
+                self._salvar_dispositivos()
+        return achado
+
+    def revogar(self, id_):
+        with self.lock:
+            d = next((x for x in self.dispositivos if x["id"] == id_), None)
+            if not d:
+                return False
+            self.dispositivos.remove(d)
+            self._salvar_dispositivos()
+        for q in list(self.clientes):  # fecha as conexoes abertas desse celular
+            if getattr(q, "dispositivo", None) == id_:
+                try:
+                    q.put_nowait(None)
+                except queue.Full:
+                    pass
+        return True
+
+    def revogar_todos(self):
+        for d in list(self.dispositivos):
+            self.revogar(d["id"])
+
+    def conectados(self):
+        return {getattr(q, "dispositivo", None) for q in self.clientes} - {None}
+
+    def urls_remoto(self, token):
+        return [{"nome": b["nome"], "url": f"{b['base']}/remote?k={token}"} for b in self.bases]
+
+    def urls_pareamento(self):
+        c = self.codigo_pareamento()
+        return [{"nome": b["nome"], "url": f"{b['base']}/p/{c}"} for b in self.bases]
+
+    def url_pareamento(self):
+        u = self.urls_pareamento()
+        return u[0]["url"] if u else ""
+
+    def dispositivos_info(self):
+        on = self.conectados()
+        return [{"id": d["id"], "nome": d["nome"], "ultimo_visto": d["ultimo_visto"], "conectado": d["id"] in on}
+                for d in self.dispositivos]
 
     def deck_info(self):
         return {"nome": Path(self.pdf).stem, "paginas": self.total} if self.pdf else None
@@ -1436,9 +1543,11 @@ HTML_TELA = """<div id="stage"></div><div id="laser"></div><div id="foco"></div>
 # desenha o QR (qrcode-generator) em #qrsvg; usado pela tela e pela pagina /qr
 JS_QR = r"""
 function desenharQR(){
-  const url=REMOTE_URL;document.getElementById('qrurl').textContent=url;
-  try{const q=qrcode(0,'M');q.addData(url);q.make();document.getElementById('qrsvg').innerHTML=q.createSvgTag({cellSize:8,margin:0,scalable:true})}
-  catch(e){document.getElementById('qrsvg').textContent='QR indisponivel: abra a URL abaixo'}
+  fetch('/painel/estado').then(r=>r.json()).then(j=>(j.pareamento_urls||[])[0]).catch(()=>null).then(u=>{  // QR de uso unico: sempre o codigo atual
+    const url=u?u.url:REMOTE_URL;document.getElementById('qrurl').textContent=url;
+    try{const q=qrcode(0,'M');q.addData(url);q.make();document.getElementById('qrsvg').innerHTML=q.createSvgTag({cellSize:8,margin:0,scalable:true})}
+    catch(e){document.getElementById('qrsvg').textContent='QR indisponivel: abra a URL abaixo'}
+  });
 }
 """
 JS_PASSOS = r"""
@@ -1957,22 +2066,38 @@ else{$('vista').style.background='#1a1a1c';$('vista').insertAdjacentHTML('before
 PAGINA_QR = """<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><title>Baton - QR</title>
 <script src="__QRJS__"></script>
 <style>__CSS__</style></head><body class="tela"><div id="qr" style="display:flex"><h1>Escaneie com o celular para controlar</h1><div id="qrlista" style="display:flex;gap:24px;flex-wrap:wrap;justify-content:center"></div>
+<p style="opacity:.8">Cada QR vale para um celular e muda depois de usado. <span id="cel"></span></p>
 <p>Abra a apresentacao no leitor que quiser (PowerPoint, Keynote, ReLaTeX...), deixe-a em tela cheia e use o celular. Painel: <a href="/painel" style="color:#0a84ff">/painel</a></p></div>
-<script>const URLS=__URLS__;
-URLS.forEach(function(u,i){const d=document.createElement('div');d.style.cssText='display:flex;flex-direction:column;align-items:center;max-width:320px';
-  d.innerHTML='<h2 style="font-size:18px;margin:0 0 8px">'+u.nome+'</h2><div class="cartao" style="width:260px"></div><p style="word-break:break-all;font-size:12px;opacity:.7"></p>';
-  d.querySelector('p').textContent=u.url;
-  try{const q=qrcode(0,'M');q.addData(u.url);q.make();d.querySelector('.cartao').innerHTML=q.createSvgTag({cellSize:8,margin:0,scalable:true})}catch(e){d.querySelector('.cartao').textContent='QR indisponivel'}
-  document.getElementById('qrlista').appendChild(d)});</script></body></html>"""
+<script>
+let atual='';
+function desenhar(urls){
+  const chave=urls.map(function(u){return u.url}).join('|');if(chave===atual)return;atual=chave;
+  const lista=document.getElementById('qrlista');lista.innerHTML='';
+  urls.forEach(function(u){const d=document.createElement('div');d.style.cssText='display:flex;flex-direction:column;align-items:center;max-width:320px';
+    d.innerHTML='<h2 style="font-size:18px;margin:0 0 8px">'+u.nome+'</h2><div class="cartao" style="width:260px"></div><p style="word-break:break-all;font-size:12px;opacity:.7"></p>';
+    d.querySelector('p').textContent=u.url;
+    try{const q=qrcode(0,'M');q.addData(u.url);q.make();d.querySelector('.cartao').innerHTML=q.createSvgTag({cellSize:8,margin:0,scalable:true})}catch(e){d.querySelector('.cartao').textContent='QR indisponivel'}
+    lista.appendChild(d)});
+}
+desenhar(__URLS__);
+async function ciclo(){try{const j=await (await fetch('/painel/estado')).json();desenhar(j.pareamento_urls||[]);
+  document.getElementById('cel').textContent=(j.dispositivos||[]).length?('Celulares pareados: '+j.dispositivos.map(function(d){return d.nome+(d.conectado?' (conectado)':'')}).join(', ')):'Nenhum celular pareado ainda.'}catch(e){}}
+ciclo();setInterval(ciclo,2000);
+</script></body></html>"""
+
+
+PAGINA_QR_USADO = """<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Baton</title></head><body style="font-family:-apple-system,system-ui,sans-serif;background:#111;color:#eee;text-align:center;padding:48px 24px">
+<h2>QR code ja usado ou expirado</h2><p>Cada QR vale para um celular. No computador, abra o Baton (icone da barra, ou localhost:8765) e escaneie o QR code atual.</p></body></html>"""
 
 
 def montar_qr(estado, usar_qr_cache):
     qrjs = "/vendor/qr.js" if usar_qr_cache else QR_CDN
     return (PAGINA_QR.replace("__QRJS__", qrjs).replace("__CSS__", CSS_COMUM + CSS_TELA)
-            .replace("__REMOTE__", estado.remote_url).replace("__URLS__", json.dumps(estado.urls).replace("</", "<\\/")))
+            .replace("__REMOTE__", estado.url_pareamento()).replace("__URLS__", json.dumps(estado.urls_pareamento()).replace("</", "<\\/")))
 
 
-def montar(modo, estado, usar_cache, usar_qr_cache=False):
+def montar(modo, estado, usar_cache, usar_qr_cache=False, token=""):
     pdfjs = "/vendor/" if usar_cache else PDFJS_CDN
     qrjs = "/vendor/qr.js" if usar_qr_cache else QR_CDN
     if modo == "tela":
@@ -1981,14 +2106,15 @@ def montar(modo, estado, usar_cache, usar_qr_cache=False):
     else:
         css, html, js, classe = CSS_COMUM + CSS_REMOTO, HTML_REMOTO, JS_PASSOS + JS_REMOTO, "remoto"
     titulo = "Baton - " + (Path(estado.pdf).stem if estado.pdf else "controle")
+    urls = estado.urls_remoto(token) if modo == "remoto" else estado.urls_pareamento()  # celular: o token DELE; tela: o QR atual
     return (PAGINA_BASE.replace("__TITULO__", titulo).replace("__PDFJS__", pdfjs).replace("__CSS__", css)
             .replace("__HTML__", html).replace("__JS__", js).replace("__CLASSE__", classe)
-            .replace("__QRJS__", qrjs).replace("__REMOTE__", estado.remote_url)
-            .replace("__URLS__", json.dumps(estado.urls).replace("</", "<\\/"))
+            .replace("__QRJS__", qrjs).replace("__REMOTE__", (urls[0]["url"] if urls else ""))
+            .replace("__URLS__", json.dumps(urls).replace("</", "<\\/"))
             .replace("__TEMPDF__", "true" if estado.pdf else "false")
             .replace("__EXTERNO__", "true" if estado.externo else "false")
             .replace("__OVERLAY__", "true" if (estado.externo and estado.externo.overlay) else "false")
-            .replace("__TOKEN__", estado.token if modo == "remoto" else ""))
+            .replace("__TOKEN__", token if modo == "remoto" else ""))
 
 
 class Servidor(ThreadingHTTPServer):
@@ -2033,16 +2159,34 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
         def _local(self):
             return self.client_address[0] in ("127.0.0.1", "::1")
 
+        def _dispositivo(self, u=None):
+            """Celular dono do token: ?k= na URL ou cabecalho X-Token. None se o token nao e de nenhum celular pareado."""
+            k = parse_qs(u.query).get("k", [""])[0] if u is not None else ""
+            return estado.dispositivo_do_token(k or self.headers.get("X-Token", ""))
+
         def _leitura_ok(self, u):
-            """GET com dado sensivel (PDF, eventos, manifesto): so o computador ou quem tem o token (?k=)."""
-            k = parse_qs(u.query).get("k", [""])[0]
-            return self._local() or secrets.compare_digest(k, estado.token)
+            """GET com dado sensivel (PDF, eventos, manifesto): so o computador ou um celular pareado (?k=)."""
+            return self._local() or self._dispositivo(u) is not None
+
+        def _parear(self, codigo):
+            """QR de uso unico: valido -> o celular vira um dispositivo (token proprio) e segue para o controle."""
+            ip = self.client_address[0]
+            agora = time.time()
+            falhas = [t for t in estado.falhas_pareamento.get(ip, []) if agora - t < 60]
+            if len(falhas) >= 8:
+                return self._enviar(429, "muitas tentativas: aguarde um minuto", "text/plain; charset=utf-8")
+            d = estado.parear(codigo, self.headers.get("User-Agent", ""))
+            if d is None:
+                estado.falhas_pareamento[ip] = falhas + [agora]
+                return self._enviar(403, PAGINA_QR_USADO, "text/html; charset=utf-8")
+            self.send_response(302)
+            self.send_header("Location", f"/remote?k={d['token']}")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
 
         def _autorizado(self):
-            if self._local():
-                return True
-            tok = self.headers.get("X-Token", "")
-            return secrets.compare_digest(tok, estado.token)
+            return self._local() or self._dispositivo() is not None
 
         def _enviar(self, codigo, corpo, tipo="application/json", extra=None):
             if isinstance(corpo, str):
@@ -2083,21 +2227,23 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
                 if not self._leitura_ok(u):
                     return self._enviar(403, "{}")
                 m = {"name": "Baton", "short_name": "Baton", "display": "standalone", "background_color": "#000000",
-                     "theme_color": "#000000", "start_url": "/remote?k=" + estado.token,
+                     "theme_color": "#000000", "start_url": "/remote?k=" + parse_qs(u.query).get("k", [""])[0],
                      "icons": [{"src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
                                {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
                                {"src": "/icon.png", "sizes": "180x180", "type": "image/png"}]}
                 return self._enviar(200, json.dumps(m), "application/manifest+json")
             if u.path == "/vendor/qr.js" and usar_qr_cache:
                 return self._enviar(200, QR_FILE.read_bytes(), "application/javascript")
+            if u.path.startswith("/p/"):
+                return self._parear(u.path[3:])
             if u.path == "/remote":
                 k = parse_qs(u.query).get("k", [""])[0]
-                if not (self._local() or secrets.compare_digest(k, estado.token)):
-                    return self._enviar(403, "token invalido", "text/plain; charset=utf-8")
+                if not (self._local() or self._dispositivo(u) is not None):
+                    return self._enviar(403, "celular nao pareado: escaneie o QR code no computador", "text/plain; charset=utf-8")
                 if not self._local():
                     estado.remotos += 1
                     estado.publicar(estado.snapshot())
-                return self._enviar(200, montar("remoto", estado, usar_cache, usar_qr_cache), "text/html; charset=utf-8")
+                return self._enviar(200, montar("remoto", estado, usar_cache, usar_qr_cache, k), "text/html; charset=utf-8")
             if u.path == "/pdf" and estado.pdf:
                 if not self._leitura_ok(u):
                     return self._enviar(403, "token invalido", "text/plain; charset=utf-8")
@@ -2110,23 +2256,23 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
             if u.path == "/events":
                 if not self._leitura_ok(u):
                     return self._enviar(403, "token invalido", "text/plain; charset=utf-8")
-                return self._sse()
+                d = self._dispositivo(u)
+                return self._sse(d["id"] if d else None)
             if u.path == "/cfg":
-                k = parse_qs(u.query).get("k", [""])[0]
-                if not (self._local() or secrets.compare_digest(k, estado.token)):
+                if not self._leitura_ok(u):
                     return self._enviar(403, "{}")
                 return self._enviar(200, json.dumps(estado.cfg))
             if u.path == "/notas":
-                k = parse_qs(u.query).get("k", [""])[0]
-                if not (self._local() or secrets.compare_digest(k, estado.token)):
+                if not self._leitura_ok(u):
                     return self._enviar(403, "{}")
                 return self._enviar(200, json.dumps({"notas": estado.notas}))
             if u.path == "/estado":
                 return self._enviar(200, json.dumps(estado.snapshot()))
             self._enviar(404, "nao encontrado", "text/plain; charset=utf-8")
 
-        def _sse(self):
+        def _sse(self, dispositivo=None):
             q = queue.Queue(maxsize=300)
+            q.dispositivo = dispositivo
             estado.clientes.append(q)
             try:
                 self.send_response(200)
@@ -2143,6 +2289,8 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
                 while True:
                     try:
                         msg = q.get(timeout=4)
+                        if msg is None:  # celular desconectado pelo painel
+                            break
                         self.wfile.write(("data: " + json.dumps(msg) + "\n\n").encode())
                     except queue.Empty:
                         self.wfile.write(("data: " + json.dumps({"hb": 1, "timer": estado.snapshot()["timer"]}) + "\n\n").encode())
@@ -2401,7 +2549,7 @@ def main():
     ap.add_argument("--pausar", action="store_true", help="pausa o Baton em execucao (nao controla nada ate --retomar)")
     ap.add_argument("--retomar", action="store_true", help="retoma o Baton pausado")
     ap.add_argument("--detectar", action="store_true", help="mostra qual app esta em tela cheia agora e sai (teste)")
-    ap.add_argument("--novo-token", action="store_true", help="gera outro token (invalida o QR e a pagina abertos no celular)")
+    ap.add_argument("--novo-token", action="store_true", help="desfaz o pareamento de todos os celulares (cada um precisa escanear um QR novo)")
     a = ap.parse_args()
     if a.instalar or a.desinstalar:
         return instalar_login(remover=a.desinstalar)
@@ -2455,7 +2603,7 @@ def main():
                 pdf = deck_para_pdf(pdf)
             except RuntimeError as e:
                 sys.exit(str(e))
-    token = token_estavel(a.novo_token)
+    token = secrets.token_urlsafe(9)  # so por compatibilidade: os celulares usam o token do proprio dispositivo
     if a.host:
         ips = [("Rede local", a.host)]
     else:
@@ -2465,10 +2613,9 @@ def main():
         if rota and rota not in [ip for _, ip in ips]:
             ips.insert(0, ("Wi-Fi / rede local", rota))
         ips.append(("Tailscale (fora do Wi-Fi)", ip_tailscale()))
-    urls = [{"nome": n, "url": f"http://{ip}:{a.porta}/remote?k={token}"} for n, ip in ips if ip]
-    if not urls:
-        urls = [{"nome": "Rede local", "url": f"http://IP-DO-COMPUTADOR:{a.porta}/remote?k={token}"}]
-    remoto = urls[0]["url"]  # rede local primeiro: funciona sem VPN e e o caminho mais estavel
+    bases = [{"nome": n, "base": f"http://{ip}:{a.porta}"} for n, ip in ips if ip]  # rede local primeiro: funciona sem VPN
+    if not bases:
+        bases = [{"nome": "Rede local", "base": f"http://IP-DO-COMPUTADOR:{a.porta}"}]
     prop = 16 / 9
     if a.proporcao:
         try:
@@ -2486,8 +2633,11 @@ def main():
         except Exception:
             pass
     total = contar_paginas(pdf) if pdf else 9999
-    estado = Estado(pdf, total, a.transicao, token, externo, remoto, prop)
-    estado.urls = urls
+    estado = Estado(pdf, total, a.transicao, token, externo, "", prop)
+    estado.bases = bases
+    estado.carregar_dispositivos()
+    if a.novo_token:
+        estado.revogar_todos()  # --novo-token: desfaz o pareamento de todos os celulares
     caminho_notas = a.notas or (str(Path(pdf).with_suffix(".notas.md")) if pdf else None)
     base = {}
     if notas_deck and not a.notas:
@@ -2551,11 +2701,11 @@ def main():
         print(f"PDF: {pdf} ({estado.total} paginas)")
     print(f"QR code no Mac:   {local}")
     print(f"Painel (pausar, modo, apps): {local}painel")
-    for u in urls:
-        print(f"Celular ({u['nome']}): {u['url']}")
+    for u in estado.urls_pareamento():
+        print(f"Celular ({u['nome']}): {u['url']}   (QR de uso unico: vale para um celular)")
     print()
     if shutil.which("qrencode"):
-        subprocess.run(["qrencode", "-t", "ANSIUTF8", remoto])
+        subprocess.run(["qrencode", "-t", "ANSIUTF8", estado.url_pareamento()])
     if externo:
         print("Dica: no Mac, libere o Terminal em Ajustes > Privacidade e Seguranca > Acessibilidade;")
         print("      abra o PDF no leitor, deixe em tela cheia e clique nele antes de usar o celular.\n")

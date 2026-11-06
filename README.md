@@ -68,6 +68,8 @@ Dependências opcionais:
 
 ## 🧭 Uso <a name="uso"></a>
 
+**Vários celulares:** cada QR code vale para **um** celular: ao ser escaneado, o celular vira um dispositivo próprio (token próprio) e o QR muda na hora, então o segundo celular escaneia o QR novo e também entra, separado. O painel lista os celulares (conectado ou não) e tem **Desconectar** e **Parear novo celular**; o QR expira em 10 min. `baton --novo-token` desfaz o pareamento de todos. Tentativas com código errado são limitadas (8 por minuto por endereço).
+
 **Ícone na bandeja:** instalado (modo residente), o Baton mostra um ícone na barra de menu (macOS), na bandeja (Windows) ou no indicador (Linux; no GNOME precisa da extensão AppIndicator) com: Pausar/Retomar, **Escolher apresentação...** (seletor de arquivo do sistema), Remover apresentação, Mostrar QR code, Abrir painel e Sair. `--sem-tray` desliga; `--tray` liga fora do modo residente.
 
 **Sem terminal:** abra o painel (`http://localhost:8765/painel`, também acessível pelo link da página do QR code), solte o arquivo da apresentação (PDF, PPTX, ODP ou `.md` de notas) na área **Apresentação** e pronto: o celular recarrega sozinho com o slide atual, o próximo e as notas, e as teclas continuam indo para o app em primeiro plano (PowerPoint, Keynote, ReLaTeX em Modo Apresentação...). **Remover apresentação** volta ao modo só-teclas. `.pptx` precisa do LibreOffice para gerar a prévia.
