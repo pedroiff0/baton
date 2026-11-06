@@ -159,10 +159,12 @@ class Camada(Gtk.Window):
         fx = min(max(L["x"] - fw / 2, 0), 1 - fw)
         fy = min(max(L["y"] - fw / 2, 0), 1 - fw)
         iw, ih = L["sup"].get_width(), L["sup"].get_height()
+        cheia = L["w"] >= 0.99  # ampliacao da tela inteira: sem moldura
         cr.save()
-        cr.set_source_rgba(0, 0, 0, 0.35)  # sombra
-        cr.rectangle(lx - 3, ly - 1, lw + 6, lh + 8)
-        cr.fill()
+        if not cheia:
+            cr.set_source_rgba(0, 0, 0, 0.35)  # sombra
+            cr.rectangle(lx - 3, ly - 1, lw + 6, lh + 8)
+            cr.fill()
         cr.rectangle(lx, ly, lw, lh)
         cr.clip()
         cr.translate(lx, ly)
@@ -172,6 +174,8 @@ class Camada(Gtk.Window):
         cr.get_source().set_filter(cairo.FILTER_BEST)
         cr.paint()
         cr.restore()
+        if cheia:
+            return
         cr.set_source_rgba(1, 1, 1, 1)
         cr.set_line_width(3)
         cr.rectangle(lx, ly, lw, lh)
@@ -290,7 +294,7 @@ class Camada(Gtk.Window):
                     arq = str(m.get("img", ""))
                     sup = self.lupa["sup"] if self.lupa and self.lupa["arq"] == arq else cairo.ImageSurface.create_from_png(arq)
                     self.lupa = {"sup": sup, "arq": arq, "x": float(m.get("x", 0.5)), "y": float(m.get("y", 0.5)),
-                                 "z": min(8.0, max(1.1, float(m.get("z", 2)))), "w": min(0.6, max(0.1, float(m.get("w", 0.32))))}
+                                 "z": min(8.0, max(1.1, float(m.get("z", 2)))), "w": min(1.0, max(0.1, float(m.get("w", 1.0))))}
                 except Exception:
                     self.lupa = None
             self.queue_draw()

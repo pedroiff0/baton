@@ -1149,7 +1149,7 @@ class MonitoresTest(unittest.TestCase):
         self.assertEqual(MON.escolher("auto", mons, janela=(100, 500, 800, 600), anterior=mons[0])["nome"], "DP-1")  # mantem o ultimo
         self.assertEqual(MON.escolher("9", mons, janela=(100, 500, 800, 600))["nome"], "HDMI-1")  # numero invalido cai no auto
 
-    def test_lupa_captura_uma_vez_e_segue_o_ponto(self):
+    def test_zoom_captura_uma_vez_e_segue_o_ponto(self):
         import tempfile
         o = FakeOverlay()
         e = P.Externo(FakeBackend(), o, False)
@@ -1168,6 +1168,7 @@ class MonitoresTest(unittest.TestCase):
         self.assertTrue(lupas[0]["on"] and lupas[0]["img"].endswith(".png"))
         self.assertEqual((lupas[-1]["x"], lupas[-1]["z"]), (0.5, 3.0))
         self.assertEqual(len({m["img"] for m in lupas}), 1)  # a captura e uma so
+        self.assertEqual(lupas[0]["w"], 1.0)  # cobre a tela inteira
         e.zoom_externo(1.0, 0.5, 0.5, 16 / 9)
         self.assertEqual(o.msgs[-1], {"t": "lupa", "on": False})
 

@@ -1434,7 +1434,7 @@ class Externo:
         self._zq = queue.Queue()
         threading.Thread(target=self._zoom_worker, daemon=True).start()
 
-    LUPA_TAM = 0.32  # lado da lupa, em fracao da largura/altura do monitor (mesmo formato do monitor, nao circular)
+    LUPA_TAM = 1.0  # fracao da tela coberta pela ampliacao (1.0 = a tela inteira da projecao)
 
     def zoom_externo(self, z, x, y, proporcao):
         """Zoom do modo externo: lupa retangular pela camada do Baton; sem camada, o zoom nativo do sistema."""
@@ -1443,7 +1443,7 @@ class Externo:
         return self.zoom_sistema(z, x, y, proporcao)
 
     def lupa(self, z, x, y, proporcao):
-        """Lupa retangular sobre a projecao: a camada desenha, ampliada, uma captura do monitor feita ao ligar."""
+        """Ampliacao da projecao: a camada desenha, ampliada e no lugar da tela, uma captura do monitor feita ao ligar."""
         if z <= 1.001:
             velho, self.lupa_pend, self.lupa_arq = self.lupa_arq, None, None
             self.overlay.enviar({"t": "lupa", "on": False})
@@ -3357,7 +3357,7 @@ $('z1').onclick=()=>{zoom={z:1,x:.5,y:.5};mostraZoom();cmd('zoom',zoom)};
 let zsisNome=null;
 function zoomSistemaUI(s){if(!EXTERNO||s.zoom_sistema===undefined)return;zsisNome=s.zoom_sistema;
   $('zrow').style.display=s.zoom_sistema?'flex':'none';
-  if(s.zoom_sistema)$('zaim').querySelector('small').textContent=s.zoom_sistema==='Lupa'?'lupa: toque e arraste onde quer ampliar':'zoom do sistema: toque onde quer ampliar'}
+  if(s.zoom_sistema)$('zaim').querySelector('small').textContent=s.zoom_sistema==='Lupa'?'zoom: toque e arraste para mover a ampliacao':'zoom do sistema: toque onde quer ampliar'}
 function dicaZoomSistema(){let k=null;try{k=localStorage.getItem('baton-zsis')}catch(e){}if(k||!EXTERNO||!zsisNome||zsisNome==='Lupa')return;
   try{localStorage.setItem('baton-zsis','1')}catch(e){}
   const so=window.SO_PC||'',t=so==='darwin'?'No Mac, para o zoom funcionar: Ajustes do Sistema > Acessibilidade > Zoom > ative "Usar atalhos de teclado para zoom".':

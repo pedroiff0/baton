@@ -125,10 +125,13 @@ final class Quadro: NSView {
         let iw = CGFloat(img.width)
         let ih = CGFloat(img.height)
         let rect = CGRect(x: lx, y: ly, width: lw, height: lh)
-        g.saveGState()
-        g.setFillColor(NSColor.black.withAlphaComponent(0.35).cgColor)
-        g.fill(CGRect(x: lx - 3, y: ly - 1, width: lw + 6, height: lh + 8))
-        g.restoreGState()
+        let cheia = lupaLado >= 0.99  // ampliacao da tela inteira: sem moldura
+        if !cheia {
+            g.saveGState()
+            g.setFillColor(NSColor.black.withAlphaComponent(0.35).cgColor)
+            g.fill(CGRect(x: lx - 3, y: ly - 1, width: lw + 6, height: lh + 8))
+            g.restoreGState()
+        }
         if let corte = img.cropping(to: CGRect(x: fx * iw, y: fy * ih, width: fw * iw, height: fw * ih)) {
             g.saveGState()
             g.clip(to: rect)
@@ -138,6 +141,7 @@ final class Quadro: NSView {
             g.draw(corte, in: CGRect(x: 0, y: 0, width: lw, height: lh))
             g.restoreGState()
         }
+        if cheia { return }
         g.saveGState()
         g.setStrokeColor(NSColor.white.cgColor)
         g.setLineWidth(3)
@@ -560,7 +564,7 @@ final class Camada {
                 }
                 quadro.lupaPonto = CGPoint(x: CGFloat((msg["x"] as? Double) ?? 0.5), y: CGFloat((msg["y"] as? Double) ?? 0.5))
                 quadro.lupaZ = CGFloat(min(8.0, max(1.1, (msg["z"] as? Double) ?? 2.0)))
-                quadro.lupaLado = CGFloat(min(0.6, max(0.1, (msg["w"] as? Double) ?? 0.32)))
+                quadro.lupaLado = CGFloat(min(1.0, max(0.1, (msg["w"] as? Double) ?? 1.0)))
                 quadro.lupaLigada = quadro.lupaImg != nil
             }
             quadro.needsDisplay = true

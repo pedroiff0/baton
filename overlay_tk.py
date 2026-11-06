@@ -148,7 +148,7 @@ class App:
                 self.lupa_src, self.lupa_arq = tk.PhotoImage(file=arq), arq
             src = self.lupa_src
             iw, ih = src.width(), src.height()
-            lado = min(0.6, max(0.1, float(m.get("w", 0.32))))
+            lado = min(1.0, max(0.1, float(m.get("w", 1.0))))
             k = int(min(8, max(2, round(float(m.get("z", 2))))))  # o Tk so amplia por fatores inteiros
             sw, sh = max(1, int(lado * iw / k)), max(1, int(lado * ih / k))
             x, y = float(m.get("x", 0.5)), float(m.get("y", 0.5))
@@ -160,9 +160,12 @@ class App:
             lx = int(min(max(x * self.w - lw / 2, 0), self.w - lw))
             ly = int(min(max(y * self.h - lh / 2, 0), self.h - lh))
             self.lupa_ph = dst  # o Tk descarta a imagem se ninguem a referencia
-            c.create_rectangle(lx - 2, ly - 2, lx + lw + 2, ly + lh + 2, outline="black", width=1, tags="lupa")
+            cheia = lado >= 0.99  # ampliacao da tela inteira: sem moldura
+            if not cheia:
+                c.create_rectangle(lx - 2, ly - 2, lx + lw + 2, ly + lh + 2, outline="black", width=1, tags="lupa")
             c.create_image(lx, ly, anchor="nw", image=dst, tags="lupa")
-            c.create_rectangle(lx, ly, lx + lw, ly + lh, outline="white", width=3, tags="lupa")
+            if not cheia:
+                c.create_rectangle(lx, ly, lx + lw, ly + lh, outline="white", width=3, tags="lupa")
         except Exception:
             self.lupa_src = self.lupa_ph = None
             self.lupa_arq = ""
