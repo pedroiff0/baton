@@ -1163,7 +1163,7 @@ def diagnostico():
               "bundle id: " + run("/usr/libexec/PlistBuddy", "-c", "Print :CFBundleIdentifier", str(app / "Contents" / "Info.plist")),
               "assinatura: " + " | ".join(x for x in run("codesign", "-dv", str(app)).splitlines() if x.startswith(("Identifier", "Signature", "CodeDirectory"))),
               "launchd: " + (run("launchctl", "list", "com.baton") or "(nao carregado)").replace("\n", " ")[:200],
-              "processos: " + (run("pgrep", "-fl", "Baton") or "(nenhum)").replace("\n", " ; ")[:200],
+              "processos: " + (run("pgrep", "-fli", "baton") or "(nenhum)").replace("\n", " ; ")[:200],
               f"acessibilidade do Baton.app (o que importa): {acesso_do_launcher()} (None = launcher parado)",
               f"acessibilidade deste terminal (nao conta): {acessibilidade_mac()}"]
         L += ["macOS: " + run("sw_vers", "-productVersion") + " | arquitetura: " + run("uname", "-m"),
@@ -2495,6 +2495,13 @@ def main():
     if a.residente:
         estado.residente, estado.autorizado = True, False
         residente.Vigia(estado).start()
+        if os.environ.get("BATON_LAUNCHER"):
+            def _orfao():  # o Baton.app morreu (ex.: launchctl kickstart -k): nao deixa este processo segurando a porta
+                while True:
+                    time.sleep(2)
+                    if os.getppid() == 1:
+                        os._exit(0)
+            threading.Thread(target=_orfao, daemon=True).start()
     usar_cache = baixar_pdfjs()
     usar_qr = baixar_qr()
     hosts = ["0.0.0.0"]  # todas as interfaces: Wi-Fi e Tailscale; tudo que importa exige o token
@@ -2504,7 +2511,14 @@ def main():
     servidores = []
     for h in hosts:
         try:
-            s = Servidor((h, a.porta), handler)
+            for tentativa in range(8):  # a copia anterior pode estar saindo (reinicio pelo launchd): espera ate ~7 s
+                try:
+                    s = Servidor((h, a.porta), handler)
+                    break
+                except OSError as e:
+                    if e.errno != 48 and e.errno != 98 or tentativa == 7:  # EADDRINUSE no macOS e no Linux
+                        raise
+                    time.sleep(1)
         except OSError as e:
             print(f"aviso: nao consegui escutar em {h}:{a.porta} ({e})", file=sys.stderr)
             if h in ("127.0.0.1", "0.0.0.0"):
