@@ -355,7 +355,8 @@ class Estado:
         return {"pagina": self.pagina, "total": self.total, "transicao": self.transicao, "preto": self.cortina == "preto",
                 "cortina": self.cortina, "fim": {"txt": self.fim_txt[0], "sub": self.fim_txt[1]},
                 "auth": self.autorizado, "ativo": self.prefs["ativo"], "pedido": self.pedido,
-                "acess": self.acessibilidade(),
+                "acess": self.acessibilidade(), "so": sys.platform,
+                "zoom_sistema": (zoom_sistema_cfg() or {}).get("nome") if self.ext else None,
                 "remotos": self.remotos, "zoom": self.zoom, "zx": self.zx, "zy": self.zy, "seq": self.seq,
                 "timer": {"rodando": self.t_rodando, "elapsed": round(self.decorrido(), 1), "voltas": self.voltas}}
 
@@ -513,7 +514,7 @@ class Estado:
                 self.relay_parar()
         elif acao == "monitor" and (valor == "auto" or str(valor).isdigit()):
             p["monitor"] = str(valor)
-            self._mon_cache = (0.0, None)
+            self._monitor_atualizar()
         elif acao == "esquecer":
             p["apps_ok"] = [a for a in p["apps_ok"] if a != valor]
             p["apps_nao"] = [a for a in p["apps_nao"] if a != valor]
@@ -580,16 +581,25 @@ class Estado:
         return self.monitor_cli or str(self.prefs.get("monitor", "auto"))
 
     def monitor(self):
-        """Monitor da projecao (dict x, y, w, h): o da janela em tela cheia, ou o escolhido no painel; cache de 2 s."""
-        agora = time.monotonic()
-        if self._mon_cache[1] is None or agora - self._mon_cache[0] > 2.0:
-            try:
-                ant = self._mon_cache[1]
-                m = monitores.escolher(self.monitor_pref(), anterior=ant)
-            except Exception:
-                m = None
-            self._mon_cache = (agora, m)
+        """Monitor da projecao (dict x, y, w, h): o da janela em tela cheia, ou o escolhido no painel. Caminho quente (laser):
+        so le o valor guardado; quem recalcula (osascript/xrandr/xdotool, 100 a 300 ms no Mac) e a thread de monitor_vigiar()."""
+        if self._mon_cache[1] is None:
+            self._monitor_atualizar()
         return self._mon_cache[1]
+
+    def _monitor_atualizar(self):
+        try:
+            m = monitores.escolher(self.monitor_pref(), anterior=self._mon_cache[1])
+        except Exception:
+            m = self._mon_cache[1]
+        self._mon_cache = (time.monotonic(), m)
+
+    def monitor_vigiar(self, intervalo=2.0):
+        def _loop():
+            while True:
+                time.sleep(intervalo)
+                self._monitor_atualizar()
+        threading.Thread(target=_loop, daemon=True).start()
 
     def painel_estado(self):
         return {"ativo": self.prefs["ativo"], "modo": self.prefs["modo"], "autorizado": self.autorizado,
@@ -644,9 +654,13 @@ class Estado:
                 self.zoom = max(1.0, min(5.0, z))
                 self.zx = max(0.0, min(1.0, float(valor.get("x", 0.5))))
                 self.zy = max(0.0, min(1.0, float(valor.get("y", 0.5))))
+                if self.ext:  # app de terceiros: usa o zoom nativo do sistema
+                    self.ext.zoom_sistema(self.zoom, self.zx, self.zy, self.proporcao)
             else:
                 return False
             if self.pagina != pagina_antes:
+                if self.ext and self.zoom > 1.001:
+                    self.ext.zoom_sistema(1.0, 0.5, 0.5, self.proporcao)
                 self.zoom, self.zx, self.zy = 1.0, 0.5, 0.5
                 self.tracos = []
                 if not self.t_rodando and self.t_base == 0.0:  # o cronometro comeca no primeiro avanco
@@ -898,7 +912,8 @@ class Estado:
         raio = max(0.03, min(0.35, float(raio)))
         if self.ext:
             self.ext.laser(x, y, on, self.proporcao, modo, raio)
-        self.publicar({"laser": {"x": x, "y": y, "on": on, "m": modo, "r": raio}})
+        if self.tela_conectada():  # so a tela do proprio Baton usa estes pontos; os celulares os ignoram (nada de fila a toa)
+            self.publicar({"laser": {"x": x, "y": y, "on": on, "m": modo, "r": raio}})
 
     def desenhar(self, d):
         """Recebe pontos de um traco (caneta ou marca-texto) e repassa para a tela."""
@@ -959,13 +974,17 @@ class _Log:
     def mover(self, x, y):
         print(f"mouse: {x:.0f},{y:.0f}", flush=True)
 
+    def combo(self, mods, tecla):
+        print("combo:", "+".join(list(mods) + [tecla]), flush=True)
+
     def tela(self):
         return 1920.0, 1080.0
 
 
 class _Mac:
     """CoreGraphics via ctypes (sem dependencias). Precisa de Acessibilidade para o Terminal."""
-    CODES = {"Right": 124, "Left": 123, "Home": 115, "End": 119, "b": 11}
+    CODES = {"Right": 124, "Left": 123, "Home": 115, "End": 119, "b": 11, "equal": 24, "minus": 27, "0": 29, "Escape": 53}
+    MODS = {"alt": 0x80000, "cmd": 0x100000, "ctrl": 0x40000, "shift": 0x20000}  # flags do CGEvent
 
     def __init__(self):
         import ctypes
@@ -1017,6 +1036,16 @@ class _Mac:
                 self.cg.CGEventSetFlags(ev, self.FLAGS[nome])
             self._post(ev)
 
+    def combo(self, mods, tecla):
+        """Tecla com modificadores (ex.: Option+Command+=, o atalho de zoom do Mac)."""
+        flags = 0
+        for m in mods:
+            flags |= self.MODS.get(m, 0)
+        for baixo in (True, False):
+            ev = self.cg.CGEventCreateKeyboardEvent(self.fonte, self.CODES[tecla], baixo)
+            self.cg.CGEventSetFlags(ev, flags)
+            self._post(ev)
+
     def mover(self, x, y):
         pt = self.Pt(x, y)
         self.cg.CGWarpMouseCursorPosition(pt)
@@ -1064,7 +1093,8 @@ def acessibilidade_mac():
 
 class _Windows:
     """user32 via ctypes (sem dependencias): teclas, cursor e tamanho da tela em pixels fisicos."""
-    VK = {"Right": 0x27, "Left": 0x25, "Home": 0x24, "End": 0x23, "b": 0x42}
+    VK = {"Right": 0x27, "Left": 0x25, "Home": 0x24, "End": 0x23, "b": 0x42, "equal": 0xBB, "minus": 0xBD, "Escape": 0x1B, "0": 0x30}
+    VK_MOD = {"win": 0x5B, "alt": 0x12, "ctrl": 0x11, "shift": 0x10}
     ESTENDIDAS = ("Right", "Left", "Home", "End")
 
     def __init__(self):
@@ -1085,6 +1115,18 @@ class _Windows:
         self.u.keybd_event(vk, scan, ext, 0)
         self.u.keybd_event(vk, scan, ext | 2, 0)  # KEYEVENTF_KEYUP
 
+    def combo(self, mods, tecla):
+        """Tecla com modificadores (ex.: Win+= abre e amplia a Lupa)."""
+        ms = [self.VK_MOD[m] for m in mods if m in self.VK_MOD]
+        for vk in ms:
+            self.u.keybd_event(vk, self.u.MapVirtualKeyW(vk, 0), 1 if vk == 0x5B else 0, 0)
+        vk = self.VK[tecla]
+        scan = self.u.MapVirtualKeyW(vk, 0)
+        self.u.keybd_event(vk, scan, 0, 0)
+        self.u.keybd_event(vk, scan, 2, 0)
+        for vk in reversed(ms):
+            self.u.keybd_event(vk, self.u.MapVirtualKeyW(vk, 0), (1 if vk == 0x5B else 0) | 2, 0)
+
     def mover(self, x, y):
         self.u.SetCursorPos(int(x), int(y))
 
@@ -1099,6 +1141,11 @@ class _Xdotool:
 
     def tecla(self, nome):
         subprocess.run(["xdotool", "key", nome], check=False)
+
+    XMOD = {"alt": "alt", "cmd": "super", "win": "super", "super": "super", "ctrl": "ctrl", "shift": "shift"}
+
+    def combo(self, mods, tecla):
+        subprocess.run(["xdotool", "key", "+".join([self.XMOD.get(m, m) for m in mods] + [tecla])], check=False, capture_output=True)
 
     def mover(self, x, y):
         subprocess.run(["xdotool", "mousemove", str(int(x)), str(int(y))], check=False)
@@ -1208,6 +1255,29 @@ class _Portal:
         if shutil.which("xdotool"):
             subprocess.run(["xdotool", "key", nome], check=False, capture_output=True)
 
+    MODSYM = {"alt": 0xFFE9, "cmd": 0xFFEB, "win": 0xFFEB, "super": 0xFFEB, "ctrl": 0xFFE3, "shift": 0xFFE1}
+
+    def combo(self, mods, tecla):
+        sym = KEYSYMS.get(tecla) or {"equal": 0x3D, "minus": 0x2D, "0": 0x30}.get(tecla)
+        if self.sessao and sym:
+            try:
+                def env(s, e):
+                    self.con.call_sync("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
+                                       "org.freedesktop.portal.RemoteDesktop", "NotifyKeyboardKeysym",
+                                       self.GLib.Variant("(oa{sv}iu)", (self.sessao, {}, s, e)), None, self.Gio.DBusCallFlags.NONE, 2000, None)
+                ms = [self.MODSYM[m] for m in mods if m in self.MODSYM]
+                for m in ms:
+                    env(m, 1)
+                env(sym, 1)
+                env(sym, 0)
+                for m in reversed(ms):
+                    env(m, 0)
+                return
+            except Exception as e:
+                print(f"aviso: portal recusou o atalho {tecla} ({e})", file=sys.stderr)
+        if shutil.which("xdotool"):
+            subprocess.run(["xdotool", "key", "+".join([_Xdotool.XMOD.get(m, m) for m in mods] + [tecla])], check=False, capture_output=True)
+
     def mover(self, x, y):
         if shutil.which("xdotool"):
             subprocess.run(["xdotool", "mousemove", str(int(x)), str(int(y))], check=False, capture_output=True)
@@ -1311,6 +1381,27 @@ class _OverlayProc:
     fechar = _OverlayMac.fechar
 
 
+def zoom_sistema_cfg():
+    """Atalhos do zoom nativo do sistema (o Baton nao amplia a janela de outro programa; o zoom do SO segue o cursor):
+    {"mods", "mais", "menos", "reset"} ou None se o desktop nao tem um (ex.: XFCE, i3)."""
+    if sys.platform == "darwin":
+        return {"mods": ("alt", "cmd"), "mais": "equal", "menos": "minus", "reset": None, "nome": "Zoom de Acessibilidade"}
+    if sys.platform == "win32":
+        return {"mods": ("win",), "mais": "equal", "menos": "minus", "reset": (("win",), "Escape"), "nome": "Lupa do Windows"}
+    if sys.platform.startswith("linux"):
+        d = os.environ.get("XDG_CURRENT_DESKTOP", "").upper()
+        if "GNOME" in d or "UNITY" in d or "ZORIN" in d:
+            return {"mods": ("super", "alt"), "mais": "equal", "menos": "minus", "reset": None, "nome": "Ampliador do GNOME"}
+        if "KDE" in d or "PLASMA" in d:
+            return {"mods": ("super",), "mais": "equal", "menos": "minus", "reset": (("super",), "0"), "nome": "Zoom do KDE"}
+    return None
+
+
+def passos_zoom(z):
+    """Nivel de zoom (1 a 5) -> numero de toques no atalho de ampliar do sistema (cada toque ~ +0,5x)."""
+    return max(0, int(round((max(1.0, min(5.0, float(z))) - 1.0) * 2)))
+
+
 class Externo:
     """Traduz comandos do celular em teclas, mouse e desenho (camada) para o app em primeiro plano."""
     TECLAS = {"next": "Right", "prev": "Left", "first": "Home", "last": "End"}
@@ -1323,6 +1414,52 @@ class Externo:
         self.tecla_preto = False
         self.monitor_fn = None  # () -> monitor da projecao (dict x, y, w, h) ou None
         self.mon_atual = None
+        self.zoom_passos = 0
+        self._zq = queue.Queue()
+        threading.Thread(target=self._zoom_worker, daemon=True).start()
+
+    def zoom_sistema(self, z, x, y, proporcao):
+        """Zoom do sistema: o ponteiro vai para o ponto escolhido e os atalhos de ampliar/reduzir cobrem a diferenca de nivel.
+        Roda numa thread (varias teclas) e junta pedidos seguidos: so o ultimo importa."""
+        if zoom_sistema_cfg() is None:
+            return False
+        self._zq.put((z, x, y, proporcao))
+        return True
+
+    def _zoom_worker(self):
+        while True:
+            item = self._zq.get()
+            try:
+                while True:  # junta: fica com o pedido mais novo
+                    item = self._zq.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self._zoom_aplicar(*item)
+            except Exception as e:
+                print(f"aviso: zoom do sistema falhou ({e})", file=sys.stderr)
+
+    def _zoom_aplicar(self, z, x, y, proporcao):
+        cfg = zoom_sistema_cfg()
+        if cfg is None:
+            return
+        alvo = passos_zoom(z)
+        if alvo > 0:  # o zoom do SO segue o ponteiro: leva o cursor ao ponto
+            px, py, _, _ = self.para_tela(x, y, proporcao)
+            self.b.mover(px, py)
+        delta = alvo - self.zoom_passos
+        combo = getattr(self.b, "combo", None)
+        if combo is None:
+            return
+        if alvo == 0 and (self.zoom_passos > 0 or delta):
+            for _ in range(self.zoom_passos + 2):
+                combo(cfg["mods"], cfg["menos"])
+            if cfg["reset"]:
+                combo(*cfg["reset"])
+        else:
+            for _ in range(abs(delta)):
+                combo(cfg["mods"], cfg["mais"] if delta > 0 else cfg["menos"])
+        self.zoom_passos = alvo
 
     def cortina(self, tipo, txt="", sub=""):
         """Cortina nativa por cima do app. Sem camada, so o preto funciona (tecla B do leitor)."""
@@ -3011,7 +3148,7 @@ PAGINA_SIMPLES = r"""<!doctype html><html lang="pt-br"><head><meta charset="utf-
 html,body{margin:0;height:100%;background:#000;color:#fff;font-family:-apple-system,system-ui,sans-serif;touch-action:none;user-select:none;-webkit-user-select:none;overflow:hidden}
 body{display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto 1fr;gap:8px;padding:max(22px,calc(env(safe-area-inset-top) + 14px)) max(10px,env(safe-area-inset-right)) max(14px,calc(env(safe-area-inset-bottom) + 6px)) max(10px,env(safe-area-inset-left))}
 #topo{display:flex;justify-content:space-between;align-items:center;gap:6px;font-size:13px;color:#aaa;min-height:34px;min-width:0}
-#dot.ok+#st{display:none}#topo>span:first-child{min-width:0;white-space:nowrap}
+#dot.ok+#st{display:none}#ms{margin-left:2px;font-variant-numeric:tabular-nums}#ms.lento{color:#ffd60a}#ms.ruim{color:#ff453a}#topo>span:first-child{min-width:0;white-space:nowrap}
 #dot{width:10px;height:10px;border-radius:50%;background:#e33;display:inline-block;margin-right:6px}#dot.ok{background:#3c6}
 #topo .acoes{display:flex;gap:6px;align-items:center}
 #tempo{font-variant-numeric:tabular-nums;font-size:15px;letter-spacing:.5px;min-width:68px;text-align:center;touch-action:manipulation}
@@ -3057,7 +3194,7 @@ body.canhoto #navrow,body.canhoto #zctl{flex-direction:row-reverse}
   body.canhoto #corpo{grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);grid-template-areas:"foco nav" "laser zoom"}
 }
 </style></head><body class="destro">
-<div id="topo"><span><i id="dot"></i><span id="st">conectando</span></span>
+<div id="topo"><span><i id="dot"></i><span id="st">conectando</span><small id="ms"></small></span>
   <button class="chip" id="tempo" title="Toque: iniciar/pausar. Segure: volta">00:00</button>
   <span class="acoes"><button class="chip az" id="binst" style="display:none">Instalar</button><button class="chip" id="bcfg">Ajustes</button><a class="chip" href="/remote?k=__TOKEN__">Completo</a></span></div>
 <div id="corpo">
@@ -3075,6 +3212,7 @@ body.canhoto #navrow,body.canhoto #zctl{flex-direction:row-reverse}
   <label>Foco: raio<input id="raio" type="range" min="3" max="35" value="12"><output id="rv">12</output></label>
   <label>Foco: desfoque<input id="s_foco_blur" type="range" min="0" max="100" value="100"><output>100</output></label>
   <label>Foco: escuro<input id="s_foco_escuro" type="range" min="0" max="90" value="25"><output>25</output></label>
+  <label>Resposta do apontador<input id="s_resp" type="range" min="0" max="100" value="60"><output>60</output></label>
   <label>Alcance do apontador (graus)<input id="s_gan" type="range" min="15" max="80" value="35"><output>35</output></label>
   <div class="mao"><button id="mdestro">Destro</button><button id="mcanhoto">Canhoto</button></div>
 </div>
@@ -3091,22 +3229,35 @@ function regiao(){const w=1/Math.max(1,zoom.z),cx=Math.max(w/2,Math.min(1-w/2,zo
 function paraSlide(x,y){if(zoom.z<=1.001)return{x,y};const r=regiao();return{x:r.x0+x*r.w,y:r.y0+y*r.w}}
 function mostraZoom(){$('zt').textContent='Zoom '+(zoom.z%1?zoom.z.toFixed(1):zoom.z)+'x';$('zrow').classList.toggle('ativo',zoom.z>1.001);if(!arrastaNiv)$('zniv').value=zoom.z}
 let arrastaNiv=false;
-$('zniv').addEventListener('pointerdown',()=>{arrastaNiv=true});
+$('zniv').addEventListener('pointerdown',()=>{arrastaNiv=true;dicaZoomSistema()});
 ['pointerup','pointercancel'].forEach(t=>$('zniv').addEventListener(t,()=>{arrastaNiv=false}));
 $('zniv').oninput=e=>{const z=Math.round(parseFloat(e.target.value)*10)/10,c=zoom.z<=1.001&&z>1?ultSlide:{x:zoom.x,y:zoom.y};
   zoom={z,x:z>1?c.x:.5,y:z>1?c.y:.5};mostraZoom();zPend={z:zoom.z,x:zoom.x,y:zoom.y};if(!zEnv)bombeiaZoom()};
 $('zniv').onchange=()=>{arrastaNiv=false;mostraZoom();cmd('zoom',zoom)};
-function passoZoom(d){let i=NIVEIS.findIndex(n=>n>=zoom.z-1e-6);if(i<0)i=NIVEIS.length-1;i=Math.max(0,Math.min(NIVEIS.length-1,i+d));const z=NIVEIS[i];
+function passoZoom(d){dicaZoomSistema();let i=NIVEIS.findIndex(n=>n>=zoom.z-1e-6);if(i<0)i=NIVEIS.length-1;i=Math.max(0,Math.min(NIVEIS.length-1,i+d));const z=NIVEIS[i];
   const c=zoom.z<=1.001&&z>1?ultSlide:{x:zoom.x,y:zoom.y};  // ao ampliar a partir de 1x, centraliza onde voce apontou por ultimo
   zoom={z,x:z>1?c.x:.5,y:z>1?c.y:.5};mostraZoom();cmd('zoom',zoom)}
 $('zp').onclick=()=>{passoZoom(1);navigator.vibrate&&navigator.vibrate(8)};$('zm').onclick=()=>{passoZoom(-1);navigator.vibrate&&navigator.vibrate(8)};
 $('z1').onclick=()=>{zoom={z:1,x:.5,y:.5};mostraZoom();cmd('zoom',zoom)};
-if(EXTERNO)$('zrow').style.display='none';  // modo externo (app de terceiros): o Baton nao amplia a janela do outro programa
+// modo externo (app de terceiros): o Baton nao amplia a janela do outro programa; usa o zoom nativo do sistema (atalhos), que segue o cursor
+let zsisNome=null;
+function zoomSistemaUI(s){if(!EXTERNO||s.zoom_sistema===undefined)return;zsisNome=s.zoom_sistema;
+  $('zrow').style.display=s.zoom_sistema?'flex':'none';
+  if(s.zoom_sistema)$('zaim').querySelector('small').textContent='zoom do sistema: toque onde quer ampliar'}
+function dicaZoomSistema(){let k=null;try{k=localStorage.getItem('baton-zsis')}catch(e){}if(k||!EXTERNO||!zsisNome)return;
+  try{localStorage.setItem('baton-zsis','1')}catch(e){}
+  const so=window.SO_PC||'',t=so==='darwin'?'No Mac, para o zoom funcionar: Ajustes do Sistema > Acessibilidade > Zoom > ative "Usar atalhos de teclado para zoom".':
+    so==='win32'?'No Windows o zoom abre a Lupa do sistema; para fechar, volte a 1x.':'Zoom pelo '+zsisNome+'; se nao responder, ative o recurso nas configuracoes de acessibilidade.';
+  const el=$('aviso');el.innerHTML='<b>Zoom do sistema</b><br>'+t;el.style.display='block';setTimeout(()=>{if(/Zoom do sistema/.test(el.innerHTML))el.style.display='none'},9000)}
 function avisoUI(s){const el=$('aviso');let t='';
   if(s.acess===false)t='<b>O Mac nao deixou o Baton enviar teclas.</b> No Mac: Ajustes do Sistema > Privacidade e Seguranca > Acessibilidade, ative o Baton.';
   else if(s.ativo===false)t='<b>Baton pausado</b> no computador. Retome em localhost:8765/painel.';
-  el.innerHTML=t;el.style.display=t?'block':'none'}
-function aplicaSnap(s){if(s.acess!==undefined||s.ativo!==undefined)avisoUI(s);if(s.cfg){mostraAj(s.cfg);tick();return}if(s.timer)sincTimer(s.timer);if(s.zoom!==undefined&&ativo!=='zoom'){zoom={z:s.zoom||1,x:s.zx===undefined?.5:s.zx,y:s.zy===undefined?.5:s.zy};mostraZoom()}}
+  if(!t&&/Zoom do sistema/.test(el.innerHTML))return;el.innerHTML=t;el.style.display=t?'block':'none'}
+async function medeMs(){if(document.visibilityState!=='visible')return;const t0=performance.now();
+  try{const r=await fetch('/estado',{cache:'no-store',headers:{'X-Token':TOKEN}});await r.text();const ms=Math.round(performance.now()-t0);
+    const e=$('ms');e.textContent=ms+' ms';e.className=ms>300?'ruim':ms>120?'lento':''}catch(x){$('ms').textContent=''}}
+setInterval(medeMs,5000);setTimeout(medeMs,1500);
+function aplicaSnap(s){if(s.so)window.SO_PC=s.so;zoomSistemaUI(s);if(s.acess!==undefined||s.ativo!==undefined)avisoUI(s);if(s.cfg){mostraAj(s.cfg);tick();return}if(s.timer)sincTimer(s.timer);if(s.zoom!==undefined&&ativo!=='zoom'){zoom={z:s.zoom||1,x:s.zx===undefined?.5:s.zx,y:s.zy===undefined?.5:s.zy};mostraZoom()}}
 // ---- cronometro (o mesmo do controle completo: vive no computador, todos os celulares veem o mesmo tempo)
 let tm={rodando:false,elapsed:0,rec:performance.now()},metaMin=50,voltasVistas='';
 const mmss=t=>{t=Math.max(0,Math.floor(t));const h=Math.floor(t/3600),m=Math.floor(t%3600/60),s=t%60;return(h?h+':'+String(m).padStart(2,'0'):String(m).padStart(2,'0'))+':'+String(s).padStart(2,'0')};
@@ -3145,6 +3296,7 @@ function poeMao(m){mao=m;document.body.classList.toggle('destro',m==='destro');d
 $('mdestro').onclick=()=>poeMao('destro');$('mcanhoto').onclick=()=>poeMao('canhoto');poeMao(mao);
 
 // ---- ajustes
+let resp=60;try{resp=parseFloat(localStorage.getItem('baton-resp')||'60')}catch(e){}
 let raio=.12,tCfg=null,pend={},gan=35;try{gan=parseFloat(localStorage.getItem('baton-gan2')||'35')}catch(e){}
 $('bcfg').onclick=()=>$('folha').classList.toggle('aberta');$('bfecha').onclick=()=>$('folha').classList.remove('aberta');
 const AJ={meta_min:'s_meta',laser_tam:'s_laser_tam',foco_raio:'raio',foco_blur:'s_foco_blur',foco_escuro:'s_foco_escuro'};
@@ -3154,6 +3306,8 @@ function salvaCfg(k,v){pend[k]=v;clearTimeout(tCfg);tCfg=setTimeout(()=>{const d
   fetch('/cfg',{method:'POST',headers:{'Content-Type':'application/json','X-Token':TOKEN},body:JSON.stringify(d)}).catch(()=>{})},150)}
 for(const k in AJ)$(AJ[k]).oninput=e=>{const v=parseFloat(e.target.value);e.target.parentNode.querySelector('output').textContent=Math.round(v);if(k==='foco_raio')raio=v/100;if(k==='meta_min'){metaMin=v;tick()}salvaCfg(k,v)};
 document.querySelectorAll('#metas button').forEach(b=>b.onclick=()=>{const v=parseFloat(b.dataset.m);$('s_meta').value=v;$('s_meta').parentNode.querySelector('output').textContent=v;metaMin=v;tick();salvaCfg('meta_min',v)});
+$('s_resp').value=resp;$('s_resp').parentNode.querySelector('output').textContent=Math.round(resp);
+$('s_resp').oninput=e=>{resp=parseFloat(e.target.value);e.target.parentNode.querySelector('output').textContent=Math.round(resp);criaFiltros();try{localStorage.setItem('baton-resp',String(resp))}catch(x){}};
 $('s_gan').value=gan;$('s_gan').parentNode.querySelector('output').textContent=Math.round(gan);
 $('s_gan').oninput=e=>{gan=parseFloat(e.target.value);e.target.parentNode.querySelector('output').textContent=Math.round(gan);try{localStorage.setItem('baton-gan2',String(gan))}catch(x){}};
 function poeRaio(r,salva){raio=Math.max(.04,Math.min(.3,r));const p=Math.round(raio*100);$('raio').value=p;$('rv').textContent=p;if(salva)salvaCfg('foco_raio',p)}
@@ -3174,13 +3328,14 @@ function umEuro(mc,beta,dc){let xp=null,dxp=0,tp=0;
   return{reset(){xp=null},f(x,t){if(xp===null){xp=x;dxp=0;tp=t;return x}
     const dt=Math.min(.1,Math.max(.004,(t-tp)/1000));tp=t;const dx=(x-xp)/dt;dxp+=(dx-dxp)*al(dc,dt);
     const c=mc+beta*Math.abs(dxp);xp+=(x-xp)*al(c,dt);return xp}}}
-const fx=umEuro(1.6,9,1.2),fy=umEuro(1.6,9,1.2);
+// "Resposta do apontador": mais alto = menos suavizacao em movimento (ponteiro mais rapido), um pouco mais de tremor parado
+let fx=null,fy=null;function criaFiltros(){const r=resp/100,mc=0.8+r*2.4,beta=6+r*50;fx=umEuro(mc,beta,1.2);fy=umEuro(mc,beta,1.2)}criaFiltros();
 let ori=null,semSensor=true,base=null,sx=.5,sy=.5,ativo=null,pad={x:.5,y:.5},padId=null,modoUlt='laser';
 function aoOrientar(e){if(e.alpha===null||e.alpha===undefined)return;semSensor=false;ori={a:e.alpha,b:e.beta,g:e.gamma};if(ativo)atualiza()}
 addEventListener('deviceorientation',aoOrientar,true);
 const sensor=()=>!semSensor;
 let lsAb=0,lsPend=null,lsSeq=0,ultimo=0;const lsQid=Math.random().toString(36).slice(2,8);
-function envLaser(x,y,on){const t=performance.now();if(on&&t-ultimo<6)return;ultimo=t;const p=paraSlide(x,y);ultSlide=p;lsPend={x:p.x,y:p.y,on,m:modoUlt,r:raio};bombeia()}
+function envLaser(x,y,on){const t=performance.now();if(on&&t-ultimo<2)return;ultimo=t;const p=paraSlide(x,y);ultSlide=p;lsPend={x:p.x,y:p.y,on,m:modoUlt,r:raio};bombeia()}
 // ate 3 envios em voo (RTT alto no relay): o servidor descarta os fora de ordem (q)
 function bombeia(){
   while(lsPend&&lsAb<3){const d=lsPend;lsPend=null;d.q=++lsSeq;d.i=lsQid;lsAb++;
@@ -4002,6 +4157,8 @@ def main():
     if externo:
         externo.monitor_fn = estado.monitor
     MONITOR_FN = estado.monitor
+    estado._monitor_atualizar()  # primeira leitura aqui, fora do caminho do laser
+    estado.monitor_vigiar()
     global URL_PUBLICA
     MAX_DISPOSITIVOS = max(1, min(64, a.max_celulares))
     pedido = a.url_publica.strip()

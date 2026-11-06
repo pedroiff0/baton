@@ -718,7 +718,7 @@ class PlataformasTest(unittest.TestCase):
             self.assertFalse(alvo.exists())
 
     def test_backend_windows_mapeia_as_teclas(self):
-        self.assertEqual(set(P._Windows.VK), {"Right", "Left", "Home", "End", "b"})
+        self.assertTrue({"Right", "Left", "Home", "End", "b", "equal", "minus", "Escape"} <= set(P._Windows.VK))
         self.assertTrue(set(P.Externo.TECLAS.values()) <= set(P._Windows.VK))
         self.assertTrue(set(P.Externo.TECLAS.values()) <= set(P._Mac.CODES))
 
@@ -1048,6 +1048,63 @@ class RelayTest(unittest.TestCase):
         ag.parar = True
         srv.shutdown()
         loc.shutdown()
+
+
+class ZoomSistemaTest(unittest.TestCase):
+    def test_tabela_por_sistema(self):
+        with mock.patch.object(P.sys, "platform", "darwin"):
+            c = P.zoom_sistema_cfg()
+            self.assertEqual((c["mods"], c["mais"], c["menos"]), (("alt", "cmd"), "equal", "minus"))
+        with mock.patch.object(P.sys, "platform", "win32"):
+            self.assertEqual(P.zoom_sistema_cfg()["mods"], ("win",))
+        with mock.patch.object(P.sys, "platform", "linux"):
+            with mock.patch.dict(P.os.environ, {"XDG_CURRENT_DESKTOP": "ubuntu:GNOME"}):
+                self.assertEqual(P.zoom_sistema_cfg()["mods"], ("super", "alt"))
+            with mock.patch.dict(P.os.environ, {"XDG_CURRENT_DESKTOP": "KDE"}):
+                self.assertEqual(P.zoom_sistema_cfg()["mods"], ("super",))
+            with mock.patch.dict(P.os.environ, {"XDG_CURRENT_DESKTOP": "XFCE"}):
+                self.assertIsNone(P.zoom_sistema_cfg())
+
+    def test_passos(self):
+        self.assertEqual([P.passos_zoom(z) for z in (1, 1.5, 2, 3, 4, 5, 9)], [0, 1, 2, 4, 6, 8, 8])
+
+    def test_zoom_move_cursor_e_envia_atalhos(self):
+        class B(FakeBackend):
+            def __init__(self):
+                super().__init__()
+                self.combos = []
+
+            def combo(self, mods, tecla):
+                self.combos.append((tuple(mods), tecla))
+        b = B()
+        e = P.Externo(b, None, True)
+        with mock.patch.object(P.sys, "platform", "darwin"):
+            e._zoom_aplicar(3, 0.5, 0.5, 16 / 9)  # 1x -> 3x: 4 toques de ampliar, cursor no centro
+            self.assertEqual(b.combos, [(("alt", "cmd"), "equal")] * 4)
+            self.assertEqual(b.movs[-1], (960.0, 540.0))
+            b.combos.clear()
+            e._zoom_aplicar(2, 0.5, 0.5, 16 / 9)  # 3x -> 2x: 2 de reduzir
+            self.assertEqual(b.combos, [(("alt", "cmd"), "minus")] * 2)
+            b.combos.clear()
+            e._zoom_aplicar(1, 0.5, 0.5, 16 / 9)  # volta a 1x: reduz tudo (+2 de folga)
+            self.assertEqual(len(b.combos), 4)
+            self.assertEqual(e.zoom_passos, 0)
+
+    def test_laser_nao_chama_monitor_no_caminho_quente(self):
+        e = P.Estado(None, 9999, "slide", "tok")
+        e._mon_cache = (0.0, {"id": 0, "x": 0, "y": 0, "w": 1920, "h": 1080})
+        with mock.patch.object(P.monitores, "escolher", side_effect=AssertionError("recalculou no caminho do laser")):
+            for _ in range(3):
+                self.assertEqual(e.monitor()["w"], 1920)
+
+    def test_laser_so_publica_com_tela_propria(self):
+        e = P.Estado(None, 9999, "slide", "tok")
+        e.prefs.update(ativo=True)
+        e.autorizado = True
+        pubs = []
+        e.publicar = lambda m: pubs.append(m)
+        e.laser(0.5, 0.5, True)
+        self.assertEqual(pubs, [])  # so celulares: nada a enfileirar
 
 
 class MonitoresTest(unittest.TestCase):

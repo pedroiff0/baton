@@ -87,7 +87,7 @@ def _coletar():
     return mons
 
 
-def listar(validade=2.0):
+def listar(validade=10.0):
     agora = time.monotonic()
     if _CACHE["dados"] is None or agora - _CACHE["t"] > validade:
         _CACHE["dados"], _CACHE["t"] = _coletar(), agora
