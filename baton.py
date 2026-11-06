@@ -2075,6 +2075,8 @@ body{display:flex;flex-direction:column;padding:env(safe-area-inset-top) max(12p
 #cap{display:none;position:absolute;left:0;top:0;width:100%;height:100%;object-fit:contain;background:#000;pointer-events:none}
 #ponto{position:absolute;width:30px;height:30px;margin:-15px 0 0 -15px;border-radius:50%;pointer-events:none;display:none;
 background:radial-gradient(circle,#fff 0,#ff2d2d 35%,rgba(255,0,0,.4) 60%,rgba(255,0,0,0) 72%);box-shadow:0 0 18px 6px rgba(255,40,40,.6)}
+#zflut{position:absolute;right:6px;bottom:6px;z-index:5;display:flex;align-items:center;gap:2px;background:rgba(0,0,0,.62);border-radius:16px;padding:2px 4px}
+#zflut button{width:30px;height:28px;padding:0;font-size:18px;line-height:1;border-radius:14px;background:transparent}#zflut span{min-width:30px;text-align:center;font-size:12px;color:#fff;font-weight:600}
 #zrect{position:absolute;border:2px solid #0a84ff;background:rgba(10,132,255,.15);pointer-events:none;display:none;border-radius:3px}
 button{border:0;border-radius:12px;background:#1d1d1f;color:#fff;font-size:15px;font-weight:600;touch-action:manipulation}
 button:active{background:#333}
@@ -2137,7 +2139,7 @@ select{background:#1d1d1f;color:#fff;border:0;border-radius:12px;font-size:14px;
 }
 """
 HTML_REMOTO = """<div id="aviso"></div><div id="app"><div id="colA"><div id="topo"><span><i id="dot"></i><span id="st">conectando</span></span><span id="pos">- / -</span></div>
-<div id="vista"><img id="cap" alt=""><canvas id="cv"></canvas><canvas id="ovp"></canvas><div id="zrect"></div><div id="ponto"></div></div>
+<div id="vista"><img id="cap" alt=""><canvas id="cv"></canvas><canvas id="ovp"></canvas><div id="zrect"></div><div id="ponto"></div><div id="zflut"><button id="zfm">&minus;</button><span id="zfv">1x</span><button id="zfp">+</button></div></div>
 <div class="linha" id="tools"><button id="bl">Laser</button><button id="bf">Foco</button><button id="bc">Caneta</button><button id="bm">Marca</button><button id="bz">Zoom</button></div>
 <div class="linha" id="zbar"><button id="zm">&minus;</button><span id="zv">1x</span><button id="zp">+</button><button id="z1">1x</button></div>
 <div class="linha" id="raiobar"><span>Raio do foco</span><input id="raio" type="range" min="4" max="30" value="12"></div>
@@ -2170,7 +2172,7 @@ const PADRAO={meta_min:50,laser_tam:24,laser_cor:'#ff2d2d',foco_raio:12,foco_blu
 const DEFS=[['meta_min','Meta de tempo (min)',5,120,5],['laser_tam','Laser: tamanho',6,80,1],['foco_raio','Foco: raio',3,35,1],['foco_blur','Foco: desfoque',0,100,5],['foco_escuro','Foco: escurecer',0,90,5],['pen_larg','Caneta: espessura',0.5,12,0.5],['hl_larg','Marca: espessura',3,40,1],['hl_alpha','Marca: opacidade',10,80,5]];
 let cfg=Object.assign({},PADRAO),tCfg=null;
 try{fonte=parseInt(localStorage.getItem('baton-fonte'))||17}catch(e){}
-if(EXTERNO){$('bz').style.display='none';$('tr').style.display='none';if(!OVERLAY){['bf','bc','bm','bx'].forEach(i=>$(i).style.display='none');document.querySelectorAll('#exk [data-k]:not([data-k=preto])').forEach(b=>b.style.display='none');document.querySelector('[data-s=confete]').style.display='none'}}
+if(EXTERNO){$('bz').style.display='none';$('zflut').style.display='none';$('tr').style.display='none';if(!OVERLAY){['bf','bc','bm','bx'].forEach(i=>$(i).style.display='none');document.querySelectorAll('#exk [data-k]:not([data-k=preto])').forEach(b=>b.style.display='none');document.querySelector('[data-s=confete]').style.display='none'}}
 function status(ok,txt){$('dot').classList.toggle('ok',ok);$('st').textContent=(ok&&txt==='conectado'&&typeof rtt==='number'&&rtt>0)?txt+' - '+rtt+' ms'+(viaNome?' - '+viaNome.split(' ')[0]:''):txt}
 const cid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,8);
 async function cmd(c,v){
@@ -2251,7 +2253,19 @@ function previa(){
   const mesmo=mapa&&mapa.frameDe[prox]===mapa.frameDe[pag];
   $('prevlbl').textContent=mesmo?'Proximo passo':'Proximo slide';desenha(prox,$('cvp'),150);
 }
+// com zoom, a previa do celular mostra a mesma regiao ampliada (menos na ferramenta Zoom, que escolhe a regiao no slide inteiro):
+// assim laser, foco, caneta e marca-texto apontam e escrevem direto na parte ampliada
+function vistaZ(){
+  if(zoom.z<=1.001||ferr==='zoom')return null;
+  const w=1/zoom.z,cx=Math.max(w/2,Math.min(1-w/2,zoom.x)),cy=Math.max(w/2,Math.min(1-w/2,zoom.y));return{w,x0:cx-w/2,y0:cy-w/2};
+}
+function aplicaVistaZoom(){
+  const V=vistaZ();
+  [$('cv'),$('ovp'),$('cap')].forEach(el=>{if(!el)return;el.style.transformOrigin='0 0';
+    el.style.transform=V?'scale('+zoom.z+') translate('+(-V.x0*100)+'%,'+(-V.y0*100)+'%)':''});
+}
 function retangulo(){
+  aplicaVistaZoom();$('zv').textContent=$('zfv').textContent=(zoom.z%1?zoom.z.toFixed(1):zoom.z)+'x';
   const r=$('zrect'),z=zoom.z;if(z<=1.001||ferr!=='zoom'){r.style.display='none';return}
   const w=1/z,cx=Math.max(w/2,Math.min(1-w/2,zoom.x)),cy=Math.max(w/2,Math.min(1-w/2,zoom.y));
   r.style.display='block';r.style.width=w*100+'%';r.style.height=w*100+'%';r.style.left=(cx-w/2)*100+'%';r.style.top=(cy-w/2)*100+'%';
@@ -2306,8 +2320,9 @@ function bombeiaLaser(){
   if(!lsPend){lsEnv=false;return}lsEnv=true;const d=lsPend;lsPend=null;
   const ac=new AbortController(),to=setTimeout(()=>ac.abort(),1500);
   fetch('/laser',{method:'POST',headers:{'Content-Type':'application/json','X-Token':TOKEN},body:JSON.stringify(d),keepalive:true,signal:ac.signal}).catch(()=>{}).finally(()=>{clearTimeout(to);bombeiaLaser()})}
-function pos(e){const r=$('vista').getBoundingClientRect();return{x:Math.max(0,Math.min(1,(e.clientX-r.left)/r.width)),y:Math.max(0,Math.min(1,(e.clientY-r.top)/r.height))}}
-function ponto(e,on){const{x,y}=pos(e);const p=$('ponto');p.style.display=on?'block':'none';p.style.left=x*100+'%';p.style.top=y*100+'%';envLaser(x,y,on,ferr==='foco'?'foco':'laser')}
+function posTela(e){const r=$('vista').getBoundingClientRect();return{x:Math.max(0,Math.min(1,(e.clientX-r.left)/r.width)),y:Math.max(0,Math.min(1,(e.clientY-r.top)/r.height))}}
+function pos(e){const p=posTela(e),V=vistaZ();return V?{x:V.x0+p.x*V.w,y:V.y0+p.y*V.w}:p}  // coordenada no slide (considera o zoom)
+function ponto(e,on){const t=posTela(e),{x,y}=pos(e);const p=$('ponto');p.style.display=on?'block':'none';p.style.left=t.x*100+'%';p.style.top=t.y*100+'%';envLaser(x,y,on,ferr==='foco'?'foco':'laser')}
 let ultZ=0;
 function enviaZoom(z,x,y,forcar){const t=performance.now();zoom={z,x,y};retangulo();$('zv').textContent=(z%1?z.toFixed(1):z)+'x';if(!forcar&&t-ultZ<90)return;ultZ=t;cmd('zoom',{z,x,y})}
 // traco: acumula pontos e envia em lotes ordenados
@@ -2319,9 +2334,15 @@ function enviaLote(fim){
 function iniciaTraco(e){const{x,y}=pos(e);traco={id:cid(),t:ferr==='marca'?'hl':'pen',pts:[[x,y]]};bufTraco=[[x,y]];riscaLocal(traco.t,traco.pts,0);timerTraco=setInterval(()=>enviaLote(false),60)}
 function seguraTraco(e){const{x,y}=pos(e);const n=traco.pts.length;traco.pts.push([x,y]);bufTraco.push([x,y]);riscaLocal(traco.t,traco.pts,n-1)}
 function fimTraco(){if(!traco)return;clearInterval(timerTraco);enviaLote(true);traco=null}
-const toques=new Map();let dist0=0,z0=1,r0=.12;
+const toques=new Map();let dist0=0,z0=1,r0=.12,gest=null,pan=null;
+const ZOOM_LIVRE=()=>!EXTERNO&&ferr!=='zoom'&&ferr!=='foco';  // pinca e arrasto de zoom com qualquer ferramenta (foco usa a pinca para o raio)
+function distToques(){const[a,b]=[...toques.values()];return{d:Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY),mx:(a.clientX+b.clientX)/2,my:(a.clientY+b.clientY)/2}}
 $('vista').addEventListener('pointerdown',e=>{
-  $('vista').setPointerCapture(e.pointerId);toques.set(e.pointerId,e);
+  try{$('vista').setPointerCapture(e.pointerId)}catch(x){}toques.set(e.pointerId,e);
+  if(toques.size===2&&ZOOM_LIVRE()){fimTraco();$('ponto').style.display='none';const g=distToques(),r=$('vista').getBoundingClientRect();
+    gest={d0:g.d,z0:zoom.z,m0x:(g.mx-r.left)/r.width,m0y:(g.my-r.top)/r.height,cx:zoom.x,cy:zoom.y};return}
+  if(gest)return;
+  if(ferr===null&&!EXTERNO&&zoom.z>1.001){pan={x:e.clientX,y:e.clientY,cx:zoom.x,cy:zoom.y};return}
   if(ferr==='laser'||ferr==='foco')ponto(e,true);
   else if(ferr==='caneta'||ferr==='marca')iniciaTraco(e);
   else if(ferr==='zoom'){if(toques.size===2){const[a,b]=[...toques.values()];dist0=Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY);z0=zoom.z}
@@ -2329,6 +2350,11 @@ $('vista').addEventListener('pointerdown',e=>{
 });
 $('vista').addEventListener('pointermove',e=>{
   if(!toques.has(e.pointerId))return;toques.set(e.pointerId,e);
+  if(gest){if(toques.size>=2){const g=distToques(),r=$('vista').getBoundingClientRect(),z=Math.max(1,Math.min(5,Math.round(gest.z0*g.d/gest.d0*10)/10));
+      const dx=(g.mx-r.left)/r.width-gest.m0x,dy=(g.my-r.top)/r.height-gest.m0y;
+      enviaZoom(z,Math.max(0,Math.min(1,gest.cx-dx/z)),Math.max(0,Math.min(1,gest.cy-dy/z)))}return}
+  if(pan){const r=$('vista').getBoundingClientRect(),w=1/zoom.z;
+    enviaZoom(zoom.z,Math.max(0,Math.min(1,pan.cx-(e.clientX-pan.x)/r.width*w)),Math.max(0,Math.min(1,pan.cy-(e.clientY-pan.y)/r.height*w)));return}
   if(ferr==='foco'&&toques.size>=2){const[a,b]=[...toques.values()];const d=Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY);
     if(dist0>0){raioFoco=Math.max(.04,Math.min(.3,r0*d/dist0));$('raio').value=Math.round(raioFoco*100);cfg.foco_raio=Math.round(raioFoco*100);enviaCfg({foco_raio:cfg.foco_raio});ponto(e,true)}else{dist0=d;r0=raioFoco}}
   else if(ferr==='laser'||ferr==='foco')ponto(e,true);
@@ -2339,9 +2365,37 @@ $('vista').addEventListener('pointermove',e=>{
     else{const{x,y}=pos(e);enviaZoom(zoom.z,x,y)}}
 });
 ['pointerup','pointercancel'].forEach(t=>$('vista').addEventListener(t,e=>{
-  if(ferr==='laser'||ferr==='foco')ponto(e,false);fimTraco();toques.delete(e.pointerId);if(toques.size<2)dist0=0;
-  if(ferr==='zoom'&&toques.size===0)cmd('zoom',zoom)}));
+  const eraGest=gest||pan;
+  if(!eraGest&&(ferr==='laser'||ferr==='foco'))ponto(e,false);fimTraco();toques.delete(e.pointerId);if(toques.size<2)dist0=0;
+  if(toques.size===0){gest=pan=null;if(eraGest||ferr==='zoom')cmd('zoom',zoom)}}));
+['zfm','zfp'].forEach(i=>$(i).addEventListener('pointerdown',e=>e.stopPropagation()));
+$('zfm').onclick=()=>passo(-1);$('zfp').onclick=()=>passo(1);
 $('seg').onclick=()=>cmd('next');$('ant').onclick=()=>cmd('prev');
+// teclas de volume e de midia (alguns navegadores Android e teclados/fones Bluetooth as repassam a pagina; no iOS e no Chrome
+// Android o sistema consome o botao de volume e nenhuma pagina web o recebe)
+addEventListener('keydown',e=>{
+  if(e.target&&/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName))return;
+  if(['AudioVolumeUp','VolumeUp','MediaTrackNext','PageDown','ArrowRight'].includes(e.key)){cmd('next');e.preventDefault()}
+  else if(['AudioVolumeDown','VolumeDown','MediaTrackPrevious','PageUp','ArrowLeft'].includes(e.key)){cmd('prev');e.preventDefault()}
+});
+// controles de midia (tela bloqueada, fones, relogio): um audio mudo em loop mantem a sessao de midia ativa
+let midiaOk=false;
+function iniciaMidia(){
+  if(midiaOk||!('mediaSession' in navigator))return;midiaOk=true;
+  try{
+    const n=8000,b=new ArrayBuffer(44+n),v=new DataView(b),w=(o,t)=>{for(let i=0;i<t.length;i++)v.setUint8(o+i,t.charCodeAt(i))};
+    w(0,'RIFF');v.setUint32(4,36+n,true);w(8,'WAVEfmt ');v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);v.setUint32(24,8000,true);
+    v.setUint32(28,8000,true);v.setUint16(32,1,true);v.setUint16(34,8,true);w(36,'data');v.setUint32(40,n,true);for(let i=0;i<n;i++)v.setUint8(44+i,128);
+    const a=new Audio(URL.createObjectURL(new Blob([b],{type:'audio/wav'})));a.loop=true;a.volume=0.01;
+    a.play().then(()=>{
+      navigator.mediaSession.metadata=new MediaMetadata({title:'Baton',artist:'Controle de slides'});
+      const h=(k,f)=>{try{navigator.mediaSession.setActionHandler(k,f)}catch(x){}};
+      h('nexttrack',()=>cmd('next'));h('previoustrack',()=>cmd('prev'));h('seekforward',()=>cmd('next'));h('seekbackward',()=>cmd('prev'));
+      h('play',()=>{a.play()});h('pause',()=>{a.play()});
+    }).catch(()=>{midiaOk=false});
+  }catch(x){midiaOk=false}
+}
+addEventListener('pointerdown',iniciaMidia,{once:true});
 $('bb').onclick=()=>cmd('blank');$('tr').onchange=e=>cmd('transition',e.target.value);
 $('bx').onclick=()=>{limpaLocal();cmd('limpar')};
 const BOTAO={laser:'bl',foco:'bf',caneta:'bc',marca:'bm',zoom:'bz'};
