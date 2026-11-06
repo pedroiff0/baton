@@ -35,6 +35,7 @@ import urllib.request
 import wave
 import zlib
 import signal
+import http.cookies
 import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -2141,15 +2142,28 @@ function aplicarCfg(){
 stage.style.transition='transform .3s ease';
 const ov=document.createElement('canvas');ov.id='ov';stage.appendChild(ov);
 function mk(){const c=document.createElement('canvas');c.className='pg';stage.insertBefore(c,ov);return c}
-async function render(n,c){
-  const p=await pdf.getPage(n),v0=p.getViewport({scale:1});
-  const uw=larguraUtil(v0.width),esc=Math.min(innerWidth/uw,innerHeight/v0.height),dpr=Math.min(devicePixelRatio||1,2),v=p.getViewport({scale:esc*dpr});
-  c.width=larguraUtil(v.width);c.height=v.height;c.style.width=uw*esc+'px';c.style.height=v0.height*esc+'px';
-  await p.render({canvasContext:c.getContext('2d'),viewport:v}).promise;
+async function render(n,c,f){
+  f=f||1;const p=await pdf.getPage(n),v0=p.getViewport({scale:1});
+  const uw=larguraUtil(v0.width),esc=Math.min(innerWidth/uw,innerHeight/v0.height),dpr=Math.min(devicePixelRatio||1,2);
+  const bw=uw*esc*dpr,bh=v0.height*esc*dpr;  // tamanho base em pixels (1920x1080 -> 1920x1080; Retina 1440x900 -> 2880x1620)
+  f=Math.max(1,Math.min(f,Math.sqrt(AREA_MAX/(bw*bh)),16384/Math.max(bw,bh)));  // com zoom o canvas e redesenhado maior (nitido), limitado por area para caber em qualquer GPU/Safari
+  const v=p.getViewport({scale:esc*dpr*f});
+  const alvo=f>1?document.createElement('canvas'):c;  // zoom: desenha fora da tela e troca de uma vez, sem piscar
+  alvo.width=Math.ceil(larguraUtil(v.width));alvo.height=Math.ceil(v.height);c.style.width=uw*esc+'px';c.style.height=v0.height*esc+'px';
+  await p.render({canvasContext:alvo.getContext('2d'),viewport:v}).promise;
+  if(alvo!==c){c.width=alvo.width;c.height=alvo.height;c.getContext('2d').drawImage(alvo,0,0);alvo.width=alvo.height=0}
+  c._f=f;
 }
+const AREA_MAX=36e6;  // ~36 Mpx (144 MB): 1920x1080 chega a 4x; Retina a ~2,8x
+let nitT=null;
+function nitidez(){clearTimeout(nitT);nitT=setTimeout(async()=>{
+  if(!atual||trabalhando||!pdf)return;const z=est.zoom||1,alvo=z<=1.001?1:Math.min(z,4);
+  if(Math.abs((atual._f||1)-alvo)<0.05)return;const c=atual,n=paginaAtual,z0=z;
+  try{await render(n,c,alvo)}catch(e){}
+  if(atual===c&&(est.zoom||1)!==z0)nitidez()},350)}
 function geom(){const w=parseFloat(atual.style.width),h=parseFloat(atual.style.height);return{w,h,left:(innerWidth-w)/2,top:(innerHeight-h)/2}}
 function aplicarZoom(){
-  if(!atual)return;const z=est.zoom||1;
+  if(!atual)return;const z=est.zoom||1;nitidez();
   if(z<=1.001){stage.style.transform='';return}
   const{w,h,left,top}=geom();
   const hx=Math.min(w/2,innerWidth/(2*z)),hy=Math.min(h/2,innerHeight/(2*z));
@@ -2271,7 +2285,7 @@ pdfjsLib.getDocument('/pdf?k='+encodeURIComponent(TOKEN)).promise.then(async d=>
 
 # ------------------------------------------------------------------ celular (iPhone)
 CSS_REMOTO = """
-body{display:flex;flex-direction:column;padding:env(safe-area-inset-top) max(12px,env(safe-area-inset-right)) env(safe-area-inset-bottom) max(12px,env(safe-area-inset-left));gap:8px;touch-action:none;user-select:none;-webkit-user-select:none}
+body{display:flex;flex-direction:column;padding:calc(env(safe-area-inset-top) + 10px) max(12px,env(safe-area-inset-right)) env(safe-area-inset-bottom) max(12px,env(safe-area-inset-left));gap:8px;touch-action:none;user-select:none;-webkit-user-select:none}
 #app,#colA,#colB{display:contents}
 #colA>*,#colB>*{order:3}#topo{order:0}#vista{order:1}#info{order:2}#colB>#ajustes,#colB>#extras,#colB>#notas,#colB>#botoes{order:4}
 #topo{display:flex;justify-content:space-between;align-items:center;padding-top:6px;font-size:14px;color:#aaa;flex:0 0 auto}
@@ -2404,10 +2418,21 @@ async function cmd(c,v){
   }
   status(false,'sem conexao');conectar();return false;
 }
-async function desenha(n,cv,larg){
-  const p=await pdf.getPage(n),v0=p.getViewport({scale:1}),dpr=Math.min(devicePixelRatio||1,3),esc=larg*dpr/larguraUtil(v0.width),v=p.getViewport({scale:esc});
-  cv.width=larguraUtil(v.width);cv.height=v.height;await p.render({canvasContext:cv.getContext('2d'),viewport:v}).promise;
+async function desenha(n,cv,larg,f){
+  f=f||1;const p=await pdf.getPage(n),v0=p.getViewport({scale:1}),dpr=Math.min(devicePixelRatio||1,3);
+  const ph=larg*dpr*v0.height/larguraUtil(v0.width);f=Math.max(1,Math.min(f,Math.sqrt(16e6/(larg*dpr*ph))));  // celular (iOS limita o canvas a ~16,7 Mpx)
+  const esc=larg*dpr*f/larguraUtil(v0.width),v=p.getViewport({scale:esc});
+  const alvo=f>1?document.createElement('canvas'):cv;alvo.width=Math.ceil(larguraUtil(v.width));alvo.height=Math.ceil(v.height);
+  await p.render({canvasContext:alvo.getContext('2d'),viewport:v}).promise;
+  if(alvo!==cv){cv.width=alvo.width;cv.height=alvo.height;cv.getContext('2d').drawImage(alvo,0,0);alvo.width=alvo.height=0}
+  cv._f=f;cv._n=n;cv._l=larg;
 }
+let nitP=null;
+function nitidezPrev(){clearTimeout(nitP);nitP=setTimeout(async()=>{  // previa ampliada: redesenha o slide maior para nao ficar borrado
+  const cv=$('cv');if(!pdf||!TEM_PDF||!cv._n)return;const alvo=vistaZ()?Math.min(zoom.z,4):1;
+  if(Math.abs((cv._f||1)-alvo)<0.05)return;const z0=zoom.z;
+  try{await desenha(cv._n,cv,cv._l,alvo)}catch(e){}
+  if(zoom.z!==z0)nitidezPrev()},300)}
 function fq(){if(!mapa)return{f:pag,t:total,passo:1,np:1};const f=mapa.frameDe[pag],ps=mapa.paginas[f];return{f,t:mapa.total,passo:ps.indexOf(pag)+1,np:ps.length}}
 function rotulo(){const q=fq();$('pos').textContent=(TEM_PDF?q.f+' / '+q.t:'slide '+pag)+(q.np>1?'  passo '+q.passo+'/'+q.np:'')}
 function md(t){
@@ -2439,7 +2464,7 @@ async function mostra(){
   const p=await pdf.getPage(pag),v0=p.getViewport({scale:1});
   const uw=larguraUtil(v0.width),w=Math.min(larg,hmax*uw/v0.height);
   $('vista').style.width=w+'px';$('vista').style.height=(w*v0.height/uw)+'px';ajustaOvp();
-  desenha(pag,$('cv'),w);
+  desenha(pag,$('cv'),w).then(nitidezPrev);
   previa();
 }
 function remedir(){window.__remedir=true;mostra()}
@@ -2476,7 +2501,7 @@ function vistaZ(){
   const w=1/zoom.z,cx=Math.max(w/2,Math.min(1-w/2,zoom.x)),cy=Math.max(w/2,Math.min(1-w/2,zoom.y));return{w,x0:cx-w/2,y0:cy-w/2};
 }
 function aplicaVistaZoom(){
-  const V=vistaZ();
+  const V=vistaZ();nitidezPrev();
   [$('cv'),$('ovp'),$('cap')].forEach(el=>{if(!el)return;el.style.transformOrigin='0 0';
     el.style.transform=V?'scale('+zoom.z+') translate('+(-V.x0*100)+'%,'+(-V.y0*100)+'%)':''});
 }
@@ -2764,13 +2789,13 @@ ciclo();setInterval(ciclo,2000);
 
 
 PAGINA_SIMPLES = r"""<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
-<meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black">
 <meta name="apple-mobile-web-app-title" content="Baton"><meta name="theme-color" content="#000000">
 <link rel="manifest" href="/manifest.json?k=__TOKEN__&m=simples"><link rel="apple-touch-icon" href="/icon.png"><title>Baton simples</title>
 <style>
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;-webkit-touch-callout:none}
 html,body{margin:0;height:100%;background:#000;color:#fff;font-family:-apple-system,system-ui,sans-serif;touch-action:none;user-select:none;-webkit-user-select:none;overflow:hidden}
-body{display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto 1fr;gap:8px;padding:max(8px,env(safe-area-inset-top)) max(10px,env(safe-area-inset-right)) max(10px,env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left))}
+body{display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto 1fr;gap:8px;padding:max(22px,calc(env(safe-area-inset-top) + 14px)) max(10px,env(safe-area-inset-right)) max(14px,calc(env(safe-area-inset-bottom) + 6px)) max(10px,env(safe-area-inset-left))}
 #topo{display:flex;justify-content:space-between;align-items:center;gap:6px;font-size:13px;color:#aaa;min-height:34px;min-width:0}
 #dot.ok+#st{display:none}#topo>span:first-child{min-width:0;white-space:nowrap}
 #dot{width:10px;height:10px;border-radius:50%;background:#e33;display:inline-block;margin-right:6px}#dot.ok{background:#3c6}
@@ -2799,7 +2824,7 @@ button.g{border:0;border-radius:24px;color:#fff;font-weight:700;touch-action:man
 body.canhoto #navrow,body.canhoto #zrow{flex-direction:row-reverse}
 .dica{position:absolute;left:0;right:0;bottom:9px;font-size:12px;font-weight:500;color:#cfd3d8;padding:0 8px;line-height:1.25}
 .on .dica{color:#fff}
-.mapa{display:none;position:absolute;right:14px;top:50%;height:62%;max-height:96px;aspect-ratio:16/9;transform:translateY(-50%);border:2px solid rgba(255,255,255,.7);border-radius:6px}
+.mapa{display:none;position:absolute;inset:0;pointer-events:none}
 .mapa i{position:absolute;width:14px;height:14px;margin:-7px 0 0 -7px;border-radius:50%;background:#fff;box-shadow:0 0 8px 3px rgba(255,255,255,.7)}
 .on .mapa{display:block}
 #laser.on,#foco.on{display:flex;align-items:center;justify-content:flex-start;padding-left:26px}
@@ -2810,6 +2835,7 @@ body.canhoto #navrow,body.canhoto #zrow{flex-direction:row-reverse}
 #folha .mao{display:flex;gap:8px;margin-top:10px}#folha .mao button{flex:1;padding:11px 0;font-size:14px;border-radius:12px;border:0;background:#1d1d1f;color:#fff;font-weight:600}#folha .mao button.sel{background:#0a84ff}
 #dicainst{display:none;position:fixed;left:12px;right:12px;top:max(50px,env(safe-area-inset-top));background:#2c2c2e;border:1px solid #0a84ff;border-radius:14px;padding:12px;font-size:14px;z-index:11;line-height:1.4}
 @media (orientation:landscape){
+  body{padding-top:max(10px,env(safe-area-inset-top))}
   #corpo{grid-template-columns:minmax(0,1fr) minmax(0,1.5fr);grid-template-rows:minmax(0,1.2fr) minmax(0,1fr);grid-template-areas:"nav foco" "zoom laser"}
   body.canhoto #corpo{grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);grid-template-areas:"foco nav" "laser zoom"}
   #zrow button{height:auto}
@@ -2820,9 +2846,9 @@ body.canhoto #navrow,body.canhoto #zrow{flex-direction:row-reverse}
   <span class="acoes"><button class="chip az" id="binst" style="display:none">Instalar</button><button class="chip" id="bcfg">Ajustes</button><a class="chip" href="/remote?k=__TOKEN__">Completo</a></span></div>
 <div id="corpo">
   <div id="navrow"><button class="g" id="ant">&#9664; Anterior</button><button class="g" id="seg">Proximo &#9654;</button></div>
-  <div id="zrow"><button id="zm">&minus;</button><button id="zaim"><span id="zt">Zoom 1x</span><small class="dica">segure e aponte</small></button><button id="zp">+</button><button id="z1">1x</button></div>
-  <button class="g" id="foco">FOCO<div class="mapa"><i></i></div><div class="dica">Segure e aponte</div></button>
-  <button class="g" id="laser">LASER<div class="mapa"><i></i></div><div class="dica">Segure e aponte</div></button>
+  <div id="zrow"><button id="zm">&minus;</button><button id="zaim"><div class="mapa"><i></i></div><span id="zt">Zoom 1x</span><small class="dica">toque onde quer ampliar</small></button><button id="zp">+</button><button id="z1">1x</button></div>
+  <button class="g" id="foco">FOCO<div class="mapa"><i></i></div><div class="dica">Toque onde quer e aponte; 2o dedo: raio</div></button>
+  <button class="g" id="laser">LASER<div class="mapa"><i></i></div><div class="dica">Toque onde quer e aponte</div></button>
 </div>
 <div id="folha">
   <h3>Ajustes <button class="chip" id="bfecha">Fechar</button></h3>
@@ -2919,7 +2945,7 @@ function umEuro(mc,beta,dc){let xp=null,dxp=0,tp=0;
     const dt=Math.min(.1,Math.max(.004,(t-tp)/1000));tp=t;const dx=(x-xp)/dt;dxp+=(dx-dxp)*al(dc,dt);
     const c=mc+beta*Math.abs(dxp);xp+=(x-xp)*al(c,dt);return xp}}}
 const fx=umEuro(1.6,9,1.2),fy=umEuro(1.6,9,1.2);
-let ori=null,semSensor=true,base=null,sx=.5,sy=.5,ativo=null,ptoque=null,modoUlt='laser';
+let ori=null,semSensor=true,base=null,sx=.5,sy=.5,ativo=null,pad={x:.5,y:.5},padId=null,modoUlt='laser';
 function aoOrientar(e){if(e.alpha===null||e.alpha===undefined)return;semSensor=false;ori={a:e.alpha,b:e.beta,g:e.gamma};if(ativo)atualiza()}
 addEventListener('deviceorientation',aoOrientar,true);
 const sensor=()=>!semSensor;
@@ -2930,26 +2956,27 @@ function bombeia(){if(!lsPend){lsEnv=false;return}lsEnv=true;const d=lsPend;lsPe
 // zoom apontado: segurar o botao e apontar leva o centro da ampliacao para onde voce aponta (a pose ao apertar = centro atual)
 let zbase=null,zEnv=false,zPend=null,zUlt=0;
 function moveZoom(){
-  if(!zbase)return;const cx=Math.max(0,Math.min(1,zbase.x+(sx-.5))),cy=Math.max(0,Math.min(1,zbase.y+(sy-.5)));
+  if(ativo!=='zoom')return;const cx=sx,cy=sy;
   zoom={z:zoom.z,x:cx,y:cy};const t=performance.now();if(t-zUlt<40)return;zUlt=t;zPend={z:zoom.z,x:cx,y:cy};if(!zEnv)bombeiaZoom()}
 function bombeiaZoom(){if(!zPend){zEnv=false;return}zEnv=true;const d=zPend;zPend=null;
   fetch('/cmd',{method:'POST',headers:{'Content-Type':'application/json','X-Token':TOKEN},body:JSON.stringify({cmd:'zoom',valor:d,cid:cid()}),keepalive:true}).catch(()=>{}).finally(bombeiaZoom)}
-function mostraMapa(){if(modoUlt==='zoom')return;const el=$(modoUlt).querySelector('.mapa i');el.style.left=(sx*100)+'%';el.style.top=(sy*100)+'%'}
+function mostraMapa(){const el=$(modoUlt==='zoom'?'zaim':modoUlt).querySelector('.mapa i');el.style.left=(sx*100)+'%';el.style.top=(sy*100)+'%'}
 function atualiza(){
   if(!base||!ori)return;const f=direcao(ori,base.eixo),an=angulos(f);
-  const x=.5+dif(an.yaw-base.yaw)/gan,y=.5-(an.pitch-base.pitch)/(gan*9/16);
+  const x=pad.x+dif(an.yaw-base.yaw)/gan,y=pad.y-(an.pitch-base.pitch)/(gan*9/16);
   const t=performance.now();sx=Math.max(0,Math.min(1,fx.f(Math.max(0,Math.min(1,x)),t)));sy=Math.max(0,Math.min(1,fy.f(Math.max(0,Math.min(1,y)),t)));
-  if(ativo==='zoom'){moveZoom();return}
-  mostraMapa();envLaser(sx,sy,true)}
+  mostraMapa();if(ativo==='zoom'){moveZoom();return}
+  envLaser(sx,sy,true)}
 async function permissao(){
   if(typeof DeviceOrientationEvent!=='undefined'&&typeof DeviceOrientationEvent.requestPermission==='function'){
     try{const r=await DeviceOrientationEvent.requestPermission();return r==='granted'}catch(e){return false}}
   return true}
 let pediu=false;
-const DICAS={laser:'Segure e aponte',foco:'Segure e aponte; 2o dedo: raio',zoom:'segure e aponte'};
+const DICAS={laser:'Toque onde quer e aponte',foco:'Toque onde quer e aponte; 2o dedo: raio',zoom:'toque onde quer ampliar'};
 const texto=(el,t)=>{const d=el.querySelector('.dica');if(d)d.textContent=t};
 const dedos=new Map();let pinca=null;
 function distDedos(){const[a,b]=[...dedos.values()];return Math.hypot(a.x-b.x,a.y-b.y)}
+function posPad(el,e){const r=el.getBoundingClientRect();pad={x:Math.max(0,Math.min(1,(e.clientX-r.left)/r.width)),y:Math.max(0,Math.min(1,(e.clientY-r.top)/r.height))}}
 function liga(id,modo){
   const el=$(id);
   el.addEventListener('pointerdown',async e=>{
@@ -2957,20 +2984,21 @@ function liga(id,modo){
     if(ativo)return;
     if(!pediu){pediu=true;const ok=await permissao();await new Promise(r=>setTimeout(r,200));if(!ok&&typeof DeviceOrientationEvent!=='undefined'&&DeviceOrientationEvent.requestPermission){
       texto(el,'Permita o movimento e segure de novo');return}}
-    ativo=modo;modoUlt=modo;el.classList.add('on');navigator.vibrate&&navigator.vibrate(12);sx=sy=.5;fx.reset();fy.reset();
-    if(modo==='zoom'){  // a ampliacao parte do centro atual; de 1x, entra em 2x onde voce apontou por ultimo
-      if(zoom.z<=1.001)zoom={z:2,x:ultSlide.x,y:ultSlide.y};zbase={x:zoom.x,y:zoom.y};mostraZoom();cmd('zoom',zoom)}
+    ativo=modo;modoUlt=modo;el.classList.add('on');navigator.vibrate&&navigator.vibrate(12);fx.reset();fy.reset();
+    padId=e.pointerId;posPad(el,e);sx=pad.x;sy=pad.y;  // onde o dedo toca no botao = onde cai na tela (extremos do botao = cantos da tela)
+    if(modo==='zoom'){  // o centro da ampliacao e a posicao tocada no botao; de 1x, entra em 2x
+      zoom={z:zoom.z<=1.001?2:zoom.z,x:sx,y:sy};mostraZoom();cmd('zoom',zoom)}
     if(sensor()&&ori){const eixo=Math.abs(ori.b)>50?'z':'y',an=angulos(direcao(ori,eixo));base={eixo,yaw:an.yaw,pitch:an.pitch};
-      texto(el,'Aponte para a tela');if(modo!=='zoom'){mostraMapa();envLaser(.5,.5,true)}}
-    else{ptoque={x:e.clientX,y:e.clientY};base=null;
-      texto(el,HTTPS&&!isSecureContext?'Sem sensores aqui: abra o endereco HTTPS':'Sem sensores: arraste o dedo');if(modo!=='zoom')envLaser(.5,.5,true)}
+      texto(el,'Toque + gire');mostraMapa();if(modo!=='zoom')envLaser(sx,sy,true)}
+    else{base=null;
+      texto(el,HTTPS&&!isSecureContext?'Sem sensores aqui: abra o endereco HTTPS':'Sem sensores: arraste o dedo');mostraMapa();if(modo!=='zoom')envLaser(sx,sy,true)}
   });
-  el.addEventListener('pointermove',e=>{if(ativo!==modo||sensor()&&base)return;if(!ptoque)return;
-    const r=Math.min(innerWidth,innerHeight)*0.45;sx=Math.max(0,Math.min(1,.5+(e.clientX-ptoque.x)/r/2));sy=Math.max(0,Math.min(1,.5+(e.clientY-ptoque.y)/r/2));
-    if(modo==='zoom')moveZoom();else{mostraMapa();envLaser(sx,sy,true)}});
-  ['pointerup','pointercancel'].forEach(t=>el.addEventListener(t,()=>{if(ativo!==modo)return;ativo=null;base=null;ptoque=null;pinca=null;el.classList.remove('on');
+  el.addEventListener('pointermove',e=>{if(ativo!==modo||e.pointerId!==padId)return;posPad(el,e);
+    if(sensor()&&base){atualiza();return}  // com sensor: o dedo desloca a base e o giro refina
+    sx=pad.x;sy=pad.y;mostraMapa();if(modo==='zoom')moveZoom();else envLaser(sx,sy,true)});
+  ['pointerup','pointercancel'].forEach(t=>el.addEventListener(t,()=>{if(ativo!==modo)return;ativo=null;base=null;padId=null;pinca=null;el.classList.remove('on');
     texto(el,DICAS[modo]);
-    if(modo==='zoom'){zPend=null;zbase=null;cmd('zoom',zoom);mostraZoom()}else{lsPend=null;envLaser(sx,sy,false)}}));
+    if(modo==='zoom'){zPend=null;cmd('zoom',zoom);mostraZoom()}else{lsPend=null;envLaser(sx,sy,false)}}));
   el.addEventListener('contextmenu',e=>e.preventDefault());
 }
 liga('laser','laser');liga('foco','foco');liga('zaim','zoom');
@@ -3087,7 +3115,21 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
         def _dispositivo(self, u=None):
             """Celular dono do token: ?k= na URL ou cabecalho X-Token. None se o token nao e de nenhum celular pareado."""
             k = parse_qs(u.query).get("k", [""])[0] if u is not None else ""
-            return estado.dispositivo_do_token(k or self.headers.get("X-Token", ""))
+            return (estado.dispositivo_do_token(k or self.headers.get("X-Token", ""))
+                    or estado.dispositivo_do_token(self._cookie("baton_k")))  # token velho/ausente na URL: vale o cookie
+
+        def _cookie(self, nome):
+            """Valor de um cookie da requisicao ('' se nao ha): o celular pareado reaparece sozinho, sem novo QR nem ?k= na URL."""
+            try:
+                c = http.cookies.SimpleCookie(self.headers.get("Cookie", ""))
+                return c[nome].value if nome in c else ""
+            except Exception:
+                return ""
+
+        def _set_cookie(self, nome, valor):
+            seguro = "; Secure" if (self.headers.get("X-Forwarded-Proto") == "https" or "https" in (self.headers.get("Cf-Visitor") or "")
+                                    or self.server.tls) else ""
+            return f"{nome}={valor}; Path=/; Max-Age=31536000; SameSite=Lax; HttpOnly{seguro}"
 
         def _leitura_ok(self, u):
             """GET com dado sensivel (PDF, eventos, manifesto): so o computador ou um celular pareado (?k=)."""
@@ -3100,14 +3142,23 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
             falhas = [t for t in estado.falhas_pareamento.get(ip, []) if agora - t < 60]
             if len(falhas) >= 8:
                 return self._enviar(429, "muitas tentativas: aguarde um minuto", "text/plain; charset=utf-8")
+            ja = estado.dispositivo_do_token(self._cookie("baton_k"))
+            if ja is not None:  # celular ja pareado escaneando de novo: mantem o mesmo aparelho (o app instalado continua valendo)
+                return self._ir_para_app(ja["token"])
             d = estado.parear(codigo, self.headers.get("User-Agent", ""))
             if d is None:
                 estado.falhas_pareamento[ip] = falhas + [agora]
                 if self._proxiado():
                     return self._enviar(404, "not found", "text/plain; charset=utf-8")
                 return self._enviar(403, PAGINA_QR_USADO, "text/html; charset=utf-8")
+            return self._ir_para_app(d["token"], novo=True)
+
+        def _ir_para_app(self, token, novo=False):
+            modo = self._cookie("baton_modo")
+            rota = "/simples" if modo == "simples" else "/remote"
             self.send_response(302)
-            self.send_header("Location", f"/remote?k={d['token']}")
+            self.send_header("Location", f"{rota}?k={token}")
+            self.send_header("Set-Cookie", self._set_cookie("baton_k", token))
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", "0")
             self.end_headers()
@@ -3123,7 +3174,8 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
             self.send_header("Content-Length", str(len(corpo)))
             self.send_header("Cache-Control", "no-store")
             for k, v in (extra or {}).items():
-                self.send_header(k, v)
+                for item in (v if isinstance(v, list) else [v]):
+                    self.send_header(k, item)
             self._headers_buffer.append(b"\r\n")
             try:
                 self.wfile.write(b"".join(self._headers_buffer) + corpo)  # um unico pacote TCP
@@ -3160,6 +3212,10 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
             # pareado; todo o resto some (404), sem revelar que ha um Baton ali
             if self._proxiado() and not (u.path.startswith(("/p/", "/vendor/", "/icon", "/sw.js")) or self._dispositivo(u) is not None):
                 return self._enviar(404, "not found", "text/plain; charset=utf-8")
+            if u.path == "/" and not self._local():
+                d = self._dispositivo(u)
+                if d is not None:  # abrir o endereco puro (ou o icone do app) leva direto ao controle do celular ja pareado
+                    return self._ir_para_app(d["token"])
             if u.path in ("/", "/qr", "/apresentar") and not self._local():
                 return self._enviar(403, "abra o Baton pelo QR code ou pelo endereco do celular", "text/plain; charset=utf-8")
             if u.path == "/":
@@ -3204,14 +3260,15 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
             if u.path.startswith("/p/"):
                 return self._parear(u.path[3:])
             if u.path == "/remote":
-                k = parse_qs(u.query).get("k", [""])[0]
+                k = (self._dispositivo(u) or {}).get("token") or parse_qs(u.query).get("k", [""])[0]  # token valido (URL ou cookie)
                 if not (self._local() or self._dispositivo(u) is not None):
                     return self._enviar(403, "celular nao pareado: escaneie o QR code no computador", "text/plain; charset=utf-8")
                 if not self._local():
                     estado.remotos += 1
                     estado.publicar(estado.snapshot())
                 leve = rede_lenta_do_ip(self.connection.getsockname()[0]) if not self._local() else False
-                return self._enviar(200, montar("remoto", estado, usar_cache, usar_qr_cache, k, leve), "text/html; charset=utf-8")
+                return self._enviar(200, montar("remoto", estado, usar_cache, usar_qr_cache, k, leve), "text/html; charset=utf-8",
+                                    {"Set-Cookie": [self._set_cookie("baton_modo", "remote")] + ([self._set_cookie("baton_k", k)] if self._dispositivo(u) else [])})
             if u.path == "/pdf" and estado.pdf:
                 if not self._leitura_ok(u):
                     return self._enviar(403, "token invalido", "text/plain; charset=utf-8")
@@ -3238,7 +3295,7 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
             if u.path == "/simples":
                 if not (self._local() or self._dispositivo(u) is not None):
                     return self._enviar(403, "celular nao pareado: escaneie o QR code no computador", "text/plain; charset=utf-8")
-                k = parse_qs(u.query).get("k", [""])[0]
+                k = (self._dispositivo(u) or {}).get("token") or parse_qs(u.query).get("k", [""])[0]  # token valido (URL ou cookie)
                 host = (self.headers.get("Host") or "").rsplit(":", 1)[0] or "localhost"
                 if URL_PUBLICA and not self._proxiado():  # certificado valido (sem aviso): preferido para liberar os sensores
                     https, auto = f"{URL_PUBLICA.rstrip('/')}/simples?k={k}", "1"
@@ -3246,7 +3303,8 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
                     https = (f"https://{host}:{estado.tls_porta}/simples?k={k}" if estado.tls_porta and not self.server.tls else "")
                     auto = "0"
                 return self._enviar(200, PAGINA_SIMPLES.replace("__TOKEN__", k).replace("__HTTPS__", https).replace("__AUTO__", auto).replace("__EXTERNO__", "1" if estado.ext else "0"),
-                                    "text/html; charset=utf-8")
+                                    "text/html; charset=utf-8",
+                                    {"Set-Cookie": [self._set_cookie("baton_modo", "simples")] + ([self._set_cookie("baton_k", k)] if self._dispositivo(u) else [])})
             if u.path == "/cfg":
                 if not self._leitura_ok(u):
                     return self._enviar(403, "{}")

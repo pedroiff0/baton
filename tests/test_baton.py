@@ -314,6 +314,11 @@ class ProxyTest(unittest.TestCase):
 
 
 class SimplesTest(unittest.TestCase):
+    def test_toque_define_posicao_absoluta(self):
+        self.assertIn("posPad", P.PAGINA_SIMPLES)
+        self.assertIn("getBoundingClientRect", P.PAGINA_SIMPLES)
+        self.assertNotIn("ptoque", P.PAGINA_SIMPLES)
+
     def test_pagina_simples(self):
         self.assertIn("__TOKEN__", P.PAGINA_SIMPLES)
         self.assertIn("deviceorientation", P.PAGINA_SIMPLES)
