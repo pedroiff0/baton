@@ -18,6 +18,7 @@
 - [Instalação](#instalacao)
 - [Uso](#uso)
 - [Plataformas](#plataformas)
+- [Sem internet e Bluetooth](#offline)
 - [Segurança](#seguranca)
 - [Testes](#testes)
 - [Contribuição](#contribuicao)
@@ -113,6 +114,14 @@ Atalhos no modo tela: `F` tela cheia, setas/espaço avançam, `B` preto, `W` bra
 Wayland nativo não permite enviar teclas: use sessão X11. A camada macOS e o Windows ainda dependem de teste em máquina real.
 
 ---
+
+## 📡 Sem internet e Bluetooth <a name="offline"></a>
+
+O Baton não precisa de internet: precisa só de uma rede IP entre o celular e o computador. Funcionam, sem internet: o mesmo Wi-Fi de um roteador sem acesso à internet, o **hotspot do celular** (Wi-Fi, USB ou **Bluetooth**) e o compartilhamento de internet do Mac. A página do QR code lista todos os caminhos encontrados (Wi-Fi, Bluetooth, hotspot, Tailscale), um QR para cada, e o celular troca sozinho entre eles.
+
+**Bluetooth:** parear só não basta, porque o controle é uma página web e o Bluetooth sozinho não carrega páginas. Use a **rede por Bluetooth**: pareie os dois aparelhos, ative o compartilhamento de internet por Bluetooth no celular (Android: Ajustes > Conexões > Roteador Wi-Fi e Bluetooth; iPhone: Ponto de Acesso Pessoal, aceitando Bluetooth) e conecte o computador a ele (macOS: Ajustes > Bluetooth > conectar à rede do celular; Linux: aplicativo Bluetooth > Rede). O Baton enxerga a interface nova e mostra o QR correspondente (nome "Bluetooth"). A taxa é menor que a do Wi-Fi: passar slides e notas é imediato, o laser e o desenho podem ter mais atraso.
+
+**Só na primeira vez** o Baton baixa o leitor de PDF e o gerador de QR code (precisa de internet); depois ficam em cache em `~/.cache/baton` e tudo funciona offline.
 
 ## 🔒 Segurança <a name="seguranca"></a>
 

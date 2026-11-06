@@ -63,6 +63,31 @@ class NotasPptxTest(unittest.TestCase):
             self.assertEqual(P.notas_pptx(f), {"p1": "fala do primeiro slide da ordem"})
 
 
+class RedesTest(unittest.TestCase):
+    MAC = ("lo0: flags=8049<UP,LOOPBACK> mtu 16384\n\tinet 127.0.0.1 netmask 0xff000000\n"
+           "en0: flags=8863<UP,BROADCAST> mtu 1500\n\tinet 192.168.0.5 netmask 0xffffff00 broadcast 192.168.0.255\n"
+           "bridge100: flags=8863<UP> mtu 1500\n\tinet 192.168.2.1 netmask 0xffffff00\n"
+           "utun4: flags=8051<UP> mtu 1380\n\tinet 100.101.2.3 --> 100.101.2.3 netmask 0xffffffff\n"
+           "bnep0: flags=8863<UP> mtu 1500\n\tinet 10.251.0.2 netmask 0xffffff00\n")
+    LINUX = ("1: lo    inet 127.0.0.1/8 scope host lo\n2: wlan0    inet 192.168.0.33/24 brd 192.168.0.255 scope global wlan0\n"
+             "3: docker0    inet 172.17.0.1/16 scope global docker0\n4: bnep0    inet 10.251.0.1/24 scope global bnep0\n")
+
+    def lista(self, saida):
+        return [(P.rotulo_interface(i, ip), ip) for i, ip in P.parse_interfaces(saida) if P.rotulo_interface(i, ip)]
+
+    def test_mac(self):
+        self.assertEqual(self.lista(self.MAC), [("Rede (en0)", "192.168.0.5"), ("Hotspot (bridge100)", "192.168.2.1"),
+                                                ("Bluetooth (bnep0)", "10.251.0.2")])
+
+    def test_linux(self):
+        self.assertEqual(self.lista(self.LINUX), [("Rede (wlan0)", "192.168.0.33"), ("Bluetooth (bnep0)", "10.251.0.1")])
+
+    def test_windows(self):
+        w = ("Adaptador de Rede sem Fio Wi-Fi:\n\n   Endereco IPv4. . . . . . . . . . . . . . : 192.168.1.7\n"
+             "Adaptador Ethernet vEthernet (WSL):\n   Endereco IPv4. . . : 172.20.0.1\n")
+        self.assertEqual(self.lista(w), [("Rede (Adaptador de Rede sem Fio Wi-Fi)", "192.168.1.7")])
+
+
 class BandejaTest(unittest.TestCase):
     def test_rotulo_por_estado(self):
         import tray_gtk as T

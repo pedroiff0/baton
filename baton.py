@@ -1252,6 +1252,61 @@ def ip_tailscale():
     return None
 
 
+IGNORAR_IFACE = ("lo", "docker", "veth", "br-", "virbr", "vmnet", "vboxnet", "utun", "tailscale", "awdl", "llw", "gif", "stf",
+                 "vethernet", "loopback", "wsl")
+
+
+def parse_interfaces(saida):
+    """Saida do ifconfig (macOS), `ip -o -4 addr` (Linux) ou ipconfig (Windows) -> [(interface, ip)] sem filtrar."""
+    achados, atual = [], ""
+    for linha in saida.splitlines():
+        m = re.match(r"^\d+:\s+(\S+)\s+inet\s+(\d+\.\d+\.\d+\.\d+)", linha)  # ip -o -4 addr
+        if m:
+            achados.append((m.group(1), m.group(2)))
+            continue
+        m = re.match(r"^(\S[^:]*):\s*(flags=.*)?$", linha)  # "en0: flags=..." (ifconfig) ou "Adaptador ...:" (ipconfig)
+        if m and not linha.startswith((" ", "\t")):
+            atual = m.group(1).strip()
+            continue
+        m = re.search(r"\binet\s+(\d+\.\d+\.\d+\.\d+)", linha) or re.search(r"IPv4.*?:\s*(\d+\.\d+\.\d+\.\d+)", linha)
+        if m and atual:
+            achados.append((atual, m.group(1)))
+    return achados
+
+
+def rotulo_interface(nome, ip):
+    """Nome amigavel do caminho (ou None para o que nao serve: loopback, Docker, VPN, Tailscale)."""
+    n = nome.lower()
+    if (n.startswith(IGNORAR_IFACE) or any(k in n for k in ("vethernet", "wsl", "docker", "vmware", "virtualbox", "loopback", "tailscale"))
+            or ip.startswith("127.") or re.match(r"100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.", ip)):
+        return None
+    if "bnep" in n or "bluetooth" in n:
+        return f"Bluetooth ({nome})"
+    if n.startswith(("bridge", "ap", "ppp")) or "hotspot" in n or "hospedada" in n:
+        return f"Hotspot ({nome})"
+    return f"Rede ({nome})"
+
+
+def ips_locais():
+    """[(rotulo, ip)] de todas as redes do computador (Wi-Fi, cabo, Bluetooth, hotspot): funciona sem internet nem roteador."""
+    saida = ""
+    for cmd in (["ifconfig"], ["ip", "-o", "-4", "addr"], ["ipconfig"]):
+        if shutil.which(cmd[0]):
+            try:
+                saida = subprocess.run(cmd, capture_output=True, text=True, timeout=5).stdout
+                if saida:
+                    break
+            except Exception:
+                pass
+    vistos, lista = set(), []
+    for iface, ip in parse_interfaces(saida):
+        r = rotulo_interface(iface, ip)
+        if r and _ip_valido(ip) and ip not in vistos:
+            vistos.add(ip)
+            lista.append((r, ip))
+    return lista
+
+
 def ip_lan():
     """IP do computador na rede local (Wi-Fi/cabo): descobre pela rota padrao, sem enviar nenhum pacote."""
     try:
@@ -2337,7 +2392,15 @@ def main():
             except RuntimeError as e:
                 sys.exit(str(e))
     token = token_estavel(a.novo_token)
-    ips = [("Wi-Fi / rede local", a.host)] if a.host else [("Wi-Fi / rede local", ip_lan()), ("Tailscale (fora do Wi-Fi)", ip_tailscale())]
+    if a.host:
+        ips = [("Rede local", a.host)]
+    else:
+        rota = ip_lan()  # a que tem rota para fora (Wi-Fi/cabo) vem primeiro; sem internet, a primeira que existir
+        locais = sorted(ips_locais(), key=lambda x: x[1] != rota)
+        ips = [(("Wi-Fi / rede local" if ip == rota else r), ip) for r, ip in locais[:4]]
+        if rota and rota not in [ip for _, ip in ips]:
+            ips.insert(0, ("Wi-Fi / rede local", rota))
+        ips.append(("Tailscale (fora do Wi-Fi)", ip_tailscale()))
     urls = [{"nome": n, "url": f"http://{ip}:{a.porta}/remote?k={token}"} for n, ip in ips if ip]
     if not urls:
         urls = [{"nome": "Rede local", "url": f"http://IP-DO-COMPUTADOR:{a.porta}/remote?k={token}"}]
