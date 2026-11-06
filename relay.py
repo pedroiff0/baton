@@ -4,6 +4,10 @@ Varios computadores, cada um com seu Baton, atras de UMA URL publica (ex.: https
 O relay roda no servidor (`baton --servir-relay`); cada Baton e um agente que se conecta de saida por WebSocket
 e recebe as requisicoes dos celulares. O roteamento usa a credencial do proprio celular (codigo do QR em /p/<codigo>
 ou token), entao as paginas continuam com caminhos absolutos e nada muda no celular. Somente biblioteca padrao.
+
+Privacidade: sem login, sem conta, sem analytics. O relay nao registra IP nem le o conteudo (so repassa); nao recebe nome,
+sistema ou qualquer dado do computador. Guarda em disco apenas o hash da chave de cada computador autorizado e o rotulo
+que o administrador deu ao convite; o resto (quem esta online, fluxos abertos) existe so em memoria.
 """
 import base64
 import hashlib
@@ -17,6 +21,7 @@ import ssl
 import struct
 import threading
 import time
+from pathlib import Path
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
@@ -96,6 +101,10 @@ class WS:
 
     def fechar(self):
         try:
+            self.s.shutdown(socket.SHUT_RDWR)  # acorda quem esta bloqueado em recv() em outra thread
+        except OSError:
+            pass
+        try:
             self.s.close()
         except OSError:
             pass
@@ -107,11 +116,97 @@ def quadro(rid, tipo, dados=b""):
 
 # ------------------------------------------------------------------ servidor (relay)
 
+ALFABETO = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # sem 0/O/1/I
+
+
+class Registro:
+    """Computadores autorizados (hash da chave + rotulo do admin) e convites de uso unico. Anonimo: nada sobre quem usa."""
+
+    def __init__(self, arquivo=None):
+        self.arq = Path(arquivo) if arquivo else None
+        self.lock = threading.RLock()
+        self.d = {"computadores": [], "convites": []}
+        try:
+            if self.arq:
+                self.d.update(json.loads(self.arq.read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            pass
+
+    def _salvar(self):
+        if not self.arq:
+            return
+        try:
+            self.arq.parent.mkdir(parents=True, exist_ok=True)
+            self.arq.write_text(json.dumps(self.d, ensure_ascii=False), encoding="utf-8")
+            os.chmod(self.arq, 0o600)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _norm(codigo):
+        return "".join(c for c in str(codigo).upper() if c.isalnum())
+
+    def criar_convite(self, rotulo="", validade=86400):
+        codigo = "".join(secrets.choice(ALFABETO) for _ in range(12))
+        with self.lock:
+            agora = time.time()
+            self.d["convites"] = [c for c in self.d["convites"] if c["expira"] > agora][-49:]
+            self.d["convites"].append({"id": secrets.token_hex(3), "h": hash_token(codigo), "rotulo": str(rotulo)[:40], "expira": agora + validade})
+            self._salvar()
+        return "-".join(codigo[i:i + 4] for i in range(0, 12, 4))
+
+    def resgatar(self, codigo):
+        """Troca um convite valido por uma chave nova (devolvida uma unica vez); None se invalido/expirado/usado."""
+        h = hash_token(self._norm(codigo))
+        with self.lock:
+            agora = time.time()
+            for c in self.d["convites"]:
+                if secrets.compare_digest(c["h"], h) and c["expira"] > agora:
+                    self.d["convites"].remove(c)
+                    chave = secrets.token_urlsafe(24)
+                    cid = secrets.token_hex(4)
+                    self.d["computadores"].append({"id": cid, "rotulo": c["rotulo"], "h": hash_token(chave), "criado": agora})
+                    self._salvar()
+                    return cid, chave
+        return None
+
+    def autenticar(self, chave):
+        h = hash_token(chave)
+        with self.lock:
+            for c in self.d["computadores"]:
+                if secrets.compare_digest(c["h"], h):
+                    return dict(c)
+        return None
+
+    def revogar(self, cid):
+        with self.lock:
+            n = len(self.d["computadores"])
+            self.d["computadores"] = [c for c in self.d["computadores"] if c["id"] != cid]
+            self._salvar()
+            return len(self.d["computadores"]) < n
+
+    def revogar_convite(self, iid):
+        with self.lock:
+            n = len(self.d["convites"])
+            self.d["convites"] = [c for c in self.d["convites"] if c["id"] != iid]
+            self._salvar()
+            return len(self.d["convites"]) < n
+
+    def rotular(self, cid, rotulo):
+        with self.lock:
+            for c in self.d["computadores"]:
+                if c["id"] == cid:
+                    c["rotulo"] = str(rotulo)[:40]
+                    self._salvar()
+                    return True
+        return False
+
+
 class Agente:
-    def __init__(self, ws, ip):
-        self.ws, self.ip, self.sid = ws, ip, secrets.token_urlsafe(8)
+    def __init__(self, ws, cid=""):
+        self.ws, self.cid, self.sid = ws, cid, secrets.token_urlsafe(8)  # cid vazio = chave de administrador (este servidor)
         self.codigos, self.tokens, self.pend, self.lock, self._id = set(), set(), {}, threading.Lock(), 0
-        self.vivo = True
+        self.vivo, self.desde, self.fluxos = True, time.time(), 0  # fluxos: /events abertos (celulares conectados), so em memoria
 
     def novo_id(self):
         with self.lock:
@@ -128,8 +223,25 @@ class Agente:
 
 
 class Relay:
-    def __init__(self, chave, max_sessoes=50):
+    def __init__(self, chave, max_sessoes=50, registro=None, publico=""):
         self.chave, self.max_sessoes, self.agentes, self.lock = chave, max_sessoes, {}, threading.Lock()
+        self.registro, self.publico = registro or Registro(), publico
+        self.falhas = {}  # ip -> instantes de tentativas erradas (limite por minuto; nao e gravado)
+
+    def desconectar(self, cid):
+        with self.lock:
+            ags = [a for a in self.agentes.values() if a.cid == cid]
+        for a in ags:
+            a.cair()
+
+    def limite(self, ip, maximo=10):
+        agora = time.time()
+        f = [t for t in self.falhas.get(ip, []) if agora - t < 60]
+        self.falhas[ip] = f
+        return len(f) >= maximo
+
+    def falhou(self, ip):
+        self.falhas.setdefault(ip, []).append(time.time())
 
     def registrar(self, ag):
         with self.lock:
@@ -161,12 +273,74 @@ class Relay:
         return ags[0] if (estatico and ags) else None
 
 
+def _igual(a, b):
+    try:
+        return secrets.compare_digest(str(a).encode(), str(b).encode())
+    except TypeError:
+        return False
+
+
 def _cookie(cabecalhos, nome):
     try:
         c = SimpleCookie(cabecalhos.get("Cookie", ""))
         return c[nome].value if nome in c else ""
     except Exception:
         return ""
+
+
+PAINEL_RELAY = r"""<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex"><title>Baton central</title>
+<style>
+:root{--bg:#0b0b0d;--card:#17171a;--linha:#2a2a2e;--tx:#f2f2f4;--mut:#8e8e93;--az:#0a84ff;--vd:#30d158;--vm:#ff453a}
+@media (prefers-color-scheme:light){:root{--bg:#f4f4f6;--card:#fff;--linha:#dcdce0;--tx:#18181b;--mut:#6b6b73}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.45 -apple-system,system-ui,sans-serif;padding:max(18px,env(safe-area-inset-top)) 16px 40px}
+main{max-width:760px;margin:0 auto}h1{font-size:24px;margin:6px 0 2px}h2{font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);margin:26px 0 8px}
+.sub{color:var(--mut);font-size:13px;margin:0 0 4px}.card{background:var(--card);border:1px solid var(--linha);border-radius:14px;padding:12px 14px;margin:8px 0}
+.lin{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.lin>.g{flex:1;min-width:0}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--mut);flex:none}.dot.on{background:var(--vd);box-shadow:0 0 8px var(--vd)}
+b{font-weight:600}small,.mut{color:var(--mut);font-size:13px}code{font:13px ui-monospace,Menlo,monospace;word-break:break-all}
+button,input{font:inherit;border-radius:10px;border:1px solid var(--linha);background:var(--card);color:var(--tx);padding:8px 12px}
+button{cursor:pointer}button.az{background:var(--az);border-color:var(--az);color:#fff;font-weight:600}button.vm{color:var(--vm)}
+input{width:100%}.cod{font:600 26px ui-monospace,Menlo,monospace;letter-spacing:.08em;text-align:center;padding:10px 0}
+pre{margin:6px 0;padding:10px;border-radius:10px;background:var(--bg);border:1px solid var(--linha);white-space:pre-wrap;word-break:break-all;font:12.5px ui-monospace,Menlo,monospace}
+#login{display:none}.vazio{color:var(--mut);padding:6px 2px}
+</style></head><body><main>
+<h1>Baton central</h1><p class="sub" id="resumo">Entre com a chave de administrador deste relay.</p>
+<div id="login" class="card"><div class="lin"><div class="g"><input id="chave" type="password" placeholder="Chave de administrador" autocomplete="current-password"></div><button class="az" id="entrar">Entrar</button></div><small id="erro" style="color:var(--vm)"></small></div>
+<div id="app" style="display:none">
+<h2>Computadores</h2><div id="comps"></div>
+<h2>Novo computador</h2><div class="card"><div class="lin"><div class="g"><input id="rotulo" placeholder="Rotulo so seu, opcional (ex.: Mac do instituto)" maxlength="40"></div><button class="az" id="criar">Criar convite</button></div>
+<div id="novo"></div></div>
+<h2>Convites pendentes</h2><div id="convs"></div>
+<p class="mut" style="margin-top:28px">Este relay nao tem login de usuarios e nao guarda IP, nome, conta nem conteudo: so repassa o trafego entre o celular e o computador. Em disco ficam apenas o hash da chave de cada computador autorizado e o rotulo que voce deu. Quem esta online e quantos celulares estao conectados existem so em memoria.</p>
+</div></main>
+<script>
+const $=id=>document.getElementById(id);let K=sessionStorage.getItem('baton-adm')||'',ES=null;
+const esc=t=>String(t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+async function api(c,d){const r=await fetch('/relay/api/'+c,{method:d?'POST':'GET',headers:{'X-Baton-Admin':K,'Content-Type':'application/json'},body:d?JSON.stringify(d):undefined});
+  if(r.status===403){sessionStorage.removeItem('baton-adm');K='';mostra(false);$('erro').textContent='Chave invalida.';throw 0}return r.json()}
+function mostra(ok){$('login').style.display=ok?'none':'block';$('app').style.display=ok?'block':'none'}
+const dur=s=>s<60?s+' s':s<3600?Math.floor(s/60)+' min':Math.floor(s/3600)+' h '+Math.floor(s%3600/60)+' min';
+const host=()=>(ES&&ES.publico?ES.publico.replace(/^https?:\/\//,''):location.host);
+async function ver(){try{ES=await api('estado')}catch(e){return}mostra(true);
+  const on=ES.computadores.filter(c=>c.online).length+ES.locais.length;
+  $('resumo').textContent=on+' de '+ES.max+' sessoes online - '+(ES.computadores.reduce((a,c)=>a+c.celulares,0)+ES.locais.reduce((a,c)=>a+c.celulares,0))+' celulares conectados agora';
+  $('comps').innerHTML=(ES.locais.map(l=>'<div class="card lin"><span class="dot on"></span><div class="g"><b>Este servidor</b> <small>(chave de administrador)</small><br><small>online ha '+dur(l.online_ha)+' - '+l.celulares+' celular(es)</small></div></div>').join('')+
+   ES.computadores.map(c=>'<div class="card lin"><span class="dot '+(c.online?'on':'')+'"></span><div class="g"><b>'+esc(c.rotulo||'Computador '+c.id)+'</b> <small>'+c.id+'</small><br><small>'+(c.online?'online ha '+dur(c.online_ha)+' - '+c.celulares+' celular(es)':'offline')+'</small></div>'+
+   '<button data-r="'+c.id+'">Renomear</button><button class="vm" data-v="'+c.id+'">Revogar</button></div>').join(''))||'<div class="vazio">Nenhum computador ainda. Crie um convite abaixo.</div>';
+  $('convs').innerHTML=ES.convites.map(c=>'<div class="card lin"><div class="g"><b>'+esc(c.rotulo||'Sem rotulo')+'</b><br><small>expira em '+dur(Math.max(0,Math.floor(c.expira-Date.now()/1000)))+'</small></div><button class="vm" data-i="'+c.id+'">Cancelar</button></div>').join('')||'<div class="vazio">Nenhum.</div>';
+  document.querySelectorAll('[data-v]').forEach(b=>b.onclick=async()=>{if(confirm('Revogar este computador? Ele para de conectar agora.')){await api('revogar',{id:b.dataset.v});ver()}});
+  document.querySelectorAll('[data-r]').forEach(b=>b.onclick=async()=>{const n=prompt('Novo rotulo:');if(n!==null){await api('rotular',{id:b.dataset.r,rotulo:n});ver()}});
+  document.querySelectorAll('[data-i]').forEach(b=>b.onclick=async()=>{await api('revogar-convite',{id:b.dataset.i});ver()})}
+$('entrar').onclick=()=>{K=$('chave').value;sessionStorage.setItem('baton-adm',K);$('erro').textContent='';ver()};
+$('chave').onkeydown=e=>{if(e.key==='Enter')$('entrar').click()};
+$('criar').onclick=async()=>{const r=await api('convite',{rotulo:$('rotulo').value});$('rotulo').value='';const h=r.publico?r.publico.replace(/^https?:\/\//,''):location.host,c=h+'/'+r.codigo;
+  const cmds=[['Qualquer sistema (Baton ja instalado)','baton --convite '+c],['Mac ou Linux (instala e conecta)','git clone https://github.com/pedroiff0/baton && cd baton && BATON_CONVITE='+c+' ./install.sh'],
+   ['Windows (PowerShell, na pasta do Baton)','$env:BATON_CONVITE="'+c+'"; .\\install.ps1']];
+  $('novo').innerHTML='<div class="cod">'+r.codigo+'</div><small>Vale por 24 h e uma unica vez. Mande um dos comandos para a pessoa:</small>'+cmds.map((x,i)=>'<div class="mut" style="margin-top:8px">'+x[0]+'</div><pre id="p'+i+'">'+esc(x[1])+'</pre><button data-c="'+i+'">Copiar</button>').join('');
+  document.querySelectorAll('[data-c]').forEach(b=>b.onclick=()=>{navigator.clipboard&&navigator.clipboard.writeText($('p'+b.dataset.c).textContent);b.textContent='Copiado'});ver()};
+if(K)ver();else mostra(false);setInterval(()=>{if(K&&document.visibilityState==='visible')ver()},4000);
+</script></body></html>"""
 
 
 def criar_handler(relay):
@@ -184,15 +358,96 @@ def criar_handler(relay):
             self.end_headers()
             self.wfile.write(corpo)
 
-        def _agente_ws(self):
-            if not secrets.compare_digest(self.headers.get("X-Baton-Chave", ""), relay.chave):
+        def _ip(self):
+            return self.headers.get("Cf-Connecting-Ip") or self.client_address[0]
+
+        def _json(self, status, obj):
+            corpo = json.dumps(obj).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(corpo)))
+            self.end_headers()
+            self.wfile.write(corpo)
+
+        def _corpo_json(self):
+            try:
+                n = min(int(self.headers.get("Content-Length") or 0), 4096)
+                return json.loads(self.rfile.read(n) or b"{}")
+            except ValueError:
+                return {}
+
+        def _admin_ok(self):
+            if relay.limite(self._ip()):
+                return False
+            ok = _igual(self.headers.get("X-Baton-Admin", ""), relay.chave)
+            if not ok:
+                relay.falhou(self._ip())
                 time.sleep(1)
-                return self._texto(403, "chave do relay invalida")
+            return ok
+
+        def _resgatar(self):
+            """POST /relay/convite {codigo}: troca o convite (uso unico) por uma chave do computador. Anonimo: nada e perguntado."""
+            if relay.limite(self._ip()):
+                return self._json(429, {"erro": "muitas tentativas; aguarde um minuto"})
+            r = relay.registro.resgatar(self._corpo_json().get("codigo", ""))
+            if r is None:
+                relay.falhou(self._ip())
+                time.sleep(1)
+                return self._json(403, {"erro": "convite invalido, expirado ou ja usado"})
+            self._json(200, {"id": r[0], "chave": r[1]})
+
+        def _api(self, caminho):
+            if not self._admin_ok():
+                return self._json(403, {"erro": "chave de administrador invalida"})
+            if self.command == "GET" and caminho == "estado":
+                agora = time.time()
+                with relay.lock:
+                    ags = list(relay.agentes.values())
+                reg = relay.registro
+                with reg.lock:
+                    comps = [dict(c) for c in reg.d["computadores"]]
+                    convs = [dict(c) for c in reg.d["convites"] if c["expira"] > agora]
+                online = {a.cid: a for a in ags if a.vivo}
+                saida = []
+                for c in comps:
+                    a = online.get(c["id"])
+                    saida.append({"id": c["id"], "rotulo": c["rotulo"], "criado": c["criado"], "online": bool(a),
+                                  "online_ha": int(agora - a.desde) if a else 0, "celulares": a.fluxos if a else 0})
+                locais = [{"online_ha": int(agora - a.desde), "celulares": a.fluxos} for a in ags if a.vivo and not a.cid]
+                return self._json(200, {"computadores": saida, "locais": locais, "max": relay.max_sessoes, "publico": relay.publico,
+                                        "convites": [{"id": c["id"], "rotulo": c["rotulo"], "expira": c["expira"]} for c in convs]})
+            if self.command == "POST":
+                d = self._corpo_json()
+                if caminho == "convite":
+                    return self._json(200, {"codigo": relay.registro.criar_convite(d.get("rotulo", "")), "publico": relay.publico})
+                if caminho == "revogar":
+                    ok = relay.registro.revogar(str(d.get("id", "")))
+                    relay.desconectar(str(d.get("id", "")))
+                    return self._json(200, {"ok": ok})
+                if caminho == "revogar-convite":
+                    return self._json(200, {"ok": relay.registro.revogar_convite(str(d.get("id", "")))})
+                if caminho == "rotular":
+                    return self._json(200, {"ok": relay.registro.rotular(str(d.get("id", "")), d.get("rotulo", ""))})
+            return self._json(404, {"erro": "rota desconhecida"})
+
+        def _agente_ws(self):
+            chave = self.headers.get("X-Baton-Chave", "")
+            if relay.limite(self._ip()):
+                return self._texto(429, "muitas tentativas")
+            cid = ""
+            if not _igual(chave, relay.chave):  # chave de administrador (este servidor) ou de um computador convidado
+                comp = relay.registro.autenticar(chave)
+                if comp is None:
+                    relay.falhou(self._ip())
+                    time.sleep(1)
+                    return self._texto(403, "chave do relay invalida ou revogada")
+                cid = comp["id"]
             k = self.headers.get("Sec-WebSocket-Key", "")
             if not k or "websocket" not in self.headers.get("Upgrade", "").lower():
                 return self._texto(400, "WebSocket esperado")
             ws = WS(self.connection, False)
-            ag = Agente(ws, self.client_address[0])
+            ag = Agente(ws, cid)
             if not relay.registrar(ag):
                 return self._texto(503, "relay lotado")
             acc = base64.b64encode(hashlib.sha1((k + GUID).encode()).digest()).decode()
@@ -223,6 +478,20 @@ def criar_handler(relay):
             u = urlsplit(self.path)
             if u.path == "/relay/ws":
                 return self._agente_ws()
+            if u.path == "/relay/convite" and self.command == "POST":
+                return self._resgatar()
+            if u.path in ("/relay/painel", "/relay/painel/"):
+                corpo = PAINEL_RELAY.encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(corpo)))
+                self.end_headers()
+                return self.wfile.write(corpo)
+            if u.path.startswith("/relay/api/"):
+                return self._api(u.path[len("/relay/api/"):])
+            if u.path.startswith("/relay/"):
+                return self._texto(404, "not found")
             q = parse_qs(u.query)
             token = q.get("k", [""])[0] or self.headers.get("X-Token", "") or _cookie(self.headers, "baton_k")
             codigo = u.path[3:].split("/")[0] if u.path.startswith("/p/") else ""
@@ -244,6 +513,9 @@ def criar_handler(relay):
             fila = queue.Queue()
             with ag.lock:
                 ag.pend[rid] = fila
+            evento = u.path == "/events"
+            if evento:
+                ag.fluxos += 1
             try:
                 ag.ws.enviar(2, quadro(rid, T_CAB, json.dumps({"m": self.command, "p": self.path, "h": hs}).encode()))
                 for i in range(0, len(corpo), PEDACO):
@@ -253,6 +525,8 @@ def criar_handler(relay):
             except OSError:
                 pass
             finally:
+                if evento:
+                    ag.fluxos = max(0, ag.fluxos - 1)
                 with ag.lock:
                     ag.pend.pop(rid, None)
 
@@ -307,11 +581,52 @@ class ServidorRelay(ThreadingHTTPServer):
         pass
 
 
-def servir(porta, chave, max_sessoes=50, host="0.0.0.0"):
-    relay = Relay(chave, max_sessoes)
+def servir(porta, chave, max_sessoes=50, host="0.0.0.0", registro=None, publico=""):
+    relay = Relay(chave, max_sessoes, registro, publico)
     srv = ServidorRelay((host, porta), criar_handler(relay))
     srv.relay = relay
     return srv
+
+
+# ------------------------------------------------------------------ cliente de convite (linha de comando)
+
+def _base_http(host):
+    host = host.strip().rstrip("/")
+    if host.startswith(("http://", "https://")):
+        return host
+    local = host.startswith(("localhost", "127.", "192.168.", "10.")) or ":" in host
+    return ("http://" if local else "https://") + host
+
+
+def resgatar_convite(texto, padrao=""):
+    """`host/CODIGO` (ou so CODIGO com o relay padrao) -> (url wss do relay, chave do computador). Levanta ValueError/OSError."""
+    texto = texto.strip()
+    if "/" in texto.replace("://", ""):
+        host, codigo = texto.rsplit("/", 1)
+    else:
+        host, codigo = padrao, texto
+    if not host:
+        raise ValueError("informe o convite completo (host/CODIGO) ou --relay")
+    base = _base_http(host)
+    import urllib.request
+    import urllib.error
+    req = urllib.request.Request(base + "/relay/convite", data=json.dumps({"codigo": codigo}).encode(), method="POST",
+                                 headers={"Content-Type": "application/json"})
+    try:
+        r = json.loads(urllib.request.urlopen(req, timeout=15).read())
+    except urllib.error.HTTPError as e:
+        try:
+            raise ValueError(json.loads(e.read()).get("erro", "convite recusado"))
+        except ValueError as v:
+            raise v
+    return base.replace("https://", "wss://").replace("http://", "ws://"), r["chave"]
+
+
+def criar_convite_local(porta, chave, rotulo=""):
+    import urllib.request
+    req = urllib.request.Request(f"http://127.0.0.1:{porta}/relay/api/convite", data=json.dumps({"rotulo": rotulo}).encode(), method="POST",
+                                 headers={"Content-Type": "application/json", "X-Baton-Admin": chave})
+    return json.loads(urllib.request.urlopen(req, timeout=10).read())
 
 
 # ------------------------------------------------------------------ agente (dentro do Baton)

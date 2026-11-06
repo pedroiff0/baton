@@ -918,6 +918,66 @@ class RelayTest(unittest.TestCase):
             with mock.patch.object(P, "ARQ_RELAY", Path(d) / "nao-existe.json"), mock.patch.object(P, "__file__", str(Path(d) / "baton.py")):
                 self.assertEqual(P.relay_salvo(), ("wss://x.exemplo.com", "c" * 12))
 
+    def test_convite_uso_unico_e_revogacao(self):
+        with tempfile.TemporaryDirectory() as d:
+            reg = RL.Registro(Path(d) / "r.json")
+            cod = reg.criar_convite("Mac do instituto")
+            self.assertIsNone(reg.resgatar("AAAA-BBBB-CCCC"))
+            r = reg.resgatar(cod.lower())  # maiusculas/hifens nao importam
+            self.assertIsNotNone(r)
+            self.assertIsNone(reg.resgatar(cod))  # uso unico
+            cid, chave = r
+            self.assertEqual(reg.autenticar(chave)["id"], cid)
+            self.assertNotIn(chave, (Path(d) / "r.json").read_text())  # so o hash vai para o disco
+            self.assertNotIn(cod.replace("-", ""), (Path(d) / "r.json").read_text())
+            self.assertEqual(oct((Path(d) / "r.json").stat().st_mode & 0o777), "0o600")
+            self.assertTrue(reg.revogar(cid))
+            self.assertIsNone(reg.autenticar(chave))
+            reg.criar_convite("x", validade=-1)  # expirado
+            self.assertIsNone(reg.resgatar(reg.d["convites"][-1]["h"]))
+
+    def test_relay_com_convite_ponta_a_ponta(self):
+        import http.client
+        with tempfile.TemporaryDirectory() as d:
+            srv = RL.servir(0, "admin-chave-de-teste-1", host="127.0.0.1", registro=RL.Registro(Path(d) / "r.json"), publico="https://x.exemplo.com")
+            porta = srv.server_address[1]
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+            def req(metodo, caminho, corpo=None, cab=None):
+                c = http.client.HTTPConnection("127.0.0.1", porta, timeout=5)
+                c.request(metodo, caminho, body=json.dumps(corpo) if corpo is not None else None, headers=cab or {})
+                r = c.getresponse()
+                return r.status, r.read()
+            self.assertEqual(req("GET", "/relay/api/estado")[0], 403)  # sem chave de administrador
+            st, corpo = req("POST", "/relay/api/convite", {"rotulo": "teste"}, {"X-Baton-Admin": "admin-chave-de-teste-1"})
+            self.assertEqual(st, 200)
+            cod = json.loads(corpo)["codigo"]
+            self.assertEqual(req("POST", "/relay/convite", {"codigo": "ERRADO-ERRADO"})[0], 403)
+            url, chave = RL.resgatar_convite(f"127.0.0.1:{porta}/{cod}")
+            self.assertTrue(url.startswith("ws://127.0.0.1"))
+            with self.assertRaises(ValueError):
+                RL.resgatar_convite(f"127.0.0.1:{porta}/{cod}")  # ja usado
+            ag = RL.AgenteRelay(url, chave, 1, lambda: (["c1"], []))
+            ag.start()
+            for _ in range(50):
+                if srv.relay.agentes:
+                    break
+                time.sleep(0.1)
+            st, corpo = req("GET", "/relay/api/estado", cab={"X-Baton-Admin": "admin-chave-de-teste-1"})
+            est = json.loads(corpo)
+            self.assertTrue(est["computadores"][0]["online"])
+            self.assertEqual(est["computadores"][0]["rotulo"], "teste")
+            self.assertNotIn("ip", corpo.decode().lower().replace("rotulo", ""))  # nada de IP no painel
+            cid = est["computadores"][0]["id"]
+            req("POST", "/relay/api/revogar", {"id": cid}, {"X-Baton-Admin": "admin-chave-de-teste-1"})
+            for _ in range(30):
+                if not srv.relay.agentes:
+                    break
+                time.sleep(0.1)
+            self.assertFalse(srv.relay.agentes)  # revogado: desconectado na hora
+            ag.parar = True
+            srv.shutdown()
+
     def test_limite_de_sessoes(self):
         r = RL.Relay("k" * 12, max_sessoes=1)
         self.assertTrue(r.registrar(RL.Agente(None, "a")))

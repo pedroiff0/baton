@@ -15,7 +15,7 @@ import zipfile
 from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parent.parent
-ARQUIVOS = ["baton.py", "residente.py", "relay.py", "monitores.py", "overlay_tk.py", "tray_win.ps1", "LICENSE"] + (["relay.json"] if (RAIZ / "relay.json").exists() else [])  # relay.json: url+chave do relay, fora do git
+ARQUIVOS = ["baton.py", "residente.py", "relay.py", "monitores.py", "overlay_tk.py", "tray_win.ps1", "LICENSE"]
 
 BAT = r'''@echo off
 cd /d "%~dp0"
@@ -60,6 +60,8 @@ def baixar(url, destino):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--python", default="3.12.8", help="versao do Python embutido (amd64)")
+    ap.add_argument("--convite", default="", metavar="HOST/CODIGO",
+                    help="inclui um convite de uso unico do relay (baton --criar-convite): no primeiro uso o Baton entra no relay sozinho")
     a = ap.parse_args()
     dist = RAIZ / "dist"
     pasta = dist / "Baton"
@@ -80,6 +82,8 @@ def main():
         pth.write_text("\r\n".join(linhas) + "\r\n")
     for nome in ARQUIVOS:
         shutil.copy2(RAIZ / nome, pasta / "baton" / nome)
+    if a.convite:
+        (pasta / "baton" / "convite.txt").write_text(a.convite.strip() + "\n", encoding="utf-8")
     try:
         versao = subprocess.run(["git", "-C", str(RAIZ), "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
     except OSError:

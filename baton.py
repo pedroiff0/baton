@@ -2058,6 +2058,22 @@ def salvar_relay(url, chave):
         pass
 
 
+def resgatar_convite_do_pacote():
+    """convite.txt ao lado do baton.py (pacote feito com --convite): usa uma vez, no primeiro uso, e apaga."""
+    arq = Path(__file__).resolve().parent / "convite.txt"
+    if not arq.exists() or relay_salvo()[1]:
+        return
+    try:
+        url, chave = relay_mod.resgatar_convite(arq.read_text(encoding="utf-8"))
+        salvar_relay(url, chave)
+        arq.unlink(missing_ok=True)
+        print(f"Convite aceito: este computador entra no relay {url}.", file=sys.stderr)
+    except ValueError:
+        arq.unlink(missing_ok=True)  # convite expirado/usado: nao tenta de novo
+    except OSError:
+        pass  # sem rede agora: tenta na proxima vez
+
+
 def chave_do_relay(pedida=""):
     if pedida:
         return pedida
@@ -3776,6 +3792,10 @@ def main():
                     help="conecta este Baton a um relay central (ex.: wss://baton.exemplo.com): varios computadores atras da mesma URL publica, "
                          "cada um com sua sessao. Com --instalar vira o padrao; '-' remove")
     ap.add_argument("--chave-relay", default="", metavar="CHAVE", help="chave de registro do relay (ou BATON_RELAY_CHAVE)")
+    ap.add_argument("--convite", default="", metavar="HOST/CODIGO",
+                    help="entra no relay com um convite de uso unico (ex.: baton.exemplo.com/ABCD-EFGH-JKLM); sem login, nada e coletado")
+    ap.add_argument("--criar-convite", nargs="?", const="", default=None, metavar="ROTULO",
+                    help="no servidor do relay: cria um convite de uso unico (vale 24 h) e mostra os comandos para a pessoa")
     ap.add_argument("--servir-relay", action="store_true", help="roda o relay central (aponte o Cloudflare Tunnel para --relay-porta); exige a chave do relay")
     ap.add_argument("--relay-porta", type=int, default=8780, help="porta do relay com --servir-relay")
     ap.add_argument("--relay-max", type=int, default=50, help="maximo de computadores (sessoes) no relay")
@@ -3811,13 +3831,32 @@ def main():
     if a.instalar and a.relay:
         salvar_relay(a.relay, chave_do_relay(a.chave_relay))
         print(f"Relay padrao: {a.relay}" if a.relay != "-" else "Relay removido")
+    if a.convite:
+        try:
+            url, chave = relay_mod.resgatar_convite(a.convite, a.relay if a.relay not in ("", "-") else "")
+        except (ValueError, OSError) as e:
+            sys.exit(f"convite recusado: {e}")
+        salvar_relay(url, chave)
+        return print(f"Pronto: este computador entra no relay {url}. Reinicie o Baton (feche e abra de novo) para valer; nada sobre voce foi enviado.")
+    if a.criar_convite is not None:
+        chave = chave_do_relay(a.chave_relay)
+        try:
+            r = relay_mod.criar_convite_local(a.relay_porta, chave, a.criar_convite)
+        except Exception as e:
+            sys.exit(f"nao consegui falar com o relay local na porta {a.relay_porta} ({e}); ele esta rodando (baton --servir-relay)?")
+        h = (r.get("publico") or url_publica_salva() or "baton.exemplo.com").replace("https://", "").replace("http://", "")
+        c = f"{h}/{r['codigo']}"
+        return print(f"Convite: {r['codigo']} (24 h, uso unico)\n\nbaton --convite {c}\n"
+                     f"git clone https://github.com/pedroiff0/baton && cd baton && BATON_CONVITE={c} ./install.sh\n"
+                     f"Windows: $env:BATON_CONVITE=\"{c}\"; .\\install.ps1")
     if a.servir_relay:
         chave = chave_do_relay(a.chave_relay)
         if len(chave) < 12:
             sys.exit("defina a chave do relay (>= 12 caracteres): --chave-relay, BATON_RELAY_CHAVE ou o arquivo ~/.config/baton/relay-chave")
-        srv = relay_mod.servir(a.relay_porta, chave, a.relay_max)
+        srv = relay_mod.servir(a.relay_porta, chave, a.relay_max, registro=relay_mod.Registro(Path.home() / ".config" / "baton" / "relay-estado.json"),
+                               publico=url_publica_salva() or "")
         print(f"Relay do Baton em 0.0.0.0:{a.relay_porta} (ate {a.relay_max} sessoes). Aponte o tunel/proxy para esta porta; "
-              f"cada Baton usa --relay wss://<seu-dominio> com a mesma chave.")
+              f"painel: /relay/painel (chave de administrador); convites: baton --criar-convite.")
         try:
             srv.serve_forever()
         except KeyboardInterrupt:
@@ -3919,7 +3958,10 @@ def main():
     MAX_DISPOSITIVOS = max(1, min(64, a.max_celulares))
     pedido = a.url_publica.strip()
     URL_PUBLICA = "" if pedido == "-" else (pedido or url_publica_salva())
+    resgatar_convite_do_pacote()
     relay_url, relay_chave = (a.relay.strip(), chave_do_relay(a.chave_relay)) if a.relay.strip() else relay_salvo()
+    if not relay_chave:
+        relay_url = ""  # sem chave nao ha como se registrar: segue so pela rede local / URL publica configurada
     if relay_url == "-":
         relay_url = ""
     if relay_url and not URL_PUBLICA and "127.0.0.1" not in relay_url and "localhost" not in relay_url:

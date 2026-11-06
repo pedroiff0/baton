@@ -143,20 +143,25 @@ O Baton não precisa de internet: precisa só de uma rede IP entre o celular e o
 
 ## 🌐 Várias sessões: relay central <a name="relay"></a>
 
-Uma URL pública (ex.: `https://baton.exemplo.com`, via Cloudflare Tunnel) aponta para um só computador. Para várias apresentações em paralelo, cada uma no seu PC, rode um **relay** no servidor e conecte cada Baton a ele; cada computador mantém sessão, QR e celulares próprios, e as sessões não se enxergam (o roteamento usa o código do QR e o token de cada celular).
+Uma URL pública (ex.: `https://baton.exemplo.com`, via Cloudflare Tunnel) aponta para um só computador. Para várias apresentações em paralelo, cada uma no seu PC, rode um **relay** no servidor e conecte cada Baton a ele: cada computador mantém sessão, QR e celulares próprios, e as sessões não se enxergam (o roteamento usa o código do QR e o token de cada celular). Mais de um celular pode escanear o mesmo QR e entrar na mesma sessão.
+
+**Sem login e sem coleta.** O relay não tem contas, não grava IP nem conteúdo e não recebe nome, sistema ou qualquer dado do computador: só repassa o tráfego entre o celular e o PC. Em disco ficam apenas o hash da chave de cada computador autorizado e o rótulo que o administrador deu ao convite; quem está online e quantos celulares estão conectados existem só em memória. Tudo é código aberto neste repositório.
 
 ```bash
 # no servidor (aponte o túnel para a porta do relay, WebSocket incluído)
-BATON_RELAY_CHAVE='uma-chave-longa' baton --servir-relay --relay-porta 8780
+BATON_RELAY_CHAVE='chave-de-administrador-longa' baton --servir-relay --relay-porta 8780
 
-# pacote para os outros: crie relay.json (fora do git) na pasta do repositório e gere o pacote/instalador
-echo '{"url": "wss://baton.exemplo.com", "chave": "uma-chave-longa"}' > relay.json
-python3 scripts/empacotar-windows.py        # o zip já leva o relay.json; install.sh e install.ps1 também o copiam
+# convite de uso único (vale 24 h) para cada computador novo
+baton --criar-convite "Mac do instituto"        # mostra os comandos prontos
+# na máquina da pessoa:
+baton --convite baton.exemplo.com/ABCD-EFGH-JKLM
+# ou instalando de uma vez:
+git clone https://github.com/pedroiff0/baton && cd baton && BATON_CONVITE=baton.exemplo.com/ABCD-EFGH-JKLM ./install.sh
 ```
 
-O usuário final não configura nada: abre o app, joga a apresentação (ou põe um slide em tela cheia), escaneia o QR e usa. O Baton lê o `relay.json` que acompanha o pacote (ou `~/.cache/baton/relay.json`, ou `--relay`/`--chave-relay`/`BATON_RELAY*` para quem quiser configurar à mão) e se registra sozinho. O `relay.json` tem a chave e fica no `.gitignore`: não vai para o GitHub público.
+O convite é trocado por uma chave própria do computador (guardada só nele); a chave de administrador nunca sai do servidor. Para o Windows portátil, `python3 scripts/empacotar-windows.py --convite baton.exemplo.com/CODIGO` leva um convite no zip e o Baton entra no relay sozinho no primeiro uso: o usuário só abre o app, joga a apresentação (ou põe um slide em tela cheia) e escaneia o QR.
 
-A chave só autoriza computadores a se registrar; os celulares continuam entrando pelo QR de uso único. Com `--relay` e sem `--url-publica`, o QR usa a URL do relay. O painel mostra o estado do relay. `--max-celulares N` muda o limite de celulares por sessão (padrão 8). Botões de volume do celular não chegam a nenhuma página web (iOS e Android os consomem); use os controles de mídia do sistema, fones ou um passador de slides Bluetooth.
+**Painel da central:** `https://baton.exemplo.com/relay/painel` (entra com a chave de administrador): lista os computadores com status online, tempo e celulares conectados agora; cria convites com os comandos prontos para copiar; renomeia, cancela convites e revoga computadores (desconecta na hora). Botões de volume do celular não chegam a nenhuma página web (iOS e Android os consomem); use os controles de mídia do sistema, fones ou um passador de slides Bluetooth.
 
 ## 🔒 Segurança <a name="seguranca"></a>
 

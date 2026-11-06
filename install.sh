@@ -11,6 +11,7 @@ python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' || { e
 mkdir -p "$DEST" "$HOME/.local/bin"
 cp "$SRC"/baton.py "$SRC"/residente.py "$SRC"/relay.py "$SRC"/monitores.py "$SRC"/launcher.swift "$SRC"/overlay.swift "$SRC"/overlay_gtk.py "$SRC"/overlay_tk.py "$SRC"/tray_gtk.py "$SRC"/LICENSE "$DEST"/
 [ -f "$SRC/relay.json" ] && cp "$SRC/relay.json" "$DEST/" && chmod 600 "$DEST/relay.json"
+[ -n "$BATON_CONVITE" ] && python3 "$DEST/baton.py" --convite "$BATON_CONVITE" || true
 git -C "$SRC" rev-parse --short HEAD > "$DEST/VERSION" 2>/dev/null || true
 printf '#!/bin/sh\nexec python3 "%s/baton.py" "$@"\n' "$DEST" > "$HOME/.local/bin/baton"
 chmod +x "$HOME/.local/bin/baton"
