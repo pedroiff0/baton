@@ -358,7 +358,7 @@ class Estado:
                 "auth": self.autorizado, "ativo": self.prefs["ativo"], "pedido": self.pedido,
                 "acess": self.acessibilidade(), "so": sys.platform,
                 "tela_falha": bool(self.tela_propria and not self.tela_conectada() and time.time() - self.tela_desde > 8),
-                "zoom_sistema": (zoom_sistema_cfg() or {}).get("nome") if self.ext else None,
+                "zoom_sistema": ("Lupa" if self.ext.overlay else (zoom_sistema_cfg() or {}).get("nome")) if self.ext else None,
                 "aspecto": self.aspecto(),
                 "remotos": self.remotos, "zoom": self.zoom, "zx": self.zx, "zy": self.zy, "seq": self.seq,
                 "timer": {"rodando": self.t_rodando, "elapsed": round(self.decorrido(), 1), "voltas": self.voltas}}
@@ -670,12 +670,12 @@ class Estado:
                 self.zx = max(0.0, min(1.0, float(valor.get("x", 0.5))))
                 self.zy = max(0.0, min(1.0, float(valor.get("y", 0.5))))
                 if self.ext:  # app de terceiros: usa o zoom nativo do sistema
-                    self.ext.zoom_sistema(self.zoom, self.zx, self.zy, self.proporcao)
+                    self.ext.zoom_externo(self.zoom, self.zx, self.zy, self.proporcao)
             else:
                 return False
             if self.pagina != pagina_antes:
                 if self.ext and self.zoom > 1.001:
-                    self.ext.zoom_sistema(1.0, 0.5, 0.5, self.proporcao)
+                    self.ext.zoom_externo(1.0, 0.5, 0.5, self.proporcao)
                 self.zoom, self.zx, self.zy = 1.0, 0.5, 0.5
                 self.tracos = []
                 if not self.t_rodando and self.t_base == 0.0:  # o cronometro comeca no primeiro avanco
@@ -1430,8 +1430,57 @@ class Externo:
         self.monitor_fn = None  # () -> monitor da projecao (dict x, y, w, h) ou None
         self.mon_atual = None
         self.zoom_passos = 0
+        self.lupa_arq, self.lupa_pend, self.lupa_capturando, self.lupa_dir, self.lupa_n = None, None, False, None, 0
         self._zq = queue.Queue()
         threading.Thread(target=self._zoom_worker, daemon=True).start()
+
+    LUPA_TAM = 0.32  # lado da lupa, em fracao da largura/altura do monitor (mesmo formato do monitor, nao circular)
+
+    def zoom_externo(self, z, x, y, proporcao):
+        """Zoom do modo externo: lupa retangular pela camada do Baton; sem camada, o zoom nativo do sistema."""
+        if self.overlay:
+            return self.lupa(z, x, y, proporcao)
+        return self.zoom_sistema(z, x, y, proporcao)
+
+    def lupa(self, z, x, y, proporcao):
+        """Lupa retangular sobre a projecao: a camada desenha, ampliada, uma captura do monitor feita ao ligar."""
+        if z <= 1.001:
+            velho, self.lupa_pend, self.lupa_arq = self.lupa_arq, None, None
+            self.overlay.enviar({"t": "lupa", "on": False})
+            if velho:  # a camada ja soltou a imagem; apaga a captura
+                threading.Timer(2.0, lambda: Path(velho).unlink(missing_ok=True)).start()
+            return True
+        _, _, nx, ny = self.para_tela(x, y, proporcao)
+        self.lupa_pend = (z, nx, ny)
+        if self.lupa_arq is None:
+            if not self.lupa_capturando:
+                self.lupa_capturando = True
+                threading.Thread(target=self._lupa_capturar, daemon=True).start()
+            return True
+        self._lupa_enviar()
+        return True
+
+    def _lupa_enviar(self):
+        pend, arq = self.lupa_pend, self.lupa_arq
+        if pend and arq:
+            self.overlay.enviar({"t": "lupa", "on": True, "img": str(arq), "x": pend[1], "y": pend[2], "z": pend[0], "w": self.LUPA_TAM})
+
+    def _lupa_capturar(self):
+        try:
+            if self.lupa_dir is None:
+                self.lupa_dir = tempfile.mkdtemp(prefix="baton-lupa-")
+            self.lupa_n += 1
+            arq = Path(self.lupa_dir) / f"lupa-{self.lupa_n}.png"
+            ok = capturar_png(arq, self.monitor_fn() if self.monitor_fn else None)
+            if ok and self.lupa_pend:  # se desligou durante a captura, descarta
+                self.lupa_arq = arq
+                self._lupa_enviar()
+            elif not ok:
+                print("aviso: a lupa precisa capturar a tela (no Mac: Privacidade e Seguranca > Gravacao de Tela)", file=sys.stderr)
+        except Exception as e:
+            print(f"aviso: lupa falhou ({e})", file=sys.stderr)
+        finally:
+            self.lupa_capturando = False
 
     def zoom_sistema(self, z, x, y, proporcao):
         """Zoom do sistema: o ponteiro vai para o ponto escolhido e os atalhos de ampliar/reduzir cobrem a diferenca de nivel.
@@ -1992,6 +2041,50 @@ def contexto_tls():
 
 
 MONITOR_FN = None  # () -> monitor da projecao; a previa por captura mostra so ele
+
+
+def capturar_png(destino, mon=None):
+    """PNG sem perda do monitor da projecao (fonte da lupa). True se gravou o arquivo."""
+    teste = os.environ.get("BATON_CAPTURA_PNG")  # PNG fixo, para testes
+    if teste:
+        try:
+            shutil.copyfile(teste, destino)
+            return True
+        except OSError:
+            return False
+    try:
+        from PIL import ImageGrab
+        (ImageGrab.grab(bbox=(mon["x"], mon["y"], mon["x"] + mon["w"], mon["y"] + mon["h"])) if mon else ImageGrab.grab()).convert("RGB").save(destino, "PNG")
+        return True
+    except Exception:
+        pass
+    arq = str(destino)
+    try:
+        if sys.platform == "darwin":
+            subprocess.run(["screencapture", "-x", "-t", "png"] + (["-R", f"{mon['x']},{mon['y']},{mon['w']},{mon['h']}"] if mon else []) + [arq],
+                           capture_output=True, timeout=8)
+        elif sys.platform == "win32":
+            ps = ("Add-Type -AssemblyName System.Windows.Forms,System.Drawing;"
+                  "Add-Type -MemberDefinition '[DllImport(\"user32.dll\")] public static extern bool SetProcessDPIAware();' -Name D -Namespace W;"
+                  "[void][W.D]::SetProcessDPIAware();" +
+                  (f"$b=New-Object System.Drawing.Rectangle {mon['x']},{mon['y']},{mon['w']},{mon['h']};" if mon else "$b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds;") +
+                  "$bmp=New-Object System.Drawing.Bitmap $b.Width,$b.Height;"
+                  "$g=[System.Drawing.Graphics]::FromImage($bmp);$g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size);"
+                  f"$bmp.Save('{arq}',[System.Drawing.Imaging.ImageFormat]::Png)")
+            subprocess.run(["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps], capture_output=True, timeout=15, creationflags=0x08000000)
+        else:
+            g = f"{mon['w']}x{mon['h']}+{mon['x']}+{mon['y']}" if mon else ""
+            for cmd in ((["grim"] + (["-g", f"{mon['x']},{mon['y']} {mon['w']}x{mon['h']}"] if mon else []) + [arq]) if os.environ.get("WAYLAND_DISPLAY") else None,
+                        ["import", "-silent", "-window", "root"] + (["-crop", g, "+repage"] if mon else []) + [arq],
+                        ["maim", "-m", "7"] + (["-g", g] if mon else []) + [arq],
+                        ["scrot", "-o"] + (["-a", f"{mon['x']},{mon['y']},{mon['w']},{mon['h']}"] if mon else []) + [arq]):
+                if cmd and shutil.which(cmd[0]):
+                    subprocess.run(cmd, capture_output=True, timeout=8)
+                    if Path(arq).exists() and Path(arq).stat().st_size > 0:
+                        break
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return Path(arq).exists() and Path(arq).stat().st_size > 0
 
 
 def capturar_tela(largura=960, qualidade=60):
@@ -3264,8 +3357,8 @@ $('z1').onclick=()=>{zoom={z:1,x:.5,y:.5};mostraZoom();cmd('zoom',zoom)};
 let zsisNome=null;
 function zoomSistemaUI(s){if(!EXTERNO||s.zoom_sistema===undefined)return;zsisNome=s.zoom_sistema;
   $('zrow').style.display=s.zoom_sistema?'flex':'none';
-  if(s.zoom_sistema)$('zaim').querySelector('small').textContent='zoom do sistema: toque onde quer ampliar'}
-function dicaZoomSistema(){let k=null;try{k=localStorage.getItem('baton-zsis')}catch(e){}if(k||!EXTERNO||!zsisNome)return;
+  if(s.zoom_sistema)$('zaim').querySelector('small').textContent=s.zoom_sistema==='Lupa'?'lupa: toque e arraste onde quer ampliar':'zoom do sistema: toque onde quer ampliar'}
+function dicaZoomSistema(){let k=null;try{k=localStorage.getItem('baton-zsis')}catch(e){}if(k||!EXTERNO||!zsisNome||zsisNome==='Lupa')return;
   try{localStorage.setItem('baton-zsis','1')}catch(e){}
   const so=window.SO_PC||'',t=so==='darwin'?'No Mac, para o zoom funcionar: Ajustes do Sistema > Acessibilidade > Zoom > ative "Usar atalhos de teclado para zoom".':
     so==='win32'?'No Windows o zoom abre a Lupa do sistema; para fechar, volte a 1x.':'Zoom pelo '+zsisNome+'; se nao responder, ative o recurso nas configuracoes de acessibilidade.';

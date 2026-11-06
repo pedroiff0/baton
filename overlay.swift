@@ -50,6 +50,12 @@ final class Quadro: NSView {
     var laserLigado = false
     var laserPonto = CGPoint(x: 0.5, y: 0.5)
     var aj = Ajustes()
+    var lupaImg: CGImage? = nil
+    var lupaArq = ""
+    var lupaPonto = CGPoint(x: 0.5, y: 0.5)
+    var lupaZ: CGFloat = 2
+    var lupaLado: CGFloat = 0.32
+    var lupaLigada = false
 
     override var isFlipped: Bool { return true }
     override var isOpaque: Bool { return false }
@@ -102,6 +108,44 @@ final class Quadro: NSView {
                 g.drawRadialGradient(grad, startCenter: c, startRadius: 0, endCenter: c, endRadius: aj.laserTam, options: [])
             }
         }
+        if lupaLigada, let img = lupaImg {
+            desenharLupa(g, img, w, h)
+        }
+    }
+
+    // Lupa retangular: recorta da captura do monitor a area em volta do ponto e a desenha ampliada sob o proprio ponto.
+    func desenharLupa(_ g: CGContext, _ img: CGImage, _ w: CGFloat, _ h: CGFloat) {
+        let lw = lupaLado * w
+        let lh = lupaLado * h
+        let fw = lupaLado / lupaZ
+        let lx = min(max(lupaPonto.x * w - lw / 2, 0), w - lw)
+        let ly = min(max(lupaPonto.y * h - lh / 2, 0), h - lh)
+        let fx = min(max(lupaPonto.x - fw / 2, 0), 1 - fw)
+        let fy = min(max(lupaPonto.y - fw / 2, 0), 1 - fw)
+        let iw = CGFloat(img.width)
+        let ih = CGFloat(img.height)
+        let rect = CGRect(x: lx, y: ly, width: lw, height: lh)
+        g.saveGState()
+        g.setFillColor(NSColor.black.withAlphaComponent(0.35).cgColor)
+        g.fill(CGRect(x: lx - 3, y: ly - 1, width: lw + 6, height: lh + 8))
+        g.restoreGState()
+        if let corte = img.cropping(to: CGRect(x: fx * iw, y: fy * ih, width: fw * iw, height: fw * ih)) {
+            g.saveGState()
+            g.clip(to: rect)
+            g.translateBy(x: lx, y: ly + lh)  // a vista e invertida (origem em cima): desvira a imagem
+            g.scaleBy(x: 1, y: -1)
+            g.interpolationQuality = .high
+            g.draw(corte, in: CGRect(x: 0, y: 0, width: lw, height: lh))
+            g.restoreGState()
+        }
+        g.saveGState()
+        g.setStrokeColor(NSColor.white.cgColor)
+        g.setLineWidth(3)
+        g.stroke(rect)
+        g.setStrokeColor(NSColor.black.withAlphaComponent(0.55).cgColor)
+        g.setLineWidth(1)
+        g.stroke(rect.insetBy(dx: -2, dy: -2))
+        g.restoreGState()
     }
 }
 
@@ -502,6 +546,24 @@ final class Camada {
             a.hlAlpha = numero(msg, "hl_alpha", a.hlAlpha, 5, 90)
             quadro.aj = a
             aplicarAjustes()
+        case "lupa":
+            let ligada = (msg["on"] as? Bool) ?? false
+            if !ligada {
+                quadro.lupaLigada = false
+                quadro.lupaImg = nil
+                quadro.lupaArq = ""
+            } else {
+                let arq = (msg["img"] as? String) ?? ""
+                if arq != quadro.lupaArq {
+                    quadro.lupaImg = NSImage(contentsOfFile: arq)?.cgImage(forProposedRect: nil, context: nil, hints: nil)
+                    quadro.lupaArq = arq
+                }
+                quadro.lupaPonto = CGPoint(x: CGFloat((msg["x"] as? Double) ?? 0.5), y: CGFloat((msg["y"] as? Double) ?? 0.5))
+                quadro.lupaZ = CGFloat(min(8.0, max(1.1, (msg["z"] as? Double) ?? 2.0)))
+                quadro.lupaLado = CGFloat(min(0.6, max(0.1, (msg["w"] as? Double) ?? 0.32)))
+                quadro.lupaLigada = quadro.lupaImg != nil
+            }
+            quadro.needsDisplay = true
         case "cortina":
             cortina.definir((msg["k"] as? String) ?? "off", (msg["txt"] as? String) ?? "", (msg["sub"] as? String) ?? "")
         case "confete":

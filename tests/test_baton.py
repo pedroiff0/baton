@@ -1149,6 +1149,34 @@ class MonitoresTest(unittest.TestCase):
         self.assertEqual(MON.escolher("auto", mons, janela=(100, 500, 800, 600), anterior=mons[0])["nome"], "DP-1")  # mantem o ultimo
         self.assertEqual(MON.escolher("9", mons, janela=(100, 500, 800, 600))["nome"], "HDMI-1")  # numero invalido cai no auto
 
+    def test_lupa_captura_uma_vez_e_segue_o_ponto(self):
+        import tempfile
+        o = FakeOverlay()
+        e = P.Externo(FakeBackend(), o, False)
+        e.monitor_fn = lambda: {"id": 0, "x": 0, "y": 0, "w": 1000, "h": 500}
+        with tempfile.NamedTemporaryFile(suffix=".png") as f:
+            f.write(b"\x89PNG fake")
+            f.flush()
+            with mock.patch.dict(os.environ, {"BATON_CAPTURA_PNG": f.name}):
+                self.assertTrue(e.zoom_externo(2.0, 0.25, 0.5, 16 / 9))
+                for _ in range(100):
+                    if any(m.get("t") == "lupa" for m in o.msgs):
+                        break
+                    time.sleep(0.02)
+                e.zoom_externo(3.0, 0.5, 0.5, 16 / 9)
+        lupas = [m for m in o.msgs if m.get("t") == "lupa"]
+        self.assertTrue(lupas[0]["on"] and lupas[0]["img"].endswith(".png"))
+        self.assertEqual((lupas[-1]["x"], lupas[-1]["z"]), (0.5, 3.0))
+        self.assertEqual(len({m["img"] for m in lupas}), 1)  # a captura e uma so
+        e.zoom_externo(1.0, 0.5, 0.5, 16 / 9)
+        self.assertEqual(o.msgs[-1], {"t": "lupa", "on": False})
+
+    def test_zoom_externo_sem_camada_usa_o_zoom_do_sistema(self):
+        e = P.Externo(FakeBackend(), None, True)
+        with mock.patch.object(e, "zoom_sistema", return_value=True) as zs:
+            e.zoom_externo(2.0, 0.5, 0.5, 16 / 9)
+        zs.assert_called_once()
+
     def test_cantos_alcancaveis_em_monitor_retrato(self):
         mon = {"id": 1, "nome": "HDMI", "x": 1920, "y": 0, "w": 1080, "h": 1920, "principal": False}
         e = P.Externo(FakeBackend(), None, True)

@@ -43,6 +43,7 @@ No Windows use `py baton.py ...`. Ao iniciar, uma página local mostra um **QR c
 - **Modo tela** (com PDF): exibe o PDF no navegador com transições, passos dentro de um slide, notas do apresentador, cronômetro com meta, prévia do próximo slide, "Ir para" e zoom.
 - **Cortina e efeitos**: preto, branco, teatro, fim com confete e efeitos sonoros sintetizados.
 - **Modo residente**: em segundo plano, detecta apresentação em tela cheia e pergunta no celular antes de enviar qualquer tecla. Clicar no aviso do sistema abre a página local.
+- **Lupa** (modo externo): o zoom do celular mostra uma lente retangular sobre a projeção, que segue o dedo ou o apontador (1,5x a 5x). Usa uma captura do monitor; no Mac precisa da permissão de Gravação de Tela.
 - **Ajustes** salvos em disco: cor e tamanho do laser, raio e desfoque do foco, espessura da caneta e do marca-texto.
 
 ---

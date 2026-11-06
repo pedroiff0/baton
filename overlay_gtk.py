@@ -69,6 +69,7 @@ class Camada(Gtk.Window):
         self.laser_on, self.foco_on, self.pt, self.raio = False, False, (0.5, 0.5), 0.12
         self.aj = {"laser_tam": 24, "laser_cor": (1.0, 0.18, 0.18), "foco_escuro": 25, "pen_larg": 3.5,
                    "hl_larg": 14, "hl_alpha": 38}
+        self.lupa = None  # {"sup", "arq", "x", "y", "z", "w"} enquanto a lupa esta ligada
         self.cort, self.cort_vis, self.prog = "", "", 0.0
         self.txt, self.sub = "", ""
         self.parts, self.emitindo, self.fim_emit = [], False, 0.0
@@ -135,6 +136,8 @@ class Camada(Gtk.Window):
             cr.set_source(gr)
             cr.arc(cx, cy, r, 0, 2 * math.pi)
             cr.fill()
+        if self.lupa:
+            self.desenhar_lupa(cr)
         if self.prog > 0.001:
             self.desenhar_cortina(cr)
         for p in self.parts:
@@ -146,6 +149,37 @@ class Camada(Gtk.Window):
             cr.fill()
             cr.restore()
         return False
+
+    def desenhar_lupa(self, cr):
+        L, W, H = self.lupa, self.w, self.h
+        lw, lh = L["w"] * W, L["w"] * H
+        fw = L["w"] / L["z"]  # fracao do monitor que a lente mostra
+        lx = min(max(L["x"] * W - lw / 2, 0), W - lw)
+        ly = min(max(L["y"] * H - lh / 2, 0), H - lh)
+        fx = min(max(L["x"] - fw / 2, 0), 1 - fw)
+        fy = min(max(L["y"] - fw / 2, 0), 1 - fw)
+        iw, ih = L["sup"].get_width(), L["sup"].get_height()
+        cr.save()
+        cr.set_source_rgba(0, 0, 0, 0.35)  # sombra
+        cr.rectangle(lx - 3, ly - 1, lw + 6, lh + 8)
+        cr.fill()
+        cr.rectangle(lx, ly, lw, lh)
+        cr.clip()
+        cr.translate(lx, ly)
+        cr.scale(lw / (fw * iw), lh / (fw * ih))
+        cr.translate(-fx * iw, -fy * ih)
+        cr.set_source_surface(L["sup"], 0, 0)
+        cr.get_source().set_filter(cairo.FILTER_BEST)
+        cr.paint()
+        cr.restore()
+        cr.set_source_rgba(1, 1, 1, 1)
+        cr.set_line_width(3)
+        cr.rectangle(lx, ly, lw, lh)
+        cr.stroke()
+        cr.set_source_rgba(0, 0, 0, 0.55)
+        cr.set_line_width(1)
+        cr.rectangle(lx - 2, ly - 2, lw + 4, lh + 4)
+        cr.stroke()
 
     def desenhar_cortina(self, cr):
         w, h, k, a = self.w, self.h, self.cort_vis, self.prog
@@ -247,6 +281,18 @@ class Camada(Gtk.Window):
                     a[k] = min(hi, max(lo, float(m[k])))
             if isinstance(m.get("laser_cor"), str):
                 a["laser_cor"] = cor_hex(m["laser_cor"])
+            self.queue_draw()
+        elif t == "lupa":
+            if not m.get("on"):
+                self.lupa = None
+            else:
+                try:
+                    arq = str(m.get("img", ""))
+                    sup = self.lupa["sup"] if self.lupa and self.lupa["arq"] == arq else cairo.ImageSurface.create_from_png(arq)
+                    self.lupa = {"sup": sup, "arq": arq, "x": float(m.get("x", 0.5)), "y": float(m.get("y", 0.5)),
+                                 "z": min(8.0, max(1.1, float(m.get("z", 2)))), "w": min(0.6, max(0.1, float(m.get("w", 0.32))))}
+                except Exception:
+                    self.lupa = None
             self.queue_draw()
         elif t == "clear":
             self.tracos.clear()

@@ -87,6 +87,7 @@ class App:
                     j.definir_alpha(1.0)
         self.aj = {"laser_tam": 24, "laser_cor": "#ff2d2d", "foco_escuro": 25, "pen_larg": 3.5, "hl_larg": 14, "hl_alpha": 38}
         self.tracos = {}
+        self.lupa_arq, self.lupa_src, self.lupa_ph = "", None, None
         self.foco_on = False
         self.cort_tipo, self.cort_vis, self.prog = "", "", 0.0
         self.txt, self.sub = "", ""
@@ -132,6 +133,39 @@ class App:
                 c.create_oval(x - r, y - r, x + r, y + r, fill=cor, outline="", stipple="gray50", tags="laser")
             c.create_oval(x - r * .55, y - r * .55, x + r * .55, y + r * .55, fill=cor, outline="", tags="laser")
             c.create_oval(x - r * .2, y - r * .2, x + r * .2, y + r * .2, fill=("#555555" if escuro else "white"), outline="", tags="laser")
+
+    # ---------------------------------------------------------------- lupa
+    def lupa(self, m):
+        c = self.desenho.c
+        c.delete("lupa")
+        if not m.get("on"):
+            self.lupa_src = self.lupa_ph = None
+            self.lupa_arq = ""
+            return
+        try:
+            arq = str(m.get("img", ""))
+            if arq != self.lupa_arq:
+                self.lupa_src, self.lupa_arq = tk.PhotoImage(file=arq), arq
+            src = self.lupa_src
+            iw, ih = src.width(), src.height()
+            lado = min(0.6, max(0.1, float(m.get("w", 0.32))))
+            k = int(min(8, max(2, round(float(m.get("z", 2))))))  # o Tk so amplia por fatores inteiros
+            sw, sh = max(1, int(lado * iw / k)), max(1, int(lado * ih / k))
+            x, y = float(m.get("x", 0.5)), float(m.get("y", 0.5))
+            x0 = int(min(max(x * iw - sw / 2, 0), iw - sw))
+            y0 = int(min(max(y * ih - sh / 2, 0), ih - sh))
+            dst = tk.PhotoImage()
+            self.raiz.tk.call(str(dst), "copy", str(src), "-from", x0, y0, x0 + sw, y0 + sh, "-zoom", k, k)
+            lw, lh = sw * k, sh * k
+            lx = int(min(max(x * self.w - lw / 2, 0), self.w - lw))
+            ly = int(min(max(y * self.h - lh / 2, 0), self.h - lh))
+            self.lupa_ph = dst  # o Tk descarta a imagem se ninguem a referencia
+            c.create_rectangle(lx - 2, ly - 2, lx + lw + 2, ly + lh + 2, outline="black", width=1, tags="lupa")
+            c.create_image(lx, ly, anchor="nw", image=dst, tags="lupa")
+            c.create_rectangle(lx, ly, lx + lw, ly + lh, outline="white", width=3, tags="lupa")
+        except Exception:
+            self.lupa_src = self.lupa_ph = None
+            self.lupa_arq = ""
 
     # ---------------------------------------------------------------- caneta e marca-texto
     def desenhar(self, m):
@@ -258,6 +292,8 @@ class App:
         t = m.get("t")
         if t == "laser":
             self.laser(m)
+        elif t == "lupa":
+            self.lupa(m)
         elif t == "draw":
             self.desenhar(m)
         elif t == "cfg":
