@@ -293,6 +293,7 @@ class Estado:
         self.externo = externo
         self.remote_url = remote_url
         self.local_url = ""
+        self.tela_propria, self.tela_proc = False, None  # tela cheia do proprio Baton (PDF carregado pelo painel)
         self._bases_fixas, self.bases_fn, self._bases_cache = [], None, (0.0, [])  # enderecos do computador (ver calcular_bases)
         self.dispositivos = []  # celulares pareados: {id, nome, token, criado, ultimo_visto, ua}
         self.pareamento = None  # {"codigo", "expira"}: QR de uso unico
@@ -358,7 +359,45 @@ class Estado:
 
     # ---- modo residente: pausa, consentimento e deteccao de apresentacao
     def permitido(self):
-        return self.prefs["ativo"] and self.autorizado
+        return self.prefs["ativo"] and (self.autorizado or self.tela_propria)
+
+    @property
+    def ext(self):
+        """Backend de teclas do app em primeiro plano; fica desligado enquanto a tela cheia do proprio Baton esta aberta
+        (senao a tecla iria tambem para o navegador e o slide avancaria duas vezes)."""
+        return None if self.tela_propria else self.externo
+
+    def apresentar(self):
+        """Abre o PDF carregado em tela cheia neste computador (navegador em modo quiosque) e passa a controla-lo."""
+        if not self.pdf:
+            return False
+        self.fechar_tela(avisar=False)
+        url = (self.local_url or "http://localhost:8765/") + "apresentar"
+        proc = abrir_tela_cheia(url)
+        with self.lock:
+            self.tela_propria, self.tela_proc = True, proc
+        if proc is not None:
+            def _vigia():
+                proc.wait()
+                if self.tela_proc is proc:
+                    self.fechar_tela()
+            threading.Thread(target=_vigia, daemon=True).start()
+        self._mudou()
+        self.publicar({"deck": 1})  # o celular recarrega e ganha laser, caneta e zoom
+        return True
+
+    def fechar_tela(self, avisar=True):
+        proc, self.tela_proc = self.tela_proc, None
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+        if self.tela_propria:
+            self.tela_propria = False
+            if avisar:
+                self._mudou()
+                self.publicar({"deck": 1})
 
     def tela_tamanho(self):
         try:
@@ -449,6 +488,11 @@ class Estado:
         elif acao == "remover_deck":
             self.remover_deck()
             return True
+        elif acao == "apresentar":
+            return self.apresentar()
+        elif acao == "fechar_tela":
+            self.fechar_tela()
+            return True
         elif acao == "parear_novo":
             self.novo_pareamento()
             return True
@@ -464,12 +508,12 @@ class Estado:
         return True
 
     def acessibilidade(self):
-        return acessibilidade_mac() if self.externo else None
+        return acessibilidade_mac() if self.ext else None
 
     def painel_estado(self):
         return {"ativo": self.prefs["ativo"], "modo": self.prefs["modo"], "autorizado": self.autorizado,
                 "pedido": self.pedido, "apps_ok": self.prefs["apps_ok"], "apps_nao": self.prefs["apps_nao"],
-                "residente": self.residente, "acessibilidade": self.acessibilidade(), "deck": self.deck_info(),
+                "residente": self.residente, "acessibilidade": self.acessibilidade(), "deck": self.deck_info(), "tela_propria": self.tela_propria,
                 "conexoes": len(self.conectados()), "dispositivos": self.dispositivos_info(),
                 "plataforma": sys.platform, "rede_bluetooth": self.rede_bluetooth(),
                 "pareamento_urls": self.urls_pareamento()}
@@ -529,17 +573,17 @@ class Estado:
                 self.tracos = []
             self.seq += 1
             snap = self.snapshot()
-        if self.externo:
+        if self.ext:
             if cmd == "goto" and self.pagina != pagina_antes:
-                self.externo.ir(self.pagina)
+                self.ext.ir(self.pagina)
             elif cmd in ("blank", "cortina"):
-                self.externo.cortina(snap["cortina"], snap["fim"]["txt"], snap["fim"]["sub"])
+                self.ext.cortina(snap["cortina"], snap["fim"]["txt"], snap["fim"]["sub"])
             elif cmd == "confete":
-                self.externo.confete(seg)
+                self.ext.confete(seg)
             elif cmd not in ("zoom", "limpar", "timer", "goto", "efeito"):
-                self.externo.comando(cmd)
+                self.ext.comando(cmd)
             if cmd == "limpar" or self.pagina != pagina_antes:
-                self.externo.limpar()
+                self.ext.limpar()
         if cmd == "efeito":
             self.som.tocar(valor)
         if cmd == "confete":
@@ -730,6 +774,7 @@ class Estado:
         self.publicar({"deck": 1})
 
     def remover_deck(self):
+        self.fechar_tela(avisar=False)
         with self.lock:
             self.pdf, self.total, self.pagina = None, 9999, 1
             self.notas_id, self._edits, self._base_vazia = "livre", {}, False
@@ -769,8 +814,8 @@ class Estado:
             return
         raio = self.cfg["foco_raio"] / 100.0 if raio is None else raio
         raio = max(0.03, min(0.35, float(raio)))
-        if self.externo:
-            self.externo.laser(x, y, on, self.proporcao, modo, raio)
+        if self.ext:
+            self.ext.laser(x, y, on, self.proporcao, modo, raio)
         self.publicar({"laser": {"x": x, "y": y, "on": on, "m": modo, "r": raio}})
 
     def desenhar(self, d):
@@ -788,8 +833,8 @@ class Estado:
                 self.tracos.append(traco)
             if len(traco["p"]) < 6000:
                 traco["p"].extend(pts)
-        if self.externo and pts:
-            self.externo.desenho(traco, pts, self.proporcao)
+        if self.ext and pts:
+            self.ext.desenho(traco, pts, self.proporcao)
         self.publicar({"draw": {"id": tid, "t": traco["t"], "c": traco["c"], "p": pts}})
 
 
@@ -1510,6 +1555,44 @@ def parse_interfaces(saida):
     return achados
 
 
+def navegadores_chromium():
+    """Navegadores baseados em Chromium instalados (aceitam --kiosk e --app)."""
+    cand = []
+    if sys.platform == "darwin":
+        for n in ("Google Chrome", "Microsoft Edge", "Brave Browser", "Chromium"):
+            cand.append(f"/Applications/{n}.app/Contents/MacOS/{n}")
+    elif sys.platform == "win32":
+        for var in ("ProgramFiles", "ProgramFiles(x86)", "LocalAppData"):
+            raiz = os.environ.get(var)
+            if raiz:
+                for rel in (r"Google\Chrome\Application\chrome.exe", r"Microsoft\Edge\Application\msedge.exe",
+                            r"BraveSoftware\Brave-Browser\Application\brave.exe"):
+                    cand.append(os.path.join(raiz, rel))
+    else:
+        for n in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "microsoft-edge", "brave-browser"):
+            cand.append(shutil.which(n))
+    return [c for c in cand if c and os.path.exists(c)]
+
+
+def abrir_tela_cheia(url):
+    """Abre a URL em tela cheia (quiosque) num navegador Chromium com perfil proprio; devolve o processo, ou None se so deu
+    para abrir no navegador padrao (a pagina entao entra em tela cheia no primeiro toque/tecla)."""
+    perfil = Path.home() / ".cache" / "baton" / "navegador"
+    for exe in navegadores_chromium():
+        try:
+            return subprocess.Popen([exe, "--kiosk", f"--app={url}", f"--user-data-dir={perfil}", "--no-first-run",
+                                     "--no-default-browser-check", "--disable-infobars", "--edge-kiosk-type=fullscreen",
+                                     "--autoplay-policy=no-user-gesture-required"],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+        except OSError:
+            continue
+    try:
+        webbrowser.open(url + "?fs=1")
+    except Exception:
+        pass
+    return None
+
+
 def faixa_http(cabecalho, total):
     """Range 'bytes=a-b' -> (a, b) inclusivo; None se nao ha Range; 'invalida' se fora do arquivo."""
     if not cabecalho:
@@ -1879,8 +1962,10 @@ addEventListener('keydown',e=>{
   else if(e.key==='c'||e.key==='C')cmd('limpar');
   else if(e.key==='q'||e.key==='Q'){mostrarQR(qrEl.style.display!=='flex')}
   else if(e.key==='f'||e.key==='F'){document.fullscreenElement?document.exitFullscreen():document.documentElement.requestFullscreen()}
+  else if(e.key==='Escape'&&location.pathname==='/apresentar'){fetch('/painel/acao',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({acao:'fechar_tela'})}).then(()=>{try{window.close()}catch(x){}})}
 });
-addEventListener('click',()=>{if(qrEl.style.display!=='flex')cmd('next')});
+const QUER_FS=location.search.indexOf('fs=1')>=0;
+addEventListener('click',()=>{if(QUER_FS&&!document.fullscreenElement)document.documentElement.requestFullscreen().catch(()=>{});if(qrEl.style.display!=='flex')cmd('next')});
 addEventListener('resize',()=>{ajustarOv();if(atual){const n=paginaAtual;paginaAtual=0;atual.remove();atual=null;ir(n)}});
 setTimeout(()=>{const d=document.getElementById('dica');d.style.opacity=0},6000);
 ajustarOv();desenharQR();mostrarQR(true);
@@ -1910,7 +1995,7 @@ background:radial-gradient(circle,#fff 0,#ff2d2d 35%,rgba(255,0,0,.4) 60%,rgba(2
 #zrect{position:absolute;border:2px solid #0a84ff;background:rgba(10,132,255,.15);pointer-events:none;display:none;border-radius:3px}
 button{border:0;border-radius:12px;background:#1d1d1f;color:#fff;font-size:15px;font-weight:600;touch-action:manipulation}
 button:active{background:#333}
-.linha{display:flex;gap:6px;flex:0 0 auto}.linha button,.linha select{flex:1;padding:11px 0}
+.linha{display:flex;gap:6px;flex:0 0 auto}.linha button,.linha select{flex:1;padding:13px 0}
 .linha button.on{background:#ff3b30}.linha button#bz.on,.linha button#bf.on{background:#0a84ff}.linha button#bm.on{background:#b8860b}
 select{background:#1d1d1f;color:#fff;border:0;border-radius:12px;font-size:14px;padding:0 6px}
 #raiobar{display:none;align-items:center;color:#aaa;font-size:14px;gap:12px}#raiobar input{flex:1;accent-color:#0a84ff}
@@ -1928,10 +2013,10 @@ select{background:#1d1d1f;color:#fff;border:0;border-radius:12px;font-size:14px;
 .ajl{display:flex;align-items:center;gap:10px;font-size:13px;color:#ccc;margin:7px 0}.ajl label{flex:0 0 118px}.ajl input{flex:1;accent-color:#0a84ff}.ajl output{flex:0 0 38px;text-align:right;color:#888;font-variant-numeric:tabular-nums}
 .ajc{display:flex;gap:12px;margin:8px 0 4px;align-items:center;font-size:13px;color:#ccc}.ajc i{width:26px;height:26px;border-radius:50%;border:3px solid transparent;display:block}.ajc i.sel{border-color:#fff}
 #info{display:flex;gap:10px;align-items:stretch;flex:0 0 auto}
-#prevbox{flex:1;display:flex;align-items:center;gap:8px;background:#111;border-radius:12px;padding:6px 10px;min-width:0}
-#prevbox canvas{height:78px;max-width:62%;border-radius:6px;background:#1a1a1c}#prevlbl{font-size:12px;color:#888}
-#relogio{flex:0 0 40%;background:#111;border-radius:12px;padding:6px 10px;display:flex;flex-direction:column;justify-content:center;align-items:center}
-#tempo{font-size:30px;font-weight:700;font-variant-numeric:tabular-nums;color:#fff;line-height:1.1}#restante{font-size:12px;color:#888;margin-top:2px}
+#prevbox{flex:1;display:flex;align-items:center;gap:10px;background:#111;border-radius:12px;padding:8px 10px;min-width:0}
+#prevbox canvas{height:92px;max-width:68%;border-radius:6px;background:#1a1a1c}#prevlbl{font-size:13px;color:#999;line-height:1.25}
+#relogio{flex:0 0 36%;background:#111;border-radius:12px;padding:6px 10px;display:flex;flex-direction:column;justify-content:center;align-items:center}
+#tempo{font-size:32px;font-weight:700;font-variant-numeric:tabular-nums;color:#fff;line-height:1.1}#restante{font-size:12px;color:#888;margin-top:2px}
 #rlbt{display:flex;gap:6px;margin-top:5px;width:100%}#rlbt button{flex:1;padding:5px 0;font-size:12px;border-radius:8px}
 #voltas{width:100%;max-height:38px;overflow:auto;font-size:11px;color:#aaa;font-variant-numeric:tabular-nums;text-align:center;margin-top:3px;touch-action:pan-y}
 #voltas div{line-height:1.25}#voltas:empty{display:none}
@@ -1944,7 +2029,7 @@ select{background:#1d1d1f;color:#fff;border:0;border-radius:12px;font-size:14px;
 #irgrid canvas{width:100%;display:block}#irgrid span{position:absolute;left:4px;top:2px;font-size:12px;font-weight:700;color:#fff;background:rgba(0,0,0,.6);padding:1px 6px;border-radius:6px}
 #notas{flex:1;min-height:70px;background:#111;border-radius:12px;display:flex;flex-direction:column;overflow:hidden}
 #nhead{display:flex;justify-content:space-between;align-items:center;padding:4px 10px;font-size:12px;color:#888;flex:0 0 auto}
-#nhead button{padding:3px 10px;font-size:13px;border-radius:8px;margin-left:4px}
+#nhead{gap:4px;white-space:nowrap}#nhead>span{overflow:hidden;text-overflow:ellipsis;min-width:0}#nhead button{padding:3px 10px;font-size:13px;border-radius:8px;margin-left:4px}
 #ntxt{flex:1;overflow:auto;padding:2px 12px 10px;line-height:1.35;touch-action:pan-y;-webkit-overflow-scrolling:touch;user-select:text;-webkit-user-select:text}
 #ned{flex:1;width:100%;box-sizing:border-box;background:#1d1d1f;color:#fff;border:0;border-radius:8px;font:inherit;line-height:1.35;padding:8px 10px;resize:none;min-height:0}
 #nbt{display:none;gap:6px;padding:6px 10px 8px}#nbt button{flex:1;padding:8px;font-size:14px;border-radius:10px}#nsv{background:#0a84ff}
@@ -1960,7 +2045,9 @@ select{background:#1d1d1f;color:#fff;border:0;border-radius:12px;font-size:14px;
   #topo{padding-top:0}#pos{font-size:16px}
   #vista{align-self:center}
   .linha button,.linha select{padding:7px 0;font-size:13px}
-  #info{gap:6px}#prevbox canvas{height:64px}#relogio{flex:0 0 46%;padding:4px 8px}#tempo{font-size:24px}
+  #info{gap:6px}#prevbox{padding:4px 8px;gap:8px}#prevbox canvas{height:58px;max-width:70%}#prevlbl{font-size:11px}#relogio{flex:0 0 44%;padding:3px 8px}#tempo{font-size:24px}
+  #restante{font-size:11px;margin-top:0}#rlbt{margin-top:3px}#rlbt button{padding:3px 0}
+  #cores i{width:24px;height:24px}
   #notas,#ajustes,#extras{min-height:0}
   #botoes{height:54px;gap:8px}#botoes button{font-size:16px;border-radius:14px}
   #irgrid{grid-template-columns:repeat(5,1fr)}
@@ -2042,7 +2129,10 @@ async function mostra(){
   rotulo();mostraNotas();
   const paisagem=innerWidth>innerHeight&&innerHeight<=560;
   const larg=paisagem?$('colA').clientWidth:document.body.clientWidth-24;
-  const hmax=paisagem?Math.max(100,innerHeight-150):innerHeight*0.24;  // paisagem: sobra espaco para o slide; retrato: 24% da tela
+  // paisagem: o slide ocupa a altura que sobra na coluna (mede o resto); retrato: ate 33% da tela
+  let hmax=innerHeight*0.33;
+  if(paisagem){let o=0,n=0;for(const c of $('colA').children){if(c.id==='vista'||getComputedStyle(c).display==='none')continue;o+=c.offsetHeight;n++}
+    const bs=getComputedStyle(document.body);hmax=Math.max(90,innerHeight-o-n*5-parseFloat(bs.paddingTop)-parseFloat(bs.paddingBottom)-2)}
   if(!pdf){const w0=Math.min(larg,hmax*16/9);$('vista').style.width=w0+'px';$('vista').style.height=(w0*9/16)+'px';ajustaOvp();return}
   if(desenhado===pag&&!window.__remedir)return;desenhado=pag;window.__remedir=false;limpaLocal();
   const p=await pdf.getPage(pag),v0=p.getViewport({scale:1});
@@ -2052,6 +2142,8 @@ async function mostra(){
   previa();
 }
 function remedir(){window.__remedir=true;mostra()}
+if(window.ResizeObserver){const ro=new ResizeObserver(()=>{clearTimeout(window.__ro);window.__ro=setTimeout(()=>{if(innerWidth>innerHeight&&innerHeight<=560)remedir()},120)});
+  document.querySelectorAll('#colA>*').forEach(c=>{if(c.id!=='vista')ro.observe(c)})}
 addEventListener('resize',()=>{clearTimeout(window.__rt);window.__rt=setTimeout(remedir,150)});
 addEventListener('orientationchange',()=>setTimeout(remedir,250));
 function previa(){
@@ -2321,8 +2413,8 @@ def montar(modo, estado, usar_cache, usar_qr_cache=False, token="", leve=False):
             .replace("__URLS__", json.dumps(urls).replace("</", "<\\/"))
             .replace("__TEMPDF__", "true" if estado.pdf else "false")
             .replace("__LEVE__", "true" if leve else "false")
-            .replace("__EXTERNO__", "true" if estado.externo else "false")
-            .replace("__OVERLAY__", "true" if (estado.externo and estado.externo.overlay) else "false")
+            .replace("__EXTERNO__", "true" if estado.ext else "false")
+            .replace("__OVERLAY__", "true" if (estado.ext and estado.ext.overlay) else "false")
             .replace("__TOKEN__", token if modo == "remoto" else ""))
 
 
@@ -2438,10 +2530,14 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
 
         def do_GET(self):
             u = urlparse(self.path)
-            if u.path in ("/", "/qr") and not self._local():
+            if u.path in ("/", "/qr", "/apresentar") and not self._local():
                 return self._enviar(403, "abra o Baton pelo QR code ou pelo endereco do celular", "text/plain; charset=utf-8")
             if u.path == "/":
                 if estado.externo or not estado.pdf:
+                    return self._enviar(200, montar_qr(estado, usar_qr_cache), "text/html; charset=utf-8")
+                return self._enviar(200, montar("tela", estado, usar_cache, usar_qr_cache), "text/html; charset=utf-8")
+            if u.path == "/apresentar":
+                if not estado.pdf:
                     return self._enviar(200, montar_qr(estado, usar_qr_cache), "text/html; charset=utf-8")
                 return self._enviar(200, montar("tela", estado, usar_cache, usar_qr_cache), "text/html; charset=utf-8")
             if u.path == "/qr":
@@ -2567,6 +2663,7 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
                 pdf, notas = preparar_deck(dados, nome)
                 if pdf:
                     estado.trocar_deck(pdf, notas)
+                    estado.apresentar()
                 else:
                     estado.importar_notas(notas)
             except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired) as e:

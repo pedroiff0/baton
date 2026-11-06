@@ -229,6 +229,34 @@ class AssinaturaTest(unittest.TestCase):
             self.assertFalse(P.assinar_app("/x/Baton.app"))
 
 
+class TelaPropriaTest(unittest.TestCase):
+    def test_apresentar_desliga_teclas_externas_e_libera_laser(self):
+        e = P.Estado("x.pdf", 5, "slide", "tok", externo=mock.Mock())
+        e.prefs["ativo"], e.autorizado = True, False
+        self.assertFalse(e.permitido())
+        self.assertIsNotNone(e.ext)
+        proc = mock.Mock()
+        proc.poll.return_value = None
+        proc.wait.side_effect = lambda: time.sleep(5)
+        with mock.patch.object(P, "abrir_tela_cheia", return_value=proc) as ab:
+            self.assertTrue(e.apresentar())
+        self.assertTrue(ab.call_args[0][0].endswith("/apresentar"))
+        self.assertTrue(e.permitido())
+        self.assertIsNone(e.ext)  # a tecla nao vai tambem para o navegador
+        e.fechar_tela()
+        proc.terminate.assert_called()
+        self.assertFalse(e.tela_propria)
+        self.assertIsNotNone(e.ext)
+
+    def test_sem_pdf_nao_apresenta(self):
+        self.assertFalse(P.Estado(None, 9999, "slide", "tok").apresentar())
+
+    def test_navegador_ausente_usa_padrao(self):
+        with mock.patch.object(P, "navegadores_chromium", return_value=[]), mock.patch.object(P.webbrowser, "open") as w:
+            self.assertIsNone(P.abrir_tela_cheia("http://localhost:8765/apresentar"))
+        self.assertIn("fs=1", w.call_args[0][0])
+
+
 class BandejaTest(unittest.TestCase):
     def test_rotulo_por_estado(self):
         import tray_gtk as T

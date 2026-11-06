@@ -281,7 +281,7 @@ select{background:#3a3a3c;color:#fff;border:0;border-radius:10px;padding:10px;fo
 <b>Solte aqui o arquivo da apresentacao</b><br><small>PDF, PowerPoint (.pptx), ODP, ou um .md de notas. Ou clique para escolher.</small></div>
 <input type="file" id="nf" accept=".pdf,.pptx,.ppt,.odp,.md,.txt" style="display:none">
 <p id="dk"></p><p id="dmsg"></p>
-<button class="cinza" id="bdk" style="display:none">Remover apresentacao</button>
+<button id="bap" style="display:none">Apresentar em tela cheia</button> <button class="cinza" id="bdk" style="display:none">Remover apresentacao</button>
 <button class="cinza" id="btt">Testar tecla (em 5 s)</button>
 <p><small>Com a apresentacao carregada o celular mostra o slide atual, o proximo e as notas; as teclas continuam indo para o app em primeiro plano (PowerPoint, Keynote, ReLaTeX...). Notas tambem podem ser digitadas no celular.</small></p></div>
 <h2>Celulares</h2><div class="cartao"><ul id="cels"></ul>
@@ -326,6 +326,7 @@ function ver(){
     b.textContent='Desconectar';b.onclick=()=>acao('revogar_celular',d.id);li.appendChild(b);cl.appendChild(li)});
   if(!(est.dispositivos||[]).length)cl.innerHTML='<li><small>nenhum celular pareado</small></li>';
   verBt();
+  $('bap').style.display=est.deck?'inline-block':'none';$('bap').textContent=est.tela_propria?'Fechar tela cheia':'Apresentar em tela cheia';
   lista($('ok'),est.apps_ok||[]);lista($('nao'),est.apps_nao||[]);$('ba').textContent=est.autorizado?'Revogar autorizacao':'Autorizar agora'}
 $('bp').onclick=()=>acao(est.ativo?'pausar':'retomar');$('ba').onclick=()=>acao(est.autorizado?'revogar':'autorizar');
 $('modo').onchange=e=>acao('modo',e.target.value);$('bi').onclick=()=>acao('instalar');$('br').onclick=()=>acao('desinstalar');
@@ -337,7 +338,7 @@ $('drop').onclick=()=>$('nf').click();$('nf').onchange=e=>{enviarDeck(e.target.f
 ['dragover','dragenter'].forEach(t=>$('drop').addEventListener(t,e=>{e.preventDefault();$('drop').style.borderColor='#0a84ff'}));
 ['dragleave','drop'].forEach(t=>$('drop').addEventListener(t,e=>{e.preventDefault();$('drop').style.borderColor='#3a3a3c'}));
 $('drop').addEventListener('drop',e=>enviarDeck(e.dataTransfer.files[0]));
-$('bdk').onclick=()=>acao('remover_deck');$('btt').onclick=()=>{acao('testar_tecla');$('dmsg').textContent='Troque para o app da apresentacao: em 5 s o Baton envia seta direita e esquerda.'};
+$('bdk').onclick=()=>acao('remover_deck');$('bap').onclick=()=>acao(est.tela_propria?'fechar_tela':'apresentar');$('btt').onclick=()=>{acao('testar_tecla');$('dmsg').textContent='Troque para o app da apresentacao: em 5 s o Baton envia seta direita e esquerda.'};
 $('bac').onclick=()=>acao('abrir_acessibilidade');
 $('bpn').onclick=async()=>{await acao('parear_novo');window.open('/qr','_blank')};$('bqr2').onclick=()=>window.open('/qr','_blank');
 fetch('/painel/estado').then(r=>r.json()).then(e=>{est=e;ver()});setInterval(()=>fetch('/painel/estado').then(r=>r.json()).then(e=>{est=e;ver()}).catch(()=>{}),3000);

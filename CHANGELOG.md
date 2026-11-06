@@ -1,6 +1,8 @@
 # Changelog
 
 ## Não lançado
+- Carregar a apresentação pelo painel agora abre o PDF em **tela cheia** neste computador (navegador Chromium em modo quiosque, `/apresentar`; Esc fecha) e o celular ganha laser, caneta, zoom e prévia. Enquanto a tela cheia do Baton está aberta, as teclas não vão ao app em primeiro plano (evita avançar o slide duas vezes). Botão **Apresentar em tela cheia / Fechar tela cheia** no painel; sem Chrome/Edge/Brave/Chromium abre no navegador padrão e entra em tela cheia no primeiro toque.
+- Celular: slide atual maior (retrato até 33% da altura; paisagem usa toda a altura que sobra na coluna), prévia do próximo maior, botões mais altos e cabeçalho de notas sem quebra de linha.
 - Correção (macOS): a permissão de Acessibilidade se perdia a cada atualização porque a assinatura ad-hoc usa o hash do binário como requisito. O `Baton.app` agora é assinado com requisito fixo (`identifier "com.baton.app"`), e o registro só é zerado uma vez na migração (e não mais a cada recompilação ou a cada clique em "Permissão"). Depois de atualizar, libere o Baton uma última vez; `baton --permissao --resetar` zera à mão e `--diagnostico` mostra o requisito.
 - Número do slide pelo rodapé: em PDFs de beamer com transições (`\only`, `\pause`) o contador usa o número impresso no rodapé (o do frame), em vez de contar páginas do PDF; sem rodapé numerado, volta ao agrupamento por conteúdo.
 - Bluetooth sem internet: o painel ganhou o cartão **Sem internet (Bluetooth)** (abas iPhone/Android, passos por sistema e status ao vivo); os endereços do QR são recalculados a cada ~3 s e ordenados Bluetooth, hotspot, Wi-Fi, Tailscale; no macOS a porta "Bluetooth PAN" (`enN`) é reconhecida pelo `networksetup`.
