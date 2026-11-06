@@ -2788,7 +2788,10 @@ button.g{border:0;border-radius:24px;color:#fff;font-weight:700;touch-action:man
 #ant{background:#1d1d1f;flex:.8}#seg{background:#0a84ff;flex:1.2}#seg:active{background:#006fe0}#ant:active{background:#333}
 #zrow{grid-area:zoom;display:flex;gap:10px}
 #zrow button{flex:1;height:clamp(46px,8.5vh,64px);border:0;border-radius:18px;background:#1d1d1f;color:#fff;font-weight:700;font-size:22px;touch-action:manipulation}
-#zrow button:active{background:#333}#zrow #z1{flex:1.2;font-size:17px;background:#2a2a2d}#zrow.ativo #z1{background:#0a84ff}
+#zrow button:active{background:#333}#zrow #z1{flex:.7;font-size:16px}
+#zrow #zaim{flex:2.4;position:relative;background:#10223a;border:2px solid #0a84ff;touch-action:none;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:17px;line-height:1.15}
+#zrow #zaim small{position:static;display:block;font-size:11px;font-weight:500;color:#9fb4cc;padding:0}
+#zrow.ativo #zaim{background:#16335a}#zrow #zaim.on{background:#0a84ff}#zrow #zaim.on small{color:#fff}
 #foco{grid-area:foco}#laser{grid-area:laser}
 #laser,#foco{touch-action:none}
 #laser{background:#3a1212;border:3px solid #ff3b30}#laser.on{background:#ff3b30}
@@ -2817,7 +2820,7 @@ body.canhoto #navrow,body.canhoto #zrow{flex-direction:row-reverse}
   <span class="acoes"><button class="chip az" id="binst" style="display:none">Instalar</button><button class="chip" id="bcfg">Ajustes</button><a class="chip" href="/remote?k=__TOKEN__">Completo</a></span></div>
 <div id="corpo">
   <div id="navrow"><button class="g" id="ant">&#9664; Anterior</button><button class="g" id="seg">Proximo &#9654;</button></div>
-  <div id="zrow"><button id="zm">&minus;</button><button id="z1">Zoom 1x</button><button id="zp">+</button></div>
+  <div id="zrow"><button id="zm">&minus;</button><button id="zaim"><span id="zt">Zoom 1x</span><small class="dica">segure e aponte</small></button><button id="zp">+</button><button id="z1">1x</button></div>
   <button class="g" id="foco">FOCO<div class="mapa"><i></i></div><div class="dica">Segure e aponte</div></button>
   <button class="g" id="laser">LASER<div class="mapa"><i></i></div><div class="dica">Segure e aponte</div></button>
 </div>
@@ -2842,14 +2845,14 @@ let zoom={z:1,x:.5,y:.5},ultSlide={x:.5,y:.5};
 const NIVEIS=[1,1.5,2,3,4];
 function regiao(){const w=1/Math.max(1,zoom.z),cx=Math.max(w/2,Math.min(1-w/2,zoom.x)),cy=Math.max(w/2,Math.min(1-w/2,zoom.y));return{w,x0:cx-w/2,y0:cy-w/2}}
 function paraSlide(x,y){if(zoom.z<=1.001)return{x,y};const r=regiao();return{x:r.x0+x*r.w,y:r.y0+y*r.w}}
-function mostraZoom(){$('z1').textContent='Zoom '+(zoom.z%1?zoom.z.toFixed(1):zoom.z)+'x';$('zrow').classList.toggle('ativo',zoom.z>1.001)}
+function mostraZoom(){$('zt').textContent='Zoom '+(zoom.z%1?zoom.z.toFixed(1):zoom.z)+'x';$('zrow').classList.toggle('ativo',zoom.z>1.001)}
 function passoZoom(d){let i=NIVEIS.findIndex(n=>n>=zoom.z-1e-6);if(i<0)i=NIVEIS.length-1;i=Math.max(0,Math.min(NIVEIS.length-1,i+d));const z=NIVEIS[i];
   const c=zoom.z<=1.001&&z>1?ultSlide:{x:zoom.x,y:zoom.y};  // ao ampliar a partir de 1x, centraliza onde voce apontou por ultimo
   zoom={z,x:z>1?c.x:.5,y:z>1?c.y:.5};mostraZoom();cmd('zoom',zoom)}
 $('zp').onclick=()=>{passoZoom(1);navigator.vibrate&&navigator.vibrate(8)};$('zm').onclick=()=>{passoZoom(-1);navigator.vibrate&&navigator.vibrate(8)};
 $('z1').onclick=()=>{zoom={z:1,x:.5,y:.5};mostraZoom();cmd('zoom',zoom)};
 if(EXTERNO)$('zrow').style.display='none';  // modo externo (app de terceiros): o Baton nao amplia a janela do outro programa
-function aplicaSnap(s){if(s.timer)sincTimer(s.timer);if(s.zoom!==undefined){zoom={z:s.zoom||1,x:s.zx===undefined?.5:s.zx,y:s.zy===undefined?.5:s.zy};mostraZoom()}}
+function aplicaSnap(s){if(s.timer)sincTimer(s.timer);if(s.zoom!==undefined&&ativo!=='zoom'){zoom={z:s.zoom||1,x:s.zx===undefined?.5:s.zx,y:s.zy===undefined?.5:s.zy};mostraZoom()}}
 // ---- cronometro (o mesmo do controle completo: vive no computador, todos os celulares veem o mesmo tempo)
 let tm={rodando:false,elapsed:0,rec:performance.now()},metaMin=50,voltasVistas='';
 const mmss=t=>{t=Math.max(0,Math.floor(t));const h=Math.floor(t/3600),m=Math.floor(t%3600/60),s=t%60;return(h?h+':'+String(m).padStart(2,'0'):String(m).padStart(2,'0'))+':'+String(s).padStart(2,'0')};
@@ -2924,19 +2927,27 @@ let lsEnv=false,lsPend=null,ultimo=0;
 function envLaser(x,y,on){const t=performance.now();if(on&&t-ultimo<6)return;ultimo=t;const p=paraSlide(x,y);ultSlide=p;lsPend={x:p.x,y:p.y,on,m:modoUlt,r:raio};if(!lsEnv)bombeia()}
 function bombeia(){if(!lsPend){lsEnv=false;return}lsEnv=true;const d=lsPend;lsPend=null;
   fetch('/laser',{method:'POST',headers:{'Content-Type':'application/json','X-Token':TOKEN},body:JSON.stringify(d),keepalive:true}).catch(()=>{}).finally(bombeia)}
-function mostraMapa(){const el=$(modoUlt).querySelector('.mapa i');el.style.left=(sx*100)+'%';el.style.top=(sy*100)+'%'}
+// zoom apontado: segurar o botao e apontar leva o centro da ampliacao para onde voce aponta (a pose ao apertar = centro atual)
+let zbase=null,zEnv=false,zPend=null,zUlt=0;
+function moveZoom(){
+  if(!zbase)return;const cx=Math.max(0,Math.min(1,zbase.x+(sx-.5))),cy=Math.max(0,Math.min(1,zbase.y+(sy-.5)));
+  zoom={z:zoom.z,x:cx,y:cy};const t=performance.now();if(t-zUlt<40)return;zUlt=t;zPend={z:zoom.z,x:cx,y:cy};if(!zEnv)bombeiaZoom()}
+function bombeiaZoom(){if(!zPend){zEnv=false;return}zEnv=true;const d=zPend;zPend=null;
+  fetch('/cmd',{method:'POST',headers:{'Content-Type':'application/json','X-Token':TOKEN},body:JSON.stringify({cmd:'zoom',valor:d,cid:cid()}),keepalive:true}).catch(()=>{}).finally(bombeiaZoom)}
+function mostraMapa(){if(modoUlt==='zoom')return;const el=$(modoUlt).querySelector('.mapa i');el.style.left=(sx*100)+'%';el.style.top=(sy*100)+'%'}
 function atualiza(){
   if(!base||!ori)return;const f=direcao(ori,base.eixo),an=angulos(f);
   const x=.5+dif(an.yaw-base.yaw)/gan,y=.5-(an.pitch-base.pitch)/(gan*9/16);
   const t=performance.now();sx=Math.max(0,Math.min(1,fx.f(Math.max(0,Math.min(1,x)),t)));sy=Math.max(0,Math.min(1,fy.f(Math.max(0,Math.min(1,y)),t)));
+  if(ativo==='zoom'){moveZoom();return}
   mostraMapa();envLaser(sx,sy,true)}
 async function permissao(){
   if(typeof DeviceOrientationEvent!=='undefined'&&typeof DeviceOrientationEvent.requestPermission==='function'){
     try{const r=await DeviceOrientationEvent.requestPermission();return r==='granted'}catch(e){return false}}
   return true}
 let pediu=false;
-const DICAS={laser:'Segure e aponte',foco:'Segure e aponte; 2o dedo: raio'};
-DICAS.laser='Segure e aponte';
+const DICAS={laser:'Segure e aponte',foco:'Segure e aponte; 2o dedo: raio',zoom:'segure e aponte'};
+const texto=(el,t)=>{const d=el.querySelector('.dica');if(d)d.textContent=t};
 const dedos=new Map();let pinca=null;
 function distDedos(){const[a,b]=[...dedos.values()];return Math.hypot(a.x-b.x,a.y-b.y)}
 function liga(id,modo){
@@ -2945,20 +2956,24 @@ function liga(id,modo){
     e.preventDefault();try{el.setPointerCapture(e.pointerId)}catch(x){}
     if(ativo)return;
     if(!pediu){pediu=true;const ok=await permissao();await new Promise(r=>setTimeout(r,200));if(!ok&&typeof DeviceOrientationEvent!=='undefined'&&DeviceOrientationEvent.requestPermission){
-      el.querySelector('.dica').textContent='Permita o movimento e segure de novo';return}}
+      texto(el,'Permita o movimento e segure de novo');return}}
     ativo=modo;modoUlt=modo;el.classList.add('on');navigator.vibrate&&navigator.vibrate(12);sx=sy=.5;fx.reset();fy.reset();
+    if(modo==='zoom'){  // a ampliacao parte do centro atual; de 1x, entra em 2x onde voce apontou por ultimo
+      if(zoom.z<=1.001)zoom={z:2,x:ultSlide.x,y:ultSlide.y};zbase={x:zoom.x,y:zoom.y};mostraZoom();cmd('zoom',zoom)}
     if(sensor()&&ori){const eixo=Math.abs(ori.b)>50?'z':'y',an=angulos(direcao(ori,eixo));base={eixo,yaw:an.yaw,pitch:an.pitch};
-      el.querySelector('.dica').textContent='Aponte para a tela';mostraMapa();envLaser(.5,.5,true)}
+      texto(el,'Aponte para a tela');if(modo!=='zoom'){mostraMapa();envLaser(.5,.5,true)}}
     else{ptoque={x:e.clientX,y:e.clientY};base=null;
-      el.querySelector('.dica').textContent=(HTTPS&&!isSecureContext?'Sem sensores aqui: abra o endereco HTTPS':'Sem sensores: arraste o dedo');envLaser(.5,.5,true)}
+      texto(el,HTTPS&&!isSecureContext?'Sem sensores aqui: abra o endereco HTTPS':'Sem sensores: arraste o dedo');if(modo!=='zoom')envLaser(.5,.5,true)}
   });
   el.addEventListener('pointermove',e=>{if(ativo!==modo||sensor()&&base)return;if(!ptoque)return;
-    const r=Math.min(innerWidth,innerHeight)*0.45;sx=Math.max(0,Math.min(1,.5+(e.clientX-ptoque.x)/r/2));sy=Math.max(0,Math.min(1,.5+(e.clientY-ptoque.y)/r/2));mostraMapa();envLaser(sx,sy,true)});
+    const r=Math.min(innerWidth,innerHeight)*0.45;sx=Math.max(0,Math.min(1,.5+(e.clientX-ptoque.x)/r/2));sy=Math.max(0,Math.min(1,.5+(e.clientY-ptoque.y)/r/2));
+    if(modo==='zoom')moveZoom();else{mostraMapa();envLaser(sx,sy,true)}});
   ['pointerup','pointercancel'].forEach(t=>el.addEventListener(t,()=>{if(ativo!==modo)return;ativo=null;base=null;ptoque=null;pinca=null;el.classList.remove('on');
-    el.querySelector('.dica').textContent=DICAS[modo];lsPend=null;envLaser(sx,sy,false)}));
+    texto(el,DICAS[modo]);
+    if(modo==='zoom'){zPend=null;zbase=null;cmd('zoom',zoom);mostraZoom()}else{lsPend=null;envLaser(sx,sy,false)}}));
   el.addEventListener('contextmenu',e=>e.preventDefault());
 }
-liga('laser','laser');liga('foco','foco');
+liga('laser','laser');liga('foco','foco');liga('zaim','zoom');
 // foco: com o botao apertado, um segundo dedo em qualquer lugar abre e fecha o raio (pinca)
 document.addEventListener('pointerdown',e=>{dedos.set(e.pointerId,{x:e.clientX,y:e.clientY});
   if(ativo==='foco'&&dedos.size===2)pinca={d0:distDedos(),r0:raio}},true);

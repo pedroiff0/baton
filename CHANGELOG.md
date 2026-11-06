@@ -1,6 +1,7 @@
 # Changelog
 
 ## Não lançado
+- Modo simples: **zoom apontado**. O botão central da linha de zoom (Zoom Nx) funciona como o Laser e o Foco: segurar e apontar o celular leva o centro da ampliação para onde você aponta (a pose ao apertar é o centro atual; de 1x entra em 2x onde você apontou por último). **−** / **+** mudam o nível e **1x** volta ao normal.
 - **Tela cheia do Baton fecha com Esc** (Linux, Windows e Mac): a janela agora abre com `--start-fullscreen` em vez de `--kiosk` (que trancava a janela e nem Esc nem F11 saíam). Esc ou o botão "Sair da tela cheia" (aparece ao mexer o mouse) fecham a janela e encerram todo o grupo de processos do navegador; F11 e Alt+F4 também funcionam.
 - Modo simples reorganizado: **Foco e Laser empilhados, em botões largos** (Laser embaixo, na zona do polegar), **zoom** logo acima (− / Zoom Nx / +; ao ampliar a partir de 1x centraliza onde você apontou por último) e o ponto do laser/foco passa a cair na região ampliada da tela; destro/canhoto espelha a ordem. O zoom some no modo externo (app de terceiros).
 - Modo simples com **cronômetro pequeno** na barra de cima (o mesmo do controle completo, sincronizado com os outros celulares): toque inicia/pausa, segurar marca uma volta; em Ajustes ficam Volta, Zerar, o tempo restante da meta e a lista de voltas. Ele amarela nos últimos 10% e fica vermelho acima da meta. Barra de cima reorganizada para não estourar em telas de 360 px (o estado da conexão vira só o ponto verde).
