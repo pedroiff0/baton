@@ -682,7 +682,7 @@ class Estado:
         self._salvo_em = time.time()
 
     def novo_pareamento(self):
-        self.pareamento = {"codigo": secrets.token_urlsafe(9), "expira": time.time() + PAREAMENTO_VALIDADE}
+        self.pareamento = {"codigo": secrets.token_urlsafe(12), "expira": time.time() + PAREAMENTO_VALIDADE}
         return self.pareamento["codigo"]
 
     def codigo_pareamento(self):
@@ -1908,7 +1908,27 @@ def e_rede_lenta(rotulo):
     return rotulo.startswith(("Bluetooth", "Hotspot"))
 
 
-URL_PUBLICA = ""  # ex.: https://baton.exemplo.com (Cloudflare Tunnel); vem de --url-publica ou BATON_URL_PUBLICA
+URL_PUBLICA = ""  # ex.: https://baton.exemplo.com (Cloudflare Tunnel); vem de --url-publica, BATON_URL_PUBLICA ou do arquivo salvo
+ARQ_URL_PUBLICA = Path.home() / ".cache" / "baton" / "url-publica"
+
+
+def url_publica_salva():
+    try:
+        return ARQ_URL_PUBLICA.read_text().strip()
+    except OSError:
+        return ""
+
+
+def salvar_url_publica(url):
+    """Grava (ou, com '-', apaga) a URL publica: o Baton iniciado no login (--residente) passa a usa-la como padrao."""
+    try:
+        if url in ("", "-"):
+            ARQ_URL_PUBLICA.unlink(missing_ok=True)
+        else:
+            ARQ_URL_PUBLICA.parent.mkdir(parents=True, exist_ok=True)
+            ARQ_URL_PUBLICA.write_text(url.strip().rstrip("/") + "\n")
+    except OSError:
+        pass
 
 
 def calcular_bases(porta, host=None):
@@ -1918,7 +1938,7 @@ def calcular_bases(porta, host=None):
     if URL_PUBLICA:
         pub = {"nome": "Internet (HTTPS)", "base": URL_PUBLICA.rstrip("/")}
         i = 0
-        while i < len(bases) and bases[i]["nome"].startswith(("Bluetooth", "Hotspot")):
+        while i < len(bases) and bases[i]["nome"].startswith("Bluetooth"):
             i += 1
         bases.insert(i, pub)
     return bases
@@ -2742,7 +2762,11 @@ button{border:0;border-radius:22px;color:#fff;font-weight:700;touch-action:manip
 #foco{background:#10223a;border:3px solid #0a84ff}#foco.on{background:#0a84ff}
 .dica{position:absolute;left:0;right:0;bottom:8px;font-size:12px;font-weight:500;color:#cfd3d8;padding:0 8px;line-height:1.25}
 .on .dica{color:#fff}
-#cfg{display:flex;align-items:center;gap:10px;font-size:13px;color:#aaa;padding:2px 6px}#cfg input{flex:1;accent-color:#0a84ff}#cfg output{min-width:30px;text-align:right;color:#888}
+#cfg{font-size:13px;color:#aaa;padding:0 4px}
+#bajust{width:100%;padding:9px 0;font-size:14px;border-radius:14px;background:#1d1d1f;font-weight:600}
+#ajl{display:none;grid-template-columns:1fr 1fr;gap:4px 14px;padding:8px 6px 2px}#cfg.aberto #ajl{display:grid}
+#ajl label{display:flex;align-items:center;gap:8px;font-size:12px;color:#aaa}#ajl input{flex:1;min-width:0;accent-color:#0a84ff}#ajl output{min-width:26px;text-align:right;color:#777}
+@media (max-width:520px){#ajl{grid-template-columns:1fr}}
 #modo{font-size:12px;color:#888;text-align:center;padding:0 8px}
 @media (orientation:landscape){
   body{grid-template-rows:auto 1fr auto}
@@ -2755,10 +2779,16 @@ button{border:0;border-radius:22px;color:#fff;font-weight:700;touch-action:manip
   <div id="apontar"><button id="laser">LASER<div class="dica">Segure e aponte</div></button><button id="foco">FOCO<div class="dica">Segure e aponte; 2o dedo: raio</div></button></div>
   <button id="ant">&#9664; Anterior</button><button id="seg">Proximo &#9654;</button>
 </div>
-<div id="cfg"><span>Raio do foco</span><input id="raio" type="range" min="4" max="30" value="12"><output id="rv">12</output></div>
+<div id="cfg"><button id="bajust">Ajustes</button>
+  <div id="ajl">
+    <label>Laser: tamanho<input id="s_laser_tam" type="range" min="6" max="120" value="24"><output>24</output></label>
+    <label>Foco: raio<input id="raio" type="range" min="3" max="35" value="12"><output id="rv">12</output></label>
+    <label>Foco: desfoque<input id="s_foco_blur" type="range" min="0" max="100" value="100"><output>100</output></label>
+    <label>Foco: escuro<input id="s_foco_escuro" type="range" min="0" max="90" value="25"><output>25</output></label>
+  </div></div>
 <div style="position:fixed;left:12px;right:12px;bottom:max(2px,env(safe-area-inset-bottom));pointer-events:none"></div>
 <script>
-const TOKEN="__TOKEN__",HTTPS="__HTTPS__",$=id=>document.getElementById(id);
+const TOKEN="__TOKEN__",HTTPS="__HTTPS__",AUTO="__AUTO__"==="1",$=id=>document.getElementById(id);
 let ultimaMsg=Date.now(),es=null;
 function status(ok,t){$('dot').classList.toggle('ok',ok);$('st').textContent=t}
 const cid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,8);
@@ -2795,21 +2825,26 @@ function aoOrientar(e){if(e.alpha===null||e.alpha===undefined)return;semSensor=f
 addEventListener('deviceorientation',aoOrientar,true);
 let gan=parseFloat(localStorage.getItem('baton-gan')||'30');
 const sensor=()=>!semSensor;
-let raio=.12;
-fetch('/cfg?k='+encodeURIComponent(TOKEN)).then(r=>r.json()).then(c=>{if(c.foco_raio){raio=c.foco_raio/100;$('raio').value=c.foco_raio;$('rv').textContent=c.foco_raio}}).catch(()=>{});
-let tCfg=null;
-function poeRaio(r,salva){raio=Math.max(.04,Math.min(.3,r));const p=Math.round(raio*100);$('raio').value=p;$('rv').textContent=p;
-  if(salva){clearTimeout(tCfg);tCfg=setTimeout(()=>fetch('/cfg',{method:'POST',headers:{'Content-Type':'application/json','X-Token':TOKEN},body:JSON.stringify({foco_raio:p})}).catch(()=>{}),150)}}
-$('raio').oninput=e=>poeRaio(parseInt(e.target.value)/100,true);
+let raio=.12,tCfg=null,pend={};
+$('bajust').onclick=()=>$('cfg').classList.toggle('aberto');
+const AJ={laser_tam:'s_laser_tam',foco_raio:'raio',foco_blur:'s_foco_blur',foco_escuro:'s_foco_escuro'};
+function mostraAj(c){for(const k in AJ){if(c[k]===undefined)continue;const el=$(AJ[k]);el.value=c[k];el.parentNode.querySelector('output').textContent=Math.round(c[k])}if(c.foco_raio)raio=c.foco_raio/100}
+fetch('/cfg?k='+encodeURIComponent(TOKEN)).then(r=>r.json()).then(mostraAj).catch(()=>{});
+function salvaCfg(k,v){pend[k]=v;clearTimeout(tCfg);tCfg=setTimeout(()=>{const d=pend;pend={};
+  fetch('/cfg',{method:'POST',headers:{'Content-Type':'application/json','X-Token':TOKEN},body:JSON.stringify(d)}).catch(()=>{})},150)}
+for(const k in AJ)$(AJ[k]).oninput=e=>{const v=parseFloat(e.target.value);e.target.parentNode.querySelector('output').textContent=Math.round(v);if(k==='foco_raio')raio=v/100;salvaCfg(k,v)};
+function poeRaio(r,salva){raio=Math.max(.04,Math.min(.3,r));const p=Math.round(raio*100);$('raio').value=p;$('rv').textContent=p;if(salva)salvaCfg('foco_raio',p)}
 let lsEnv=false,lsPend=null,ultimo=0;
-function envLaser(x,y,on){const t=performance.now();if(on&&t-ultimo<25)return;ultimo=t;lsPend={x,y,on,m:ativo==='foco'||(!on&&modoUlt==='foco')?'foco':'laser',r:raio};if(!lsEnv)bombeia()}
+function envLaser(x,y,on){const t=performance.now();if(on&&t-ultimo<8)return;ultimo=t;lsPend={x,y,on,m:ativo==='foco'||(!on&&modoUlt==='foco')?'foco':'laser',r:raio};if(!lsEnv)bombeia()}
 let modoUlt='laser';
 function bombeia(){if(!lsPend){lsEnv=false;return}lsEnv=true;const d=lsPend;lsPend=null;
   fetch('/laser',{method:'POST',headers:{'Content-Type':'application/json','X-Token':TOKEN},body:JSON.stringify(d),keepalive:true}).catch(()=>{}).finally(bombeia)}
 function atualiza(){
   if(!base||!ori)return;const f=direcao(ori,base.eixo),an=angulos(f);
   const x=.5+dif(an.yaw-base.yaw)/gan,y=.5-(an.pitch-base.pitch)/(gan*9/16);
-  sx+=(Math.max(0,Math.min(1,x))-sx)*.4;sy+=(Math.max(0,Math.min(1,y))-sy)*.4;envLaser(sx,sy,true)}
+  // filtro adaptativo: parado, suaviza o tremor da mao; em movimento, acompanha quase sem atraso
+  const tx=Math.max(0,Math.min(1,x)),ty=Math.max(0,Math.min(1,y)),d=Math.hypot(tx-sx,ty-sy),k=d>.04?.9:d>.012?.6:.25;
+  sx+=(tx-sx)*k;sy+=(ty-sy)*k;envLaser(sx,sy,true)}
 async function permissao(){
   if(typeof DeviceOrientationEvent!=='undefined'&&typeof DeviceOrientationEvent.requestPermission==='function'){
     try{const r=await DeviceOrientationEvent.requestPermission();return r==='granted'}catch(e){return false}}
@@ -2845,6 +2880,7 @@ document.addEventListener('pointermove',e=>{if(!dedos.has(e.pointerId))return;de
 ['pointerup','pointercancel'].forEach(t=>document.addEventListener(t,e=>{dedos.delete(e.pointerId);if(dedos.size<2)pinca=null},true));
 // sensibilidade: tocar duas vezes na barra de status alterna 20/30/45 graus de campo de visao
 $('topo').addEventListener('dblclick',()=>{gan=gan===30?45:gan===45?20:30;try{localStorage.setItem('baton-gan',String(gan))}catch(e){}$('st').textContent='campo '+gan+' graus'});
+if(HTTPS&&!isSecureContext&&AUTO&&!sessionStorage.getItem('baton-https-tentou')){try{sessionStorage.setItem('baton-https-tentou','1')}catch(e){}location.replace(HTTPS)}
 if(HTTPS&&!isSecureContext){const a=document.createElement('div');a.id='modo';a.innerHTML='Para apontar com os sensores abra <a href="'+HTTPS+'" style="color:#0a84ff">a versao segura (HTTPS)</a> e aceite o aviso do certificado.';$('corpo').after(a);document.body.style.gridTemplateRows='auto 1fr auto'}
 </script></body></html>
 """
@@ -2955,6 +2991,8 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
             d = estado.parear(codigo, self.headers.get("User-Agent", ""))
             if d is None:
                 estado.falhas_pareamento[ip] = falhas + [agora]
+                if self._proxiado():
+                    return self._enviar(404, "not found", "text/plain; charset=utf-8")
                 return self._enviar(403, PAGINA_QR_USADO, "text/html; charset=utf-8")
             self.send_response(302)
             self.send_header("Location", f"/remote?k={d['token']}")
@@ -3006,6 +3044,10 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
 
         def do_GET(self):
             u = urlparse(self.path)
+            # pela internet (tunel/proxy) so entra quem traz o id do QR (/p/<codigo>, uso unico) ou o token de um celular ja
+            # pareado; todo o resto some (404), sem revelar que ha um Baton ali
+            if self._proxiado() and not (u.path.startswith(("/p/", "/vendor/")) or self._dispositivo(u) is not None):
+                return self._enviar(404, "not found", "text/plain; charset=utf-8")
             if u.path in ("/", "/qr", "/apresentar") and not self._local():
                 return self._enviar(403, "abra o Baton pelo QR code ou pelo endereco do celular", "text/plain; charset=utf-8")
             if u.path == "/":
@@ -3077,8 +3119,13 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
                     return self._enviar(403, "celular nao pareado: escaneie o QR code no computador", "text/plain; charset=utf-8")
                 k = parse_qs(u.query).get("k", [""])[0]
                 host = (self.headers.get("Host") or "").rsplit(":", 1)[0] or "localhost"
-                https = (f"https://{host}:{estado.tls_porta}/simples?k={k}" if estado.tls_porta and not self.server.tls else "")
-                return self._enviar(200, PAGINA_SIMPLES.replace("__TOKEN__", k).replace("__HTTPS__", https), "text/html; charset=utf-8")
+                if URL_PUBLICA and not self._proxiado():  # certificado valido (sem aviso): preferido para liberar os sensores
+                    https, auto = f"{URL_PUBLICA.rstrip('/')}/simples?k={k}", "1"
+                else:
+                    https = (f"https://{host}:{estado.tls_porta}/simples?k={k}" if estado.tls_porta and not self.server.tls else "")
+                    auto = "0"
+                return self._enviar(200, PAGINA_SIMPLES.replace("__TOKEN__", k).replace("__HTTPS__", https).replace("__AUTO__", auto),
+                                    "text/html; charset=utf-8")
             if u.path == "/cfg":
                 if not self._leitura_ok(u):
                     return self._enviar(403, "{}")
@@ -3356,7 +3403,8 @@ def main():
     ap.add_argument("--host", help="IP extra para escutar (padrao: IP do Tailscale e 127.0.0.1)")
     ap.add_argument("--proporcao", help="proporcao do slide no modo externo, ex.: 16:9 (padrao: le do PDF)")
     ap.add_argument("--url-publica", default=os.environ.get("BATON_URL_PUBLICA", ""), metavar="URL",
-                    help="endereco HTTPS publico (ex.: https://baton.exemplo.com, via Cloudflare Tunnel apontando para esta porta); entra nos QR codes")
+                    help="endereco HTTPS publico (ex.: https://baton.exemplo.com, via Cloudflare Tunnel apontando para esta porta); entra nos QR codes. "
+                         "Com --instalar vira o padrao do Baton iniciado no login; '-' remove o padrao")
     ap.add_argument("--sem-https", action="store_true", help="nao abre a porta HTTPS (porta+1), usada pelo laser por apontamento com sensores")
     ap.add_argument("--sem-captura", action="store_true", help="nao envia ao celular a previa (captura) da tela do computador quando nao ha PDF")
     ap.add_argument("--sem-abrir", action="store_true", help="nao abre o navegador no Mac")
@@ -3383,6 +3431,9 @@ def main():
     ap.add_argument("--detectar", action="store_true", help="mostra qual app esta em tela cheia agora e sai (teste)")
     ap.add_argument("--novo-token", action="store_true", help="desfaz o pareamento de todos os celulares (cada um precisa escanear um QR novo)")
     a = ap.parse_args()
+    if a.instalar and a.url_publica:
+        salvar_url_publica(a.url_publica)
+        print(f"URL publica padrao: {a.url_publica}" if a.url_publica != "-" else "URL publica removida")
     if a.instalar or a.desinstalar:
         return instalar_login(remover=a.desinstalar)
     if a.recompilar_app:
@@ -3462,7 +3513,8 @@ def main():
     total = contar_paginas(pdf) if pdf else 9999
     estado = Estado(pdf, total, a.transicao, token, externo, "", prop)
     global URL_PUBLICA
-    URL_PUBLICA = a.url_publica.strip()
+    pedido = a.url_publica.strip()
+    URL_PUBLICA = "" if pedido == "-" else (pedido or url_publica_salva())
     estado.captura = not a.sem_captura
     estado.bases_fn = lambda: calcular_bases(a.porta, a.host)
     estado.carregar_dispositivos()
