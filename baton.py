@@ -1068,7 +1068,7 @@ INFO_PLIST_APP = """<?xml version="1.0" encoding="UTF-8"?>
 """
 
 
-def montar_app_mac():
+def montar_app_mac(forcar=False):
     """Cria ~/Applications/Baton.app (miolo em Swift): a lista de permissoes do macOS passa a mostrar 'Baton'."""
     base = Path(__file__).resolve().parent
     fonte = base / "launcher.swift"
@@ -1079,13 +1079,14 @@ def montar_app_mac():
     app = Path.home() / "Applications" / "Baton.app"
     exe, marca = app / "Contents" / "MacOS" / "Baton", app / "Contents" / ".launcher-hash"
     h = hashlib.sha1(fonte.read_bytes() + INFO_PLIST_APP.encode()).hexdigest()[:10]
-    if exe.exists() and marca.exists() and marca.read_text() == h:
+    if not forcar and exe.exists() and marca.exists() and marca.read_text() == h:
         return str(exe)  # nao recompila: assinatura estavel mantem a permissao ja concedida
     (app / "Contents" / "MacOS").mkdir(parents=True, exist_ok=True)
     (app / "Contents" / "Resources").mkdir(parents=True, exist_ok=True)
     r = subprocess.run([swiftc, "-O", "-DBANDEJA", str(fonte), "-o", str(exe)], capture_output=True, text=True)
-    if r.returncode != 0:  # sem o icone da barra de menu, mas com o launcher (permissoes) funcionando
-        print("aviso: sem icone na barra de menu (falha ao compilar a bandeja):\n" + r.stderr[-600:], file=sys.stderr)
+    bandeja = r.returncode == 0
+    if not bandeja:  # sem o icone da barra de menu, mas com o launcher (permissoes) funcionando
+        print("aviso: sem icone na barra de menu (falha ao compilar a bandeja):\n" + r.stderr[-1200:], file=sys.stderr)
         r = subprocess.run([swiftc, "-O", str(fonte), "-o", str(exe)], capture_output=True, text=True)
     if r.returncode != 0:
         print("aviso: falha ao compilar launcher.swift:\n" + r.stderr[-800:], file=sys.stderr)
@@ -1106,6 +1107,8 @@ def montar_app_mac():
     if shutil.which("codesign"):
         subprocess.run(["codesign", "--force", "--deep", "-s", "-", str(app)], check=False, capture_output=True)
     marca.write_text(h)
+    (app / "Contents" / ".launcher-bandeja").write_text("1" if bandeja else "0")
+    print("Baton.app compilado " + ("(com icone na barra de menu)" if bandeja else "(SEM icone na barra de menu)"), flush=True)
     return str(exe)
 
 
@@ -1118,7 +1121,8 @@ def diagnostico():
         except Exception as e:
             return f"(falhou: {e})"
     aqui = Path(__file__).resolve().parent
-    L = [f"baton.py: {Path(__file__).resolve()}",
+    versao = (aqui / "VERSION").read_text().strip() if (aqui / "VERSION").exists() else "(sem VERSION: instalado antes do suporte a versao)"
+    L = [f"baton.py: {Path(__file__).resolve()} | versao: {versao}",
          f"launcher.swift: {hashlib.sha1((aqui / 'launcher.swift').read_bytes()).hexdigest()[:10] if (aqui / 'launcher.swift').exists() else 'AUSENTE'}",
          f"tray: {'sim' if (aqui / 'tray_gtk.py').exists() else 'nao'} | python: {sys.version.split()[0]} | sistema: {sys.platform}"]
     if sys.platform == "darwin":
@@ -1126,6 +1130,10 @@ def diagnostico():
         exe = app / "Contents" / "MacOS" / "Baton"
         L += [f"Baton.app: {'existe' if app.exists() else 'NAO EXISTE'} | executavel: {'ok' if exe.exists() else 'NAO EXISTE'}",
               f"swiftc: {shutil.which('swiftc') or 'NAO ENCONTRADO (xcode-select --install)'}",
+              "executavel compilado em: " + run("stat", "-f", "%Sm", str(exe)),
+              "Baton.app atualizado: " + ("sim" if (app / "Contents" / ".launcher-hash").exists() and (app / "Contents" / ".launcher-hash").read_text() == hashlib.sha1((aqui / "launcher.swift").read_bytes() + INFO_PLIST_APP.encode()).hexdigest()[:10] else "NAO (rode: baton --recompilar-app)"),
+              "icone na barra de menu: " + {"1": "compilado", "0": "NAO compilado (veja o erro em: baton --recompilar-app)"}.get(
+                  (app / "Contents" / ".launcher-bandeja").read_text().strip() if (app / "Contents" / ".launcher-bandeja").exists() else "", "desconhecido"),
               "bundle id: " + run("/usr/libexec/PlistBuddy", "-c", "Print :CFBundleIdentifier", str(app / "Contents" / "Info.plist")),
               "assinatura: " + " | ".join(x for x in run("codesign", "-dv", str(app)).splitlines() if x.startswith(("Identifier", "Signature", "CodeDirectory"))),
               "launchd: " + (run("launchctl", "list", "com.baton") or "(nao carregado)").replace("\n", " ")[:200],
@@ -2332,6 +2340,7 @@ def main():
                     help="importa as notas de um .pptx (notas do apresentador) ou .md para a sessao do Baton e sai")
     ap.add_argument("--tray", action="store_true", help="mostra o icone na bandeja (ja e o padrao no modo --residente)")
     ap.add_argument("--sem-tray", action="store_true", help="nao mostra o icone na bandeja")
+    ap.add_argument("--recompilar-app", action="store_true", help="macOS: recompila o Baton.app e mostra os erros do compilador (a permissao de Acessibilidade precisa ser dada de novo)")
     ap.add_argument("--diagnostico", action="store_true", help="imprime um resumo do ambiente (Baton.app, permissao, log) para suporte")
     ap.add_argument("--permissao", action="store_true", help="macOS: pede a permissao de Acessibilidade para o Baton.app e abre os Ajustes")
     ap.add_argument("--rede", action="store_true", help="(sem efeito: a rede local ja e o endereco principal)")
@@ -2344,6 +2353,9 @@ def main():
     a = ap.parse_args()
     if a.instalar or a.desinstalar:
         return instalar_login(remover=a.desinstalar)
+    if a.recompilar_app:
+        exe = montar_app_mac(forcar=True)
+        return print(f"pronto: {exe}\nAtive o Baton em Acessibilidade e rode: launchctl kickstart -k gui/$(id -u)/com.baton" if exe else "falhou (veja os avisos acima)")
     if a.diagnostico:
         return print(diagnostico())
     if a.permissao:
