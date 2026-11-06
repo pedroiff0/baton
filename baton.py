@@ -41,6 +41,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import monitores
 import relay as relay_mod
 import residente
 from urllib.parse import parse_qs, urlparse
@@ -302,6 +303,8 @@ class Estado:
         self.tela_propria, self.tela_proc = False, None  # tela cheia do proprio Baton (PDF carregado pelo painel)
         self._bases_fixas, self.bases_fn, self._bases_cache = [], None, (0.0, [])  # enderecos do computador (ver calcular_bases)
         self.dispositivos = []  # celulares pareados: {id, nome, token, criado, ultimo_visto, ua}
+        self.monitor_cli = ""  # --monitor N (sobrepoe a preferencia do painel)
+        self._mon_cache = (0.0, None)
         self.relay = None  # AgenteRelay (sessao no relay central), se configurado
         self.pareamento = None  # {"codigo", "expira"}: QR de uso unico
         self._salvo_em = 0.0
@@ -398,7 +401,7 @@ class Estado:
             return False
         self.fechar_tela(avisar=False)
         url = (self.local_url or "http://localhost:8765/") + "apresentar"
-        proc = abrir_tela_cheia(url)
+        proc = abrir_tela_cheia(url, self.monitor())
         with self.lock:
             self.tela_propria, self.tela_proc = True, proc
         if proc is not None:
@@ -500,6 +503,9 @@ class Estado:
             p["ativo"] = True
         elif acao == "modo" and valor in residente.MODOS:
             p["modo"] = valor
+        elif acao == "monitor" and (valor == "auto" or str(valor).isdigit()):
+            p["monitor"] = str(valor)
+            self._mon_cache = (0.0, None)
         elif acao == "esquecer":
             p["apps_ok"] = [a for a in p["apps_ok"] if a != valor]
             p["apps_nao"] = [a for a in p["apps_nao"] if a != valor]
@@ -541,13 +547,29 @@ class Estado:
     def acessibilidade(self):
         return acessibilidade_mac() if self.ext else None
 
+    def monitor_pref(self):
+        return self.monitor_cli or str(self.prefs.get("monitor", "auto"))
+
+    def monitor(self):
+        """Monitor da projecao (dict x, y, w, h): o da janela em tela cheia, ou o escolhido no painel; cache de 2 s."""
+        agora = time.monotonic()
+        if self._mon_cache[1] is None or agora - self._mon_cache[0] > 2.0:
+            try:
+                ant = self._mon_cache[1]
+                m = monitores.escolher(self.monitor_pref(), anterior=ant)
+            except Exception:
+                m = None
+            self._mon_cache = (agora, m)
+        return self._mon_cache[1]
+
     def painel_estado(self):
         return {"ativo": self.prefs["ativo"], "modo": self.prefs["modo"], "autorizado": self.autorizado,
                 "pedido": self.pedido, "apps_ok": self.prefs["apps_ok"], "apps_nao": self.prefs["apps_nao"],
                 "residente": self.residente, "acessibilidade": self.acessibilidade(), "deck": self.deck_info(), "tela_propria": self.tela_propria, "captura": self.captura,
                 "conexoes": len(self.conectados()), "dispositivos": self.dispositivos_info(),
                 "plataforma": sys.platform, "rede_bluetooth": self.rede_bluetooth(),
-                "pareamento_urls": self.urls_pareamento(), "relay": getattr(self.relay, "status", "")}
+                "pareamento_urls": self.urls_pareamento(), "relay": getattr(self.relay, "status", ""),
+                "monitores": monitores.listar(), "monitor_pref": self.monitor_pref(), "monitor_ativo": (self.monitor() or {}).get("id")}
 
     def comando(self, cmd, valor=None, cid=None):
         if not self.permitido():
@@ -1183,6 +1205,7 @@ class _OverlayMac:
     """Camada transparente nativa (overlay.swift), compilada na primeira execucao."""
 
     def __init__(self, tela=0, nivel=None):
+        self.nivel = nivel
         fonte = Path(__file__).with_name("overlay.swift")
         if not fonte.exists():
             raise RuntimeError("overlay.swift nao encontrado ao lado do baton.py")
@@ -1197,9 +1220,22 @@ class _OverlayMac:
             r = subprocess.run([swiftc, "-O", str(fonte), "-o", str(binario)], capture_output=True, text=True)
             if r.returncode != 0:
                 raise RuntimeError("falha ao compilar overlay.swift:\n" + r.stderr[-1500:])
-        args = [str(binario), "--tela", str(tela)] + (["--nivel", str(nivel)] if nivel is not None else [])
-        self.p = subprocess.Popen(args, stdin=subprocess.PIPE, text=True, bufsize=1)
+        self.binario = binario
         self.lock = threading.Lock()
+        self._iniciar(tela)
+
+    def _iniciar(self, tela):
+        args = [str(self.binario), "--tela", str(tela)] + (["--nivel", str(self.nivel)] if self.nivel is not None else [])
+        self.p = subprocess.Popen(args, stdin=subprocess.PIPE, text=True, bufsize=1)
+
+    def reiniciar(self, mon):
+        """Camada no outro monitor (o indice do NSScreen e o mesmo de monitores.listar())."""
+        self.fechar()
+        try:
+            self.p.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            self.p.kill()
+        self._iniciar(mon.get("id", 0))
 
     def enviar(self, obj):
         with self.lock:
@@ -1220,12 +1256,27 @@ class _OverlayProc:
         fonte = Path(__file__).with_name(script)
         if not fonte.exists():
             raise RuntimeError(f"{script} nao encontrado ao lado do baton.py")
-        self.p = subprocess.Popen([sys.executable, str(fonte), "--tela", str(tela)], stdin=subprocess.PIPE,
-                                  text=True, bufsize=1)
+        self.fonte = fonte
         self.lock = threading.Lock()
+        self._iniciar(tela)
         time.sleep(1.0)
         if self.p.poll() is not None:  # sem Gtk, sem compositor, sem Tk: o processo encerra sozinho
             raise RuntimeError(f"{script} encerrou (codigo {self.p.returncode}); veja a mensagem acima")
+
+    def _iniciar(self, tela):
+        if isinstance(tela, dict):  # retangulo exato do monitor (x, y, largura, altura)
+            args = ["--geom", f"{tela['x']},{tela['y']},{tela['w']},{tela['h']}"]
+        else:
+            args = ["--tela", str(tela)]
+        self.p = subprocess.Popen([sys.executable, str(self.fonte), *args], stdin=subprocess.PIPE, text=True, bufsize=1)
+
+    def reiniciar(self, mon):
+        self.fechar()
+        try:
+            self.p.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            self.p.kill()
+        self._iniciar(mon)
 
     enviar = _OverlayMac.enviar
     fechar = _OverlayMac.fechar
@@ -1241,6 +1292,8 @@ class Externo:
         self.cursor = cursor or overlay is None
         self.ultimo_mouse = 0.0
         self.tecla_preto = False
+        self.monitor_fn = None  # () -> monitor da projecao (dict x, y, w, h) ou None
+        self.mon_atual = None
 
     def cortina(self, tipo, txt="", sub=""):
         """Cortina nativa por cima do app. Sem camada, so o preto funciona (tecla B do leitor)."""
@@ -1270,14 +1323,31 @@ class Externo:
 
     def para_tela(self, x, y, proporcao):
         """Coordenadas do slide (0 a 1) -> coordenadas da tela em pixels e normalizadas (0 a 1)."""
-        w, h = self.b.tela()
+        mon = self._monitor()
+        if mon:
+            w, h, mx, my = float(mon["w"]), float(mon["h"]), float(mon["x"]), float(mon["y"])
+        else:
+            w, h = self.b.tela()
+            mx = my = 0.0
         if proporcao > w / h:  # o slide ocupa a tela inteira, com barras se a proporcao diferir
             largura, altura = w, w / proporcao
         else:
             largura, altura = h * proporcao, h
         ox, oy = (w - largura) / 2, (h - altura) / 2
         px, py = ox + x * largura, oy + y * altura
-        return px, py, px / w, py / h
+        return mx + px, my + py, px / w, py / h  # pixels absolutos (cursor) e normalizados dentro do monitor (camada)
+
+    def _monitor(self):
+        """Monitor da projecao; se mudou, move a camada de desenho para ele."""
+        if not self.monitor_fn:
+            return None
+        mon = self.monitor_fn()
+        if mon and (self.mon_atual is None or (mon["x"], mon["y"], mon["w"], mon["h"], mon.get("id")) !=
+                    (self.mon_atual["x"], self.mon_atual["y"], self.mon_atual["w"], self.mon_atual["h"], self.mon_atual.get("id"))):
+            ant, self.mon_atual = self.mon_atual, mon
+            if ant is not None and self.overlay is not None and hasattr(self.overlay, "reiniciar"):
+                threading.Thread(target=self.overlay.reiniciar, args=(mon,), daemon=True).start()
+        return mon
 
     def laser(self, x, y, on, proporcao, modo="laser", raio=0.12):
         agora = time.monotonic()
@@ -1301,8 +1371,10 @@ class Externo:
             self.overlay.enviar({"t": "clear"})
 
 
-def criar_externo(usar_overlay=True, tela=0, cursor=False, nivel=None):
+def criar_externo(usar_overlay=True, tela=0, cursor=False, nivel=None, monitor=None):
     overlay = None
+    if monitor:
+        tela = monitor if sys.platform not in ("darwin",) else monitor.get("id", 0)  # Mac: indice do NSScreen; demais: retangulo
     if usar_overlay:
         try:
             if os.environ.get("BATON_OVERLAY") == "log":
@@ -1736,6 +1808,9 @@ def contexto_tls():
         return None
 
 
+MONITOR_FN = None  # () -> monitor da projecao; a previa por captura mostra so ele
+
+
 def capturar_tela(largura=960, qualidade=60):
     """JPEG da tela principal (para a previa do celular quando nao ha PDF) ou None se nao ha como capturar.
     Usa o Pillow se existir; senao ferramentas do sistema (screencapture, PowerShell, grim, import, maim, scrot)."""
@@ -1746,9 +1821,13 @@ def capturar_tela(largura=960, qualidade=60):
         except OSError:
             return None
     try:
+        mon = MONITOR_FN() if MONITOR_FN else None
+    except Exception:
+        mon = None
+    try:
         from PIL import ImageGrab
         import io
-        img = ImageGrab.grab().convert("RGB")
+        img = (ImageGrab.grab(bbox=(mon["x"], mon["y"], mon["x"] + mon["w"], mon["y"] + mon["h"])) if mon else ImageGrab.grab()).convert("RGB")
         img.thumbnail((largura, largura))
         buf = io.BytesIO()
         img.save(buf, "JPEG", quality=qualidade)
@@ -1760,13 +1839,15 @@ def capturar_tela(largura=960, qualidade=60):
         q = str(qualidade)
         try:
             if sys.platform == "darwin":
-                subprocess.run(["screencapture", "-x", "-t", "jpg", str(arq)], capture_output=True, timeout=8)
+                subprocess.run(["screencapture", "-x", "-t", "jpg"] + (["-R", f"{mon['x']},{mon['y']},{mon['w']},{mon['h']}"] if mon else []) + [str(arq)],
+                               capture_output=True, timeout=8)
                 subprocess.run(["sips", "-Z", str(largura), "--setProperty", "formatOptions", q, str(arq)], capture_output=True, timeout=8)
             elif sys.platform == "win32":
                 ps = ("Add-Type -AssemblyName System.Windows.Forms,System.Drawing;"
                       "Add-Type -MemberDefinition '[DllImport(\"user32.dll\")] public static extern bool SetProcessDPIAware();' -Name D -Namespace W;"
-                      "[void][W.D]::SetProcessDPIAware();"
-                      "$b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds;$bmp=New-Object System.Drawing.Bitmap $b.Width,$b.Height;"
+                      "[void][W.D]::SetProcessDPIAware();" +
+                      (f"$b=New-Object System.Drawing.Rectangle {mon['x']},{mon['y']},{mon['w']},{mon['h']};" if mon else "$b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds;") +
+                      "$bmp=New-Object System.Drawing.Bitmap $b.Width,$b.Height;"
                       "$g=[System.Drawing.Graphics]::FromImage($bmp);$g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size);"
                       f"$h=[int]($b.Height*{largura}/$b.Width);$o=New-Object System.Drawing.Bitmap $bmp,{largura},$h;"
                       "$c=[System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders()|Where-Object{$_.MimeType -eq 'image/jpeg'};"
@@ -1775,9 +1856,12 @@ def capturar_tela(largura=960, qualidade=60):
                 subprocess.run(["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps], capture_output=True,
                                timeout=15, creationflags=0x08000000)
             else:
-                for cmd in ((["grim", "-t", "jpeg", "-q", q, "-s", "0.5", str(arq)] if os.environ.get("WAYLAND_DISPLAY") else None),
-                            ["import", "-silent", "-window", "root", "-resize", f"{largura}x", "-quality", q, str(arq)],
-                            ["maim", "-f", "jpg", "-m", "7", str(arq)], ["scrot", "-q", q, str(arq)],
+                g = f"{mon['w']}x{mon['h']}+{mon['x']}+{mon['y']}" if mon else ""
+                for cmd in ((["grim", "-t", "jpeg", "-q", q, "-s", "0.5"] + (["-g", f"{mon['x']},{mon['y']} {mon['w']}x{mon['h']}"] if mon else []) + [str(arq)]
+                             if os.environ.get("WAYLAND_DISPLAY") else None),
+                            ["import", "-silent", "-window", "root"] + (["-crop", g, "+repage"] if mon else []) + ["-resize", f"{largura}x", "-quality", q, str(arq)],
+                            ["maim", "-f", "jpg", "-m", "7"] + (["-g", g] if mon else []) + [str(arq)],
+                            ["scrot", "-q", q] + (["-a", f"{mon['x']},{mon['y']},{mon['w']},{mon['h']}"] if mon else []) + [str(arq)],
                             ["gnome-screenshot", "-f", str(arq)]):
                     if cmd and shutil.which(cmd[0]):
                         subprocess.run(cmd, capture_output=True, timeout=8)
@@ -1818,7 +1902,7 @@ def navegadores_chromium():
     return [c for c in cand if c and os.path.exists(c)]
 
 
-def abrir_tela_cheia(url):
+def abrir_tela_cheia(url, mon=None):
     """Abre a URL em tela cheia (quiosque) num navegador Chromium com perfil proprio; devolve o processo, ou None se so deu
     para abrir no navegador padrao (a pagina entao entra em tela cheia no primeiro toque/tecla)."""
     if os.environ.get("BATON_SEM_TELA"):  # testes: nao abre janela nem navegador
@@ -1828,7 +1912,8 @@ def abrir_tela_cheia(url):
         try:
             # --start-fullscreen (e nao --kiosk): o kiosk tranca a janela e nem Esc nem F11 saem; assim a pagina fecha com Esc/botao,
             # e F11 e Alt+F4 continuam funcionando
-            return subprocess.Popen([exe, f"--app={url}", "--start-fullscreen", f"--user-data-dir={perfil}", "--no-first-run",
+            pos = [f"--window-position={mon['x']},{mon['y']}", f"--window-size={mon['w']},{mon['h']}"] if mon else []  # abre no monitor da projecao
+            return subprocess.Popen([exe, f"--app={url}", *pos, "--start-fullscreen", f"--user-data-dir={perfil}", "--no-first-run",
                                      "--no-default-browser-check", "--disable-infobars", "--autoplay-policy=no-user-gesture-required"],
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
                                     start_new_session=(os.name == "posix"))
@@ -1948,11 +2033,16 @@ ARQ_CHAVE_RELAY = Path.home() / ".config" / "baton" / "relay-chave"
 
 
 def relay_salvo():
-    try:
-        d = json.loads(ARQ_RELAY.read_text())
-        return str(d.get("url", "")), str(d.get("chave", ""))
-    except (OSError, ValueError):
-        return "", ""
+    """Relay padrao: o salvo com --instalar ou o relay.json que acompanha o pacote (ao lado do baton.py; fora do git, com a chave).
+    O usuario final nao configura nada: abre o app e o Baton ja se registra no relay."""
+    for arq in (ARQ_RELAY, Path(__file__).resolve().parent / "relay.json"):
+        try:
+            d = json.loads(arq.read_text())
+            if d.get("url"):
+                return str(d["url"]), str(d.get("chave", ""))
+        except (OSError, ValueError):
+            continue
+    return "", ""
 
 
 def salvar_relay(url, chave):
@@ -1979,12 +2069,46 @@ def chave_do_relay(pedida=""):
         return ""
 
 
+RELAY_AGENTE = None  # AgenteRelay deste Baton (definido no main)
+_PUBLICA = {"t": 0.0, "ok": True, "rodando": False}
+
+
+def publica_viva():
+    """True se a URL publica deve ser oferecida: com relay, so enquanto o agente esta conectado; sem relay, se um teste HTTP
+    recente (feito aqui, em segundo plano, a cada 30 s) alcancou a URL. Na rede do instituto (internet fraca ou filtrada)
+    ela some do QR e do redirecionamento, e o Baton segue pela rede local."""
+    if not URL_PUBLICA:
+        return False
+    if RELAY_AGENTE is not None:
+        return getattr(RELAY_AGENTE, "status", "") == "conectado"
+    agora = time.monotonic()
+    if agora - _PUBLICA["t"] > 30 and not _PUBLICA["rodando"]:
+        _PUBLICA["rodando"] = True
+
+        def _testar():
+            try:
+                urllib.request.urlopen(URL_PUBLICA.rstrip("/") + "/icon.png", timeout=3).read(1)
+                _PUBLICA["ok"] = True
+            except urllib.error.HTTPError:
+                _PUBLICA["ok"] = True  # respondeu (o servidor existe, mesmo com 403/404)
+            except Exception:
+                _PUBLICA["ok"] = False
+            _PUBLICA["t"], _PUBLICA["rodando"] = time.monotonic() - (0 if _PUBLICA["ok"] else 25), False  # falhou: tenta de novo em 5 s
+        threading.Thread(target=_testar, daemon=True).start()
+        _PUBLICA["t"] = agora - 25  # reavalia em 5 s se ainda nao respondeu
+    return _PUBLICA["ok"]
+
+
 def calcular_bases(porta, host=None):
     """Enderecos do computador, do melhor para o pior: Bluetooth > hotspot do celular > (internet HTTPS, se configurada) >
     Wi-Fi/rota padrao > outras > Tailscale."""
     bases = _bases_locais(porta, host)
     if URL_PUBLICA:
         pub = {"nome": "Internet (HTTPS)", "base": URL_PUBLICA.rstrip("/")}
+        if not publica_viva():  # sem internet ou relay fora do ar: a rede local vem primeiro e a URL publica fica por ultimo
+            pub["nome"] = "Internet (HTTPS) - indisponivel agora"
+            bases.append(pub)
+            return bases
         i = 0
         while i < len(bases) and bases[i]["nome"].startswith("Bluetooth"):
             i += 1
@@ -3063,8 +3187,14 @@ document.addEventListener('pointermove',e=>{if(!dedos.has(e.pointerId))return;de
   if(pinca&&dedos.size>=2&&pinca.d0>0)poeRaio(pinca.r0*distDedos()/pinca.d0,true)},true);
 ['pointerup','pointercancel'].forEach(t=>document.addEventListener(t,e=>{dedos.delete(e.pointerId);if(dedos.size<2)pinca=null},true));
 // vai para o HTTPS com certificado valido (sensores de movimento so funcionam em pagina segura)
-if(HTTPS&&!isSecureContext&&AUTO&&!sessionStorage.getItem('baton-https-tentou')){try{sessionStorage.setItem('baton-https-tentou','1')}catch(e){}location.replace(HTTPS)}
-if(HTTPS&&!isSecureContext){$('st').insertAdjacentHTML('afterend',' <a href="'+HTTPS+'" style="color:#0a84ff">(abrir em HTTPS)</a>')}
+const iosUA=/iphone|ipad|ipod/i.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+const publicoHttps=HTTPS&&!/^https:\/\/[\d.]+:\d+\//.test(HTTPS);  // URL publica (certificado valido) x porta HTTPS local (autoassinado)
+function semHttps(){const e=$('st');e.textContent='sem sensores (HTTPS indisponivel nesta rede)';$('dot').classList.remove('ok')}
+if(HTTPS&&!isSecureContext&&AUTO&&!sessionStorage.getItem('baton-https-tentou')){try{sessionStorage.setItem('baton-https-tentou','1')}catch(e){}
+  // so vai se a URL responde: na rede do instituto (internet fraca ou filtrada) ficar em HTTP e usar o dedo e melhor que uma pagina quebrada
+  const ac=new AbortController(),tt=setTimeout(()=>ac.abort(),2500);
+  fetch(new URL(HTTPS).origin+'/icon.png',{mode:'no-cors',cache:'no-store',signal:ac.signal}).then(()=>{clearTimeout(tt);location.replace(HTTPS)}).catch(()=>{clearTimeout(tt);setTimeout(semHttps,1200)})}
+if(HTTPS&&!isSecureContext&&!AUTO&&(publicoHttps||!iosUA)){$('st').insertAdjacentHTML('afterend',' <a href="'+HTTPS+'" style="color:#0a84ff">(abrir em HTTPS)</a>')}
 // ---- app na tela inicial (PWA)
 const standalone=matchMedia('(display-mode: standalone)').matches||navigator.standalone===true;
 if('serviceWorker' in navigator&&isSecureContext)navigator.serviceWorker.register('/sw.js').catch(()=>{});
@@ -3354,7 +3484,8 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
                 k = (self._dispositivo(u) or {}).get("token") or parse_qs(u.query).get("k", [""])[0]  # token valido (URL ou cookie)
                 host = (self.headers.get("Host") or "").rsplit(":", 1)[0] or "localhost"
                 if URL_PUBLICA and not self._proxiado():  # certificado valido (sem aviso): preferido para liberar os sensores
-                    https, auto = f"{URL_PUBLICA.rstrip('/')}/simples?k={k}", "1"
+                    # a pagina testa se o celular alcanca a URL antes de ir (internet fraca/filtrada: fica em HTTP, sem sensores)
+                    https, auto = f"{URL_PUBLICA.rstrip('/')}/simples?k={k}", ("1" if publica_viva() else "0")
                 else:
                     https = (f"https://{host}:{estado.tls_porta}/simples?k={k}" if estado.tls_porta and not self.server.tls else "")
                     auto = "0"
@@ -3627,7 +3758,7 @@ def contar_paginas(pdf):
 
 
 def main():
-    global MAX_DISPOSITIVOS
+    global MAX_DISPOSITIVOS, MONITOR_FN, RELAY_AGENTE
     ap = argparse.ArgumentParser(description="Baton de slides pelo celular (Tailscale), com laser e QR code.")
     ap.add_argument("pdf", nargs="?", help="PDF dos slides (sem PDF, o modo e 'externo': o celular controla o app em primeiro plano)")
     ap.add_argument("--instalar", action="store_true", help="macOS: liga o Baton sozinho no login (modo externo)")
@@ -3652,7 +3783,9 @@ def main():
     ap.add_argument("--sem-https", action="store_true", help="nao abre a porta HTTPS (porta+1), usada pelo laser por apontamento com sensores")
     ap.add_argument("--sem-captura", action="store_true", help="nao envia ao celular a previa (captura) da tela do computador quando nao ha PDF")
     ap.add_argument("--sem-abrir", action="store_true", help="nao abre o navegador no Mac")
-    ap.add_argument("--tela", type=int, default=0, help="modo externo: indice da tela onde a camada desenha (0 = principal)")
+    ap.add_argument("--tela", type=int, default=0, help="(apelido antigo de --monitor, base 0) modo externo: indice da tela da camada")
+    ap.add_argument("--monitor", default="", metavar="N|auto",
+                    help="monitor da projecao: numero (1 = primeiro da lista do painel) ou auto (o da janela em tela cheia). Padrao: a escolha do painel")
     ap.add_argument("--nivel", type=int, help="modo externo: nivel da janela da camada (padrao: o maximo do sistema)")
     ap.add_argument("--sem-overlay", action="store_true", help="modo externo: nao usa a camada de desenho (laser = cursor)")
     ap.add_argument("--cursor", action="store_true", help="modo externo: move tambem o cursor do mouse com o laser")
@@ -3762,7 +3895,14 @@ def main():
             sys.exit("use --proporcao largura:altura, por exemplo 16:9")
     elif pdf:
         prop = proporcao_pdf(pdf)
-    externo = criar_externo(not a.sem_overlay, a.tela, a.cursor, a.nivel) if a.externo else None
+    mon_cli = a.monitor if (a.monitor == "auto" or a.monitor.isdigit()) else (str(a.tela + 1) if a.tela else "")
+    mon0 = None
+    if a.externo:
+        try:
+            mon0 = monitores.escolher(mon_cli or residente.prefs_carregar().get("monitor", "auto"))
+        except Exception:
+            mon0 = None
+    externo = criar_externo(not a.sem_overlay, a.tela, a.cursor, a.nivel, mon0) if a.externo else None
     if externo and not pdf and not a.proporcao:
         try:
             tw, th = externo.b.tela()
@@ -3771,6 +3911,10 @@ def main():
             pass
     total = contar_paginas(pdf) if pdf else 9999
     estado = Estado(pdf, total, a.transicao, token, externo, "", prop)
+    estado.monitor_cli = "" if mon_cli == "auto" else mon_cli
+    if externo:
+        externo.monitor_fn = estado.monitor
+    MONITOR_FN = estado.monitor
     global URL_PUBLICA
     MAX_DISPOSITIVOS = max(1, min(64, a.max_celulares))
     pedido = a.url_publica.strip()
@@ -3858,6 +4002,7 @@ def main():
         estado.relay = relay_mod.AgenteRelay(relay_url, relay_chave, a.porta, lambda: (
             [estado.codigo_pareamento()], [relay_mod.hash_token(d["token"]) for d in list(estado.dispositivos)]))
         estado.relay.start()
+        RELAY_AGENTE = estado.relay
         print(f"Relay: {relay_url} (sessao propria; QR e celulares isolados dos outros computadores)")
     tray = residente.iniciar_tray(a.porta) if (a.residente or a.tray) and not a.sem_tray else None
     print(f"\nModo: {'externo (teclas e mouse para o app em primeiro plano)' if externo else 'tela do Baton'}")

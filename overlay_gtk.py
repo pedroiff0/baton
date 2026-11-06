@@ -39,7 +39,7 @@ PALETA = [(1.0, 0.23, 0.19), (1.0, 0.84, 0.04), (0.19, 0.82, 0.35), (0.04, 0.52,
 
 
 class Camada(Gtk.Window):
-    def __init__(self, indice):
+    def __init__(self, indice, geom=None):
         super().__init__(type=Gtk.WindowType.POPUP)  # sem decoracao, sem foco, acima de janelas em tela cheia
         tela = Gdk.Screen.get_default()
         if not os.environ.get("BATON_OVERLAY_PNG") and (not tela.is_composited() or tela.get_rgba_visual() is None):
@@ -49,10 +49,13 @@ class Camada(Gtk.Window):
             self.set_visual(tela.get_rgba_visual())
         self.set_app_paintable(True)
         disp = Gdk.Display.get_default()
-        mon = disp.get_monitor(indice) if 0 <= indice < disp.get_n_monitors() else disp.get_primary_monitor()
-        g = mon.get_geometry()
-        self.w, self.h = g.width, g.height
-        self.move(g.x, g.y)
+        if geom:  # retangulo exato do monitor da projecao (x, y, largura, altura), vindo do baton.py
+            gx, gy, self.w, self.h = geom
+        else:
+            mon = disp.get_monitor(indice) if 0 <= indice < disp.get_n_monitors() else disp.get_primary_monitor()
+            g = mon.get_geometry()
+            gx, gy, self.w, self.h = g.x, g.y, g.width, g.height
+        self.move(gx, gy)
         self.set_default_size(self.w, self.h)
         self.set_accept_focus(False)
         self.set_keep_above(True)
@@ -282,7 +285,15 @@ def main():
             indice = int(sys.argv[sys.argv.index("--tela") + 1])
         except (IndexError, ValueError):
             pass
-    camada = Camada(indice)
+    geom = None
+    if "--geom" in sys.argv:
+        try:
+            geom = tuple(int(v) for v in sys.argv[sys.argv.index("--geom") + 1].split(","))
+            if len(geom) != 4:
+                geom = None
+        except (IndexError, ValueError):
+            geom = None
+    camada = Camada(indice, geom)
 
     def ler():
         for linha in sys.stdin:

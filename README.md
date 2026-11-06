@@ -149,9 +149,12 @@ Uma URL pública (ex.: `https://baton.exemplo.com`, via Cloudflare Tunnel) apont
 # no servidor (aponte o túnel para a porta do relay, WebSocket incluído)
 BATON_RELAY_CHAVE='uma-chave-longa' baton --servir-relay --relay-porta 8780
 
-# em cada computador de apresentação
-baton --relay wss://baton.exemplo.com --chave-relay 'uma-chave-longa' --instalar   # vira o padrão do Baton do login
+# pacote para os outros: crie relay.json (fora do git) na pasta do repositório e gere o pacote/instalador
+echo '{"url": "wss://baton.exemplo.com", "chave": "uma-chave-longa"}' > relay.json
+python3 scripts/empacotar-windows.py        # o zip já leva o relay.json; install.sh e install.ps1 também o copiam
 ```
+
+O usuário final não configura nada: abre o app, joga a apresentação (ou põe um slide em tela cheia), escaneia o QR e usa. O Baton lê o `relay.json` que acompanha o pacote (ou `~/.cache/baton/relay.json`, ou `--relay`/`--chave-relay`/`BATON_RELAY*` para quem quiser configurar à mão) e se registra sozinho. O `relay.json` tem a chave e fica no `.gitignore`: não vai para o GitHub público.
 
 A chave só autoriza computadores a se registrar; os celulares continuam entrando pelo QR de uso único. Com `--relay` e sem `--url-publica`, o QR usa a URL do relay. O painel mostra o estado do relay. `--max-celulares N` muda o limite de celulares por sessão (padrão 8). Botões de volume do celular não chegam a nenhuma página web (iOS e Android os consomem); use os controles de mídia do sistema, fones ou um passador de slides Bluetooth.
 

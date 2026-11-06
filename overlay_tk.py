@@ -36,10 +36,10 @@ def atravessar_cliques(janela):
 
 
 class Janela:
-    def __init__(self, raiz, w, h, fundo=CHAVE, alpha=1.0):
+    def __init__(self, raiz, w, h, fundo=CHAVE, alpha=1.0, x=0, y=0):
         self.t = tk.Toplevel(raiz)
         self.t.overrideredirect(True)
-        self.t.geometry(f"{w}x{h}+0+0")
+        self.t.geometry(f"{w}x{h}{x:+d}{y:+d}")
         self.t.attributes("-topmost", True)
         self.c = tk.Canvas(self.t, width=w, height=h, bg="#335577" if TESTE else fundo, highlightthickness=0, bd=0)
         self.c.pack()
@@ -73,12 +73,12 @@ def cor_hex(s, padrao="#ff3b30"):
 
 
 class App:
-    def __init__(self, raiz):
+    def __init__(self, raiz, geom=None):
         self.raiz = raiz
-        self.w, self.h = raiz.winfo_screenwidth(), raiz.winfo_screenheight()
-        self.dim = Janela(raiz, self.w, self.h, fundo="black", alpha=0.0)
-        self.desenho = Janela(raiz, self.w, self.h)
-        self.cort = Janela(raiz, self.w, self.h, alpha=0.0)
+        gx, gy, self.w, self.h = geom if geom else (0, 0, raiz.winfo_screenwidth(), raiz.winfo_screenheight())
+        self.dim = Janela(raiz, self.w, self.h, fundo="black", alpha=0.0, x=gx, y=gy)
+        self.desenho = Janela(raiz, self.w, self.h, x=gx, y=gy)
+        self.cort = Janela(raiz, self.w, self.h, alpha=0.0, x=gx, y=gy)
         if TESTE:
             for nome, j in (("dim", self.dim), ("draw", self.desenho), ("cort", self.cort)):
                 if nome != TESTE:
@@ -298,7 +298,15 @@ def main():
         print(f"overlay_tk: sem tela ({e})", file=sys.stderr)
         sys.exit(3)
     raiz.withdraw()
-    app = App(raiz)
+    geom = None
+    if "--geom" in sys.argv:
+        try:
+            geom = tuple(int(v) for v in sys.argv[sys.argv.index("--geom") + 1].split(","))
+            if len(geom) != 4:
+                geom = None
+        except (IndexError, ValueError):
+            geom = None
+    app = App(raiz, geom)
 
     def ler():
         for linha in sys.stdin:

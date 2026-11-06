@@ -10,6 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import baton as P  # noqa: E402
+import monitores as MON  # noqa: E402
 import relay as RL  # noqa: E402
 import residente as R  # noqa: E402
 
@@ -312,6 +313,27 @@ class ProxyTest(unittest.TestCase):
             b = P.calcular_bases(8765)
         self.assertEqual(b[0]["base"], "http://10.0.0.2:8765")
         self.assertEqual(b[1], {"nome": "Internet (HTTPS)", "base": "https://baton.exemplo.com"})
+
+
+class PublicaVivaTest(unittest.TestCase):
+    def test_url_publica_so_primeiro_se_viva(self):
+        ips = [("Rede (en0)", "10.64.3.102")]
+        with mock.patch.object(P, "ips_locais", return_value=ips), mock.patch.object(P, "ip_lan", return_value="10.64.3.102"), \
+                mock.patch.object(P, "ip_tailscale_cache", return_value=None), mock.patch.object(P, "URL_PUBLICA", "https://baton.exemplo.com"):
+            with mock.patch.object(P, "publica_viva", return_value=True):
+                self.assertEqual(P.calcular_bases(8765)[0]["base"], "https://baton.exemplo.com")
+            with mock.patch.object(P, "publica_viva", return_value=False):
+                b = P.calcular_bases(8765)
+                self.assertEqual(b[0]["base"], "http://10.64.3.102:8765")
+                self.assertIn("indisponivel", b[-1]["nome"])
+
+    def test_relay_desconectado_derruba_url_publica(self):
+        class Ag:
+            status = "desconectado (ConnectionError)"
+        with mock.patch.object(P, "URL_PUBLICA", "https://baton.exemplo.com"), mock.patch.object(P, "RELAY_AGENTE", Ag()):
+            self.assertFalse(P.publica_viva())
+            P.RELAY_AGENTE.status = "conectado"
+            self.assertTrue(P.publica_viva())
 
 
 class SimplesTest(unittest.TestCase):
@@ -890,6 +912,12 @@ class RelayTest(unittest.TestCase):
         a1.vivo = a2.vivo = False
         self.assertIsNone(r.achar(estatico=True))
 
+    def test_relay_json_do_pacote(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "relay.json").write_text(json.dumps({"url": "wss://x.exemplo.com", "chave": "c" * 12}))
+            with mock.patch.object(P, "ARQ_RELAY", Path(d) / "nao-existe.json"), mock.patch.object(P, "__file__", str(Path(d) / "baton.py")):
+                self.assertEqual(P.relay_salvo(), ("wss://x.exemplo.com", "c" * 12))
+
     def test_limite_de_sessoes(self):
         r = RL.Relay("k" * 12, max_sessoes=1)
         self.assertTrue(r.registrar(RL.Agente(None, "a")))
@@ -939,3 +967,43 @@ class RelayTest(unittest.TestCase):
         ag.parar = True
         srv.shutdown()
         loc.shutdown()
+
+
+class MonitoresTest(unittest.TestCase):
+    XR = """Monitors: 2
+ 0: +*DP-1 1920/530x1080/300+0+455  DP-1
+ 1: +HDMI-1 1080/530x1920/300+1920+0  HDMI-1
+"""
+
+    def test_parse_xrandr(self):
+        m = MON.parse_xrandr(self.XR)
+        self.assertEqual([(x["nome"], x["x"], x["y"], x["w"], x["h"], x["principal"]) for x in m],
+                         [("DP-1", 0, 455, 1920, 1080, True), ("HDMI-1", 1920, 0, 1080, 1920, False)])
+
+    def test_parse_powershell(self):
+        dados = [{"DeviceName": "\\\\.\\DISPLAY1", "Primary": True, "Bounds": {"X": 0, "Y": 0, "Width": 1920, "Height": 1080}},
+                 {"DeviceName": "\\\\.\\DISPLAY2", "Primary": False, "Bounds": {"X": 1920, "Y": -200, "Width": 1280, "Height": 720}}]
+        m = MON.parse_powershell(json.dumps(dados))
+        self.assertEqual((m[1]["x"], m[1]["y"], m[1]["w"], m[1]["h"], m[0]["principal"]), (1920, -200, 1280, 720, True))
+
+    def test_parse_jxa_inverte_y(self):
+        m = MON.parse_jxa('[{"nome":"A","x":0,"y":0,"w":1440,"h":900,"principal":true},{"nome":"B","x":1440,"y":0,"w":1920,"h":1080}]')
+        self.assertEqual((m[1]["x"], m[1]["y"]), (1440, -180))  # monitor mais alto que o principal fica acima (y negativo)
+
+    def test_escolher(self):
+        mons = [dict(m, id=i) for i, m in enumerate(MON.parse_xrandr(self.XR))]
+        self.assertEqual(MON.escolher("2", mons)["nome"], "HDMI-1")
+        self.assertEqual(MON.escolher("auto", mons, janela=(0, 455, 1920, 1080))["nome"], "DP-1")  # tela cheia no principal
+        self.assertEqual(MON.escolher("auto", mons, janela=(1920, 0, 1080, 1920))["nome"], "HDMI-1")
+        self.assertEqual(MON.escolher("auto", mons, janela=(100, 500, 800, 600))["nome"], "HDMI-1")  # sem tela cheia: o secundario
+        self.assertEqual(MON.escolher("auto", mons, janela=(100, 500, 800, 600), anterior=mons[0])["nome"], "DP-1")  # mantem o ultimo
+        self.assertEqual(MON.escolher("9", mons, janela=(100, 500, 800, 600))["nome"], "HDMI-1")  # numero invalido cai no auto
+
+    def test_para_tela_no_monitor_deslocado(self):
+        mons = [{"id": 1, "nome": "HDMI", "x": 1920, "y": 0, "w": 1280, "h": 720, "principal": False}]
+        e = P.Externo(FakeBackend(), None, True)
+        e.monitor_fn = lambda: mons[0]
+        px, py, nx, ny = e.para_tela(0.5, 0.5, 16 / 9)
+        self.assertEqual((px, py, nx, ny), (1920 + 640, 360, 0.5, 0.5))
+        px, py, nx, ny = e.para_tela(1.0, 1.0, 16 / 9)
+        self.assertEqual((px, py), (1920 + 1280, 720))

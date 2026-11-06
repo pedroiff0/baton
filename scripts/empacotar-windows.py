@@ -15,7 +15,7 @@ import zipfile
 from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parent.parent
-ARQUIVOS = ["baton.py", "residente.py", "relay.py", "overlay_tk.py", "tray_win.ps1", "LICENSE"]
+ARQUIVOS = ["baton.py", "residente.py", "relay.py", "monitores.py", "overlay_tk.py", "tray_win.ps1", "LICENSE"] + (["relay.json"] if (RAIZ / "relay.json").exists() else [])  # relay.json: url+chave do relay, fora do git
 
 BAT = r'''@echo off
 cd /d "%~dp0"

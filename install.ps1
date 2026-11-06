@@ -7,7 +7,8 @@ $py = (Get-Command python -ErrorAction SilentlyContinue).Source
 if (-not $py) { $py = (Get-Command py -ErrorAction SilentlyContinue).Source }
 if (-not $py) { Write-Error "Python 3 nao encontrado. Instale em python.org (com Tcl/Tk) e rode de novo."; exit 1 }
 New-Item -ItemType Directory -Force $dest | Out-Null
-Copy-Item "$src\baton.py", "$src\residente.py", "$src\relay.py", "$src\overlay_tk.py", "$src\tray_win.ps1", "$src\LICENSE" $dest -Force
+Copy-Item "$src\baton.py", "$src\residente.py", "$src\relay.py", "$src\monitores.py", "$src\overlay_tk.py", "$src\tray_win.ps1", "$src\LICENSE" $dest -Force
+if (Test-Path "$src\relay.json") { Copy-Item "$src\relay.json" $dest -Force }
 & $py "$dest\baton.py" --instalar
 & $py "$dest\baton.py" --preparar-offline
 $pyw = Join-Path (Split-Path -Parent $py) "pythonw.exe"
