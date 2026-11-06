@@ -57,6 +57,8 @@ Requisitos: Python 3.8+. O celular conecta pelo Wi-Fi do computador (sem VPN) ou
 ./uninstall.sh      # ou .\uninstall.ps1
 ```
 
+**Modo simples (laser por apontamento):** no controle, toque em "modo simples" (ou abra `/simples`): só Anterior, Próximo e um botão Laser. Segure o Laser e aponte o celular para a tela: o ponto acompanha o giro do aparelho (a pose ao apertar é o centro). Os sensores só funcionam em HTTPS: a página oferece o link `https://<ip>:8766` (certificado autoassinado, aceite o aviso uma vez; no iPhone o Safari pede também a permissão de movimento no primeiro toque). Sem HTTPS ou sem sensores, arraste o dedo sobre o botão.
+
 **Prévia sem PDF:** sem arquivo carregado o celular mostra uma captura da tela principal do computador (a apresentação em tela cheia) no lugar do slide atual, só para celulares pareados; `--sem-captura` desliga. Para o próximo slide, carregue o PDF no painel. No macOS libere o Baton em Ajustes > Privacidade > Gravação de Tela; no Linux use `grim` (Wayland) ou `import`/`maim`/`scrot` (X11), ou `pip install pillow`.
 
 **Ícone na bandeja (Linux):** o GNOME não tem bandeja; o `install.sh` instala o AppIndicator e a extensão, e é preciso sair e entrar na sessão uma vez. KDE, XFCE e Cinnamon mostram o ícone direto.

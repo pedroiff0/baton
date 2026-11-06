@@ -294,6 +294,7 @@ class Estado:
         self.externo = externo
         self.remote_url = remote_url
         self.local_url = ""
+        self.tls_porta = 0  # porta HTTPS (sensores do celular exigem contexto seguro); 0 = desligada
         self.captura = True  # previa da tela do computador para o celular quando nao ha PDF (--sem-captura desliga)
         self.tela_propria, self.tela_proc = False, None  # tela cheia do proprio Baton (PDF carregado pelo painel)
         self._bases_fixas, self.bases_fn, self._bases_cache = [], None, (0.0, [])  # enderecos do computador (ver calcular_bases)
@@ -1696,6 +1697,35 @@ def parse_interfaces(saida):
     return achados
 
 
+def contexto_tls():
+    """Contexto TLS com certificado autoassinado (gerado uma vez com o openssl) ou None. O iOS e o Chrome so liberam os sensores
+    de movimento (laser por apontamento) em paginas HTTPS; o celular mostra um aviso de certificado na primeira vez."""
+    import ssl
+    pasta = Path.home() / ".cache" / "baton" / "tls"
+    cert, chave = pasta / "cert.pem", pasta / "key.pem"
+    if not (cert.exists() and chave.exists()):
+        if not shutil.which("openssl"):
+            return None
+        pasta.mkdir(parents=True, exist_ok=True)
+        base = ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", str(chave), "-out", str(cert), "-days", "825",
+                "-subj", "/CN=baton"]
+        for extra in (["-addext", "subjectAltName=DNS:baton.local"], []):
+            if subprocess.run(base + extra, capture_output=True, timeout=60).returncode == 0:
+                break
+        if not (cert.exists() and chave.exists()):
+            return None
+        try:
+            os.chmod(chave, 0o600)
+        except OSError:
+            pass
+    try:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(str(cert), str(chave))
+        return ctx
+    except (ssl.SSLError, OSError):
+        return None
+
+
 def capturar_tela(largura=960, qualidade=60):
     """JPEG da tela principal (para a previa do celular quando nao ha PDF) ou None se nao ha como capturar.
     Usa o Pillow se existir; senao ferramentas do sistema (screencapture, PowerShell, grim, import, maim, scrot)."""
@@ -2271,7 +2301,7 @@ select{background:#1d1d1f;color:#fff;border:0;border-radius:12px;font-size:14px;
   body.grande #rlbt{width:auto;margin:0}
 }
 """
-HTML_REMOTO = """<div id="aviso"></div><div id="app"><div id="colA"><div id="topo"><span><i id="dot"></i><span id="st">conectando</span></span><span id="pos">- / -</span></div>
+HTML_REMOTO = """<div id="aviso"></div><div id="app"><div id="colA"><div id="topo"><span><i id="dot"></i><span id="st">conectando</span><a id="lns" style="margin-left:12px;color:#0a84ff;font-size:13px;text-decoration:none">modo simples</a></span><span id="pos">- / -</span></div>
 <div id="vista"><img id="cap" alt=""><canvas id="cv"></canvas><canvas id="ovp"></canvas><div id="zrect"></div><div id="ponto"></div><div id="zflut"><button id="zfg" title="Ampliar a previa">&#x26F6;</button><button id="zfm">&minus;</button><span id="zfv">1x</span><button id="zfp">+</button></div></div>
 <div class="linha" id="tools"><button id="bl">Laser</button><button id="bf">Foco</button><button id="bc">Caneta</button><button id="bm">Marca</button><button id="bz">Zoom</button></div>
 <div class="linha" id="zbar"><button id="zm">&minus;</button><span id="zv">1x</span><button id="zp">+</button><button id="z1">1x</button></div>
@@ -2506,6 +2536,7 @@ function aplicaGrande(){try{document.body.classList.toggle('grande',localStorage
 aplicaGrande();
 $('zfg').onclick=()=>{const g=!document.body.classList.contains('grande');document.body.classList.toggle('grande',g);try{localStorage.setItem('baton-grande',g?'1':'0')}catch(e){}remedir()};
 $('bpdf').onclick=()=>$('fpdf').click();
+$('lns').href='/simples?k='+encodeURIComponent(TOKEN);
 $('fpdf').onchange=async e=>{const f=e.target.files[0];if(!f)return;const l=$('prevlbl');l.textContent='Enviando '+f.name+'...';$('bpdf').style.display='none';
   try{const r=await fetch('/painel/deck?nome='+encodeURIComponent(f.name),{method:'POST',headers:{'X-Token':TOKEN},body:await f.arrayBuffer()});
     if(!r.ok){let m='';try{m=(await r.json()).erro}catch(x){}l.textContent='Falhou: '+(m||r.status);$('bpdf').style.display='block'}}
@@ -2678,6 +2709,131 @@ ciclo();setInterval(ciclo,2000);
 </script></body></html>"""
 
 
+PAGINA_SIMPLES = r"""<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes"><meta name="theme-color" content="#000000"><title>Baton simples</title>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;background:#000;color:#fff;font-family:-apple-system,system-ui,sans-serif;touch-action:none;user-select:none;-webkit-user-select:none;overflow:hidden}
+body{display:grid;grid-template-rows:auto 1fr auto;gap:10px;padding:max(10px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) max(12px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left))}
+#topo{display:flex;justify-content:space-between;align-items:center;font-size:14px;color:#aaa}
+#dot{width:10px;height:10px;border-radius:50%;background:#e33;display:inline-block;margin-right:6px}#dot.ok{background:#3c6}
+#topo a{color:#0a84ff;text-decoration:none;font-size:14px;padding:6px 0}
+#corpo{display:grid;grid-template-columns:1fr;grid-template-rows:1.25fr 1fr 1fr;gap:12px;min-height:0}
+button{border:0;border-radius:22px;color:#fff;font-weight:700;touch-action:manipulation;font-size:clamp(22px,7vmin,40px)}
+#ant{background:#1d1d1f}#seg{background:#0a84ff}#seg:active{background:#006fe0}#ant:active{background:#333}
+#apontar{display:grid;grid-template-columns:1fr 1fr;gap:12px;min-height:0}#apontar button{min-height:0}
+#laser,#foco{position:relative;touch-action:none}
+#laser{background:#3a1212;border:3px solid #ff3b30}#laser.on{background:#ff3b30}
+#foco{background:#10223a;border:3px solid #0a84ff}#foco.on{background:#0a84ff}
+.dica{position:absolute;left:0;right:0;bottom:8px;font-size:12px;font-weight:500;color:#cfd3d8;padding:0 8px;line-height:1.25}
+.on .dica{color:#fff}
+#cfg{display:flex;align-items:center;gap:10px;font-size:13px;color:#aaa;padding:2px 6px}#cfg input{flex:1;accent-color:#0a84ff}#cfg output{min-width:30px;text-align:right;color:#888}
+#modo{font-size:12px;color:#888;text-align:center;padding:0 8px}
+@media (orientation:landscape){
+  body{grid-template-rows:auto 1fr auto}
+  #corpo{grid-template-columns:1fr 1.6fr 1fr;grid-template-rows:1fr}
+  #ant{order:0}#apontar{order:1}#seg{order:2}
+}
+</style></head><body>
+<div id="topo"><span><i id="dot"></i><span id="st">conectando</span></span><span><a href="/remote?k=__TOKEN__">Controle completo</a></span></div>
+<div id="corpo">
+  <div id="apontar"><button id="laser">LASER<div class="dica">Segure e aponte</div></button><button id="foco">FOCO<div class="dica">Segure e aponte; 2o dedo: raio</div></button></div>
+  <button id="ant">&#9664; Anterior</button><button id="seg">Proximo &#9654;</button>
+</div>
+<div id="cfg"><span>Raio do foco</span><input id="raio" type="range" min="4" max="30" value="12"><output id="rv">12</output></div>
+<div style="position:fixed;left:12px;right:12px;bottom:max(2px,env(safe-area-inset-bottom));pointer-events:none"></div>
+<script>
+const TOKEN="__TOKEN__",HTTPS="__HTTPS__",$=id=>document.getElementById(id);
+let ultimaMsg=Date.now(),es=null;
+function status(ok,t){$('dot').classList.toggle('ok',ok);$('st').textContent=t}
+const cid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,8);
+async function cmd(c,v){const id=cid();
+  for(let t=0;t<4;t++){const ac=new AbortController(),to=setTimeout(()=>ac.abort(),2000);
+    try{const r=await fetch('/cmd',{method:'POST',headers:{'Content-Type':'application/json','X-Token':TOKEN},body:JSON.stringify({cmd:c,valor:v,cid:id}),signal:ac.signal});clearTimeout(to);
+      if(r.ok||r.status===423){status(true,'conectado');return r.ok}}catch(e){clearTimeout(to)}
+    status(false,'reenviando...');await new Promise(r=>setTimeout(r,200*(t+1)))}
+  status(false,'sem conexao');return false}
+$('seg').onclick=()=>{cmd('next');navigator.vibrate&&navigator.vibrate(8)};$('ant').onclick=()=>{cmd('prev');navigator.vibrate&&navigator.vibrate(8)};
+addEventListener('keydown',e=>{
+  if(['AudioVolumeUp','VolumeUp','MediaTrackNext','PageDown','ArrowRight'].includes(e.key)){cmd('next');e.preventDefault()}
+  else if(['AudioVolumeDown','VolumeDown','MediaTrackPrevious','PageUp','ArrowLeft'].includes(e.key)){cmd('prev');e.preventDefault()}});
+function conectar(){if(es){try{es.close()}catch(e){}}es=new EventSource('/events?k='+encodeURIComponent(TOKEN));ultimaMsg=Date.now();
+  es.onmessage=()=>{ultimaMsg=Date.now();status(true,'conectado')};es.onerror=()=>status(false,'reconectando...')}
+setInterval(()=>{if(Date.now()-ultimaMsg>12000)conectar()},3000);conectar();
+async function wake(){try{if('wakeLock' in navigator)await navigator.wakeLock.request('screen')}catch(e){}}
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){wake();conectar()}});wake();
+
+// ---- laser e foco por apontamento: gira o celular e o ponto acompanha (a pose ao apertar o botao vira o centro da tela)
+const rad=Math.PI/180;
+function mul(a,b){const r=[[0,0,0],[0,0,0],[0,0,0]];for(let i=0;i<3;i++)for(let j=0;j<3;j++)for(let k=0;k<3;k++)r[i][j]+=a[i][k]*b[k][j];return r}
+const Rz=a=>[[Math.cos(a),-Math.sin(a),0],[Math.sin(a),Math.cos(a),0],[0,0,1]];
+const Rx=a=>[[1,0,0],[0,Math.cos(a),-Math.sin(a)],[0,Math.sin(a),Math.cos(a)]];
+const Ry=a=>[[Math.cos(a),0,Math.sin(a)],[0,1,0],[-Math.sin(a),0,Math.cos(a)]];
+// direcao em que o celular aponta, no mundo (x leste, y norte, z cima): a borda de cima (+Y) com o celular mais deitado,
+// a camera de tras (-Z) com ele em pe, como numa foto
+function direcao(o,eixo){const R=mul(mul(Rz(o.a*rad),Rx(o.b*rad)),Ry(o.g*rad));const v=eixo==='z'?[0,0,-1]:[0,1,0];
+  return[R[0][0]*v[0]+R[0][1]*v[1]+R[0][2]*v[2],R[1][0]*v[0]+R[1][1]*v[1]+R[1][2]*v[2],R[2][0]*v[0]+R[2][1]*v[1]+R[2][2]*v[2]]}
+const angulos=f=>({yaw:Math.atan2(f[0],f[1])/rad,pitch:Math.asin(Math.max(-1,Math.min(1,f[2])))/rad});
+const dif=a=>{while(a>180)a-=360;while(a<-180)a+=360;return a};
+let ori=null,semSensor=true,base=null,sx=.5,sy=.5,ativo=null,ptoque=null;  // ativo: 'laser' | 'foco' | null
+function aoOrientar(e){if(e.alpha===null||e.alpha===undefined)return;semSensor=false;ori={a:e.alpha,b:e.beta,g:e.gamma};if(ativo)atualiza()}
+addEventListener('deviceorientation',aoOrientar,true);
+let gan=parseFloat(localStorage.getItem('baton-gan')||'30');
+const sensor=()=>!semSensor;
+let raio=.12;
+fetch('/cfg?k='+encodeURIComponent(TOKEN)).then(r=>r.json()).then(c=>{if(c.foco_raio){raio=c.foco_raio/100;$('raio').value=c.foco_raio;$('rv').textContent=c.foco_raio}}).catch(()=>{});
+let tCfg=null;
+function poeRaio(r,salva){raio=Math.max(.04,Math.min(.3,r));const p=Math.round(raio*100);$('raio').value=p;$('rv').textContent=p;
+  if(salva){clearTimeout(tCfg);tCfg=setTimeout(()=>fetch('/cfg',{method:'POST',headers:{'Content-Type':'application/json','X-Token':TOKEN},body:JSON.stringify({foco_raio:p})}).catch(()=>{}),150)}}
+$('raio').oninput=e=>poeRaio(parseInt(e.target.value)/100,true);
+let lsEnv=false,lsPend=null,ultimo=0;
+function envLaser(x,y,on){const t=performance.now();if(on&&t-ultimo<25)return;ultimo=t;lsPend={x,y,on,m:ativo==='foco'||(!on&&modoUlt==='foco')?'foco':'laser',r:raio};if(!lsEnv)bombeia()}
+let modoUlt='laser';
+function bombeia(){if(!lsPend){lsEnv=false;return}lsEnv=true;const d=lsPend;lsPend=null;
+  fetch('/laser',{method:'POST',headers:{'Content-Type':'application/json','X-Token':TOKEN},body:JSON.stringify(d),keepalive:true}).catch(()=>{}).finally(bombeia)}
+function atualiza(){
+  if(!base||!ori)return;const f=direcao(ori,base.eixo),an=angulos(f);
+  const x=.5+dif(an.yaw-base.yaw)/gan,y=.5-(an.pitch-base.pitch)/(gan*9/16);
+  sx+=(Math.max(0,Math.min(1,x))-sx)*.4;sy+=(Math.max(0,Math.min(1,y))-sy)*.4;envLaser(sx,sy,true)}
+async function permissao(){
+  if(typeof DeviceOrientationEvent!=='undefined'&&typeof DeviceOrientationEvent.requestPermission==='function'){
+    try{const r=await DeviceOrientationEvent.requestPermission();return r==='granted'}catch(e){return false}}
+  return true}
+let pediu=false;
+const DICAS={laser:'Segure e aponte',foco:'Segure e aponte; 2o dedo: raio'};
+const dedos=new Map();let pinca=null;
+function distDedos(){const[a,b]=[...dedos.values()];return Math.hypot(a.x-b.x,a.y-b.y)}
+function liga(id,modo){
+  const el=$(id);
+  el.addEventListener('pointerdown',async e=>{
+    e.preventDefault();try{el.setPointerCapture(e.pointerId)}catch(x){}
+    if(ativo)return;
+    if(!pediu){pediu=true;await permissao();await new Promise(r=>setTimeout(r,250))}
+    ativo=modo;modoUlt=modo;el.classList.add('on');navigator.vibrate&&navigator.vibrate(12);sx=sy=.5;
+    if(sensor()&&ori){const eixo=Math.abs(ori.b)>55?'z':'y',an=angulos(direcao(ori,eixo));base={eixo,yaw:an.yaw,pitch:an.pitch};
+      el.querySelector('.dica').textContent='Aponte: o ponto acompanha o celular';envLaser(.5,.5,true)}
+    else{ptoque={x:e.clientX,y:e.clientY};base=null;
+      el.querySelector('.dica').textContent=(HTTPS&&!isSecureContext?'Sem sensores aqui; arraste o dedo (ou abra em HTTPS)':'Sem sensores; arraste o dedo');envLaser(.5,.5,true)}
+  });
+  el.addEventListener('pointermove',e=>{if(ativo!==modo||sensor()&&base)return;if(!ptoque)return;
+    const r=Math.min(innerWidth,innerHeight)*0.45;sx=Math.max(0,Math.min(1,.5+(e.clientX-ptoque.x)/r/2));sy=Math.max(0,Math.min(1,.5+(e.clientY-ptoque.y)/r/2));envLaser(sx,sy,true)});
+  ['pointerup','pointercancel'].forEach(t=>el.addEventListener(t,()=>{if(ativo!==modo)return;ativo=null;base=null;ptoque=null;pinca=null;el.classList.remove('on');
+    el.querySelector('.dica').textContent=DICAS[modo];lsPend=null;envLaser(sx,sy,false)}));
+  el.addEventListener('contextmenu',e=>e.preventDefault());
+}
+liga('laser','laser');liga('foco','foco');
+// foco: com o botao apertado, um segundo dedo em qualquer lugar abre e fecha o raio (pinca)
+document.addEventListener('pointerdown',e=>{dedos.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  if(ativo==='foco'&&dedos.size===2)pinca={d0:distDedos(),r0:raio}},true);
+document.addEventListener('pointermove',e=>{if(!dedos.has(e.pointerId))return;dedos.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  if(pinca&&dedos.size>=2&&pinca.d0>0)poeRaio(pinca.r0*distDedos()/pinca.d0,true)},true);
+['pointerup','pointercancel'].forEach(t=>document.addEventListener(t,e=>{dedos.delete(e.pointerId);if(dedos.size<2)pinca=null},true));
+// sensibilidade: tocar duas vezes na barra de status alterna 20/30/45 graus de campo de visao
+$('topo').addEventListener('dblclick',()=>{gan=gan===30?45:gan===45?20:30;try{localStorage.setItem('baton-gan',String(gan))}catch(e){}$('st').textContent='campo '+gan+' graus'});
+if(HTTPS&&!isSecureContext){const a=document.createElement('div');a.id='modo';a.innerHTML='Para apontar com os sensores abra <a href="'+HTTPS+'" style="color:#0a84ff">a versao segura (HTTPS)</a> e aceite o aviso do certificado.';$('corpo').after(a);document.body.style.gridTemplateRows='auto 1fr auto'}
+</script></body></html>
+"""
+
 PAGINA_QR_USADO = """<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Baton</title></head><body style="font-family:-apple-system,system-ui,sans-serif;background:#111;color:#eee;text-align:center;padding:48px 24px">
 <h2>QR code ja usado ou expirado</h2><p>Cada QR vale para um celular. No computador, abra o Baton (icone da barra, ou localhost:8765) e escaneie o QR code atual.</p></body></html>"""
@@ -2711,6 +2867,7 @@ def montar(modo, estado, usar_cache, usar_qr_cache=False, token="", leve=False):
 
 
 class Servidor(ThreadingHTTPServer):
+    tls = False
     daemon_threads = True
     allow_reuse_address = True
     request_queue_size = 64
@@ -2888,6 +3045,13 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
                 if not jpg:
                     return self._enviar(404, "sem como capturar a tela neste sistema", "text/plain; charset=utf-8")
                 return self._enviar(200, jpg, "image/jpeg")
+            if u.path == "/simples":
+                if not (self._local() or self._dispositivo(u) is not None):
+                    return self._enviar(403, "celular nao pareado: escaneie o QR code no computador", "text/plain; charset=utf-8")
+                k = parse_qs(u.query).get("k", [""])[0]
+                host = (self.headers.get("Host") or "").rsplit(":", 1)[0] or "localhost"
+                https = (f"https://{host}:{estado.tls_porta}/simples?k={k}" if estado.tls_porta and not self.server.tls else "")
+                return self._enviar(200, PAGINA_SIMPLES.replace("__TOKEN__", k).replace("__HTTPS__", https), "text/html; charset=utf-8")
             if u.path == "/cfg":
                 if not self._leitura_ok(u):
                     return self._enviar(403, "{}")
@@ -3001,6 +3165,8 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
                 return
             if (self.path == "/cmd" and dados.get("cmd") in ("next", "prev", "first", "last", "goto")
                     and not estado.permitido()):
+                estado.autorizar_por_toque()
+            if self.path == "/laser" and dados.get("on") and not estado.permitido():
                 estado.autorizar_por_toque()
             if self.path in ("/cmd", "/laser", "/draw") and not estado.permitido():
                 return self._enviar(423, json.dumps(estado.snapshot()))
@@ -3162,6 +3328,7 @@ def main():
     ap.add_argument("--transicao", choices=TRANSICOES, default="slide")
     ap.add_argument("--host", help="IP extra para escutar (padrao: IP do Tailscale e 127.0.0.1)")
     ap.add_argument("--proporcao", help="proporcao do slide no modo externo, ex.: 16:9 (padrao: le do PDF)")
+    ap.add_argument("--sem-https", action="store_true", help="nao abre a porta HTTPS (porta+1), usada pelo laser por apontamento com sensores")
     ap.add_argument("--sem-captura", action="store_true", help="nao envia ao celular a previa (captura) da tela do computador quando nao ha PDF")
     ap.add_argument("--sem-abrir", action="store_true", help="nao abre o navegador no Mac")
     ap.add_argument("--tela", type=int, default=0, help="modo externo: indice da tela onde a camada desenha (0 = principal)")
@@ -3325,6 +3492,18 @@ def main():
             continue
         threading.Thread(target=s.serve_forever, daemon=True).start()
         servidores.append(s)
+    if not a.sem_https:
+        try:
+            ctx = contexto_tls()
+            if ctx:
+                st = Servidor((hosts[0], a.porta + 1), handler)
+                st.socket = ctx.wrap_socket(st.socket, server_side=True, do_handshake_on_connect=False)
+                st.tls = True
+                threading.Thread(target=st.serve_forever, daemon=True).start()
+                servidores.append(st)
+                estado.tls_porta = a.porta + 1
+        except OSError as e:
+            print(f"aviso: sem HTTPS na porta {a.porta + 1} ({e}); o laser por apontamento volta ao dedo", file=sys.stderr)
     local = f"http://localhost:{a.porta}/"
     estado.local_url = local
     tray = residente.iniciar_tray(a.porta) if (a.residente or a.tray) and not a.sem_tray else None

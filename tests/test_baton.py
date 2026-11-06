@@ -303,6 +303,26 @@ class WaylandTest(unittest.TestCase):
             self.assertIsInstance(P.criar_externo().b, P._Xdotool)
 
 
+class SimplesTest(unittest.TestCase):
+    def test_pagina_simples(self):
+        self.assertIn("__TOKEN__", P.PAGINA_SIMPLES)
+        self.assertIn("deviceorientation", P.PAGINA_SIMPLES)
+        self.assertNotIn("__HTTPS__\"; ", "")  # placeholder existe uma vez, entre aspas
+        self.assertEqual(P.PAGINA_SIMPLES.count("__HTTPS__"), 1)
+
+    def test_tls_sem_openssl(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(P.Path, "home", return_value=Path(d)), \
+                mock.patch.object(P.shutil, "which", return_value=None):
+            self.assertIsNone(P.contexto_tls())
+
+    def test_toque_no_laser_autoriza(self):
+        e = P.Estado(None, 9999, "slide", "tok")
+        e.prefs.update(ativo=True, modo="perguntar")
+        e.autorizado = False
+        self.assertTrue(e.autorizar_por_toque())
+        self.assertTrue(e.permitido())
+
+
 class BandejaTest(unittest.TestCase):
     def test_rotulo_por_estado(self):
         import tray_gtk as T
