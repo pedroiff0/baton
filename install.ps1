@@ -10,6 +10,7 @@ New-Item -ItemType Directory -Force $dest | Out-Null
 Copy-Item "$src\baton.py", "$src\residente.py", "$src\relay.py", "$src\monitores.py", "$src\overlay_tk.py", "$src\tray_win.ps1", "$src\LICENSE" $dest -Force
 if ($env:BATON_CONVITE) { & $py "$dest\baton.py" --convite $env:BATON_CONVITE }
 if (Test-Path "$src\relay.json") { Copy-Item "$src\relay.json" $dest -Force }
+Copy-Item "$src\vendor" $dest -Recurse -Force
 & $py "$dest\baton.py" --instalar
 & $py "$dest\baton.py" --preparar-offline
 $pyw = Join-Path (Split-Path -Parent $py) "pythonw.exe"

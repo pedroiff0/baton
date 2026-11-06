@@ -1050,6 +1050,18 @@ class RelayTest(unittest.TestCase):
         loc.shutdown()
 
 
+class OfflineTest(unittest.TestCase):
+    def test_leitor_de_pdf_e_qr_vem_no_repositorio(self):
+        raiz = Path(P.__file__).resolve().parent / "vendor"
+        for arq in ("pdfjs/pdf.min.js", "pdfjs/pdf.worker.min.js", "qrcode.min.js", "LICENSES.md"):
+            self.assertGreater((raiz / arq).stat().st_size, 200, arq)
+        self.assertEqual(P.pasta_pdfjs(), raiz / "pdfjs")  # clonou, funciona sem internet
+
+    def test_pagina_segue_conectada_sem_pdfjs(self):
+        self.assertIn("window.PDFJS_FALHA=true", P.PAGINA_BASE)
+        self.assertIn("conectar();  // o SSE nao depende do leitor de PDF", P.JS_TELA)
+
+
 class ZoomSistemaTest(unittest.TestCase):
     def test_tabela_por_sistema(self):
         with mock.patch.object(P.sys, "platform", "darwin"):
@@ -1136,6 +1148,24 @@ class MonitoresTest(unittest.TestCase):
         self.assertEqual(MON.escolher("auto", mons, janela=(100, 500, 800, 600))["nome"], "HDMI-1")  # sem tela cheia: o secundario
         self.assertEqual(MON.escolher("auto", mons, janela=(100, 500, 800, 600), anterior=mons[0])["nome"], "DP-1")  # mantem o ultimo
         self.assertEqual(MON.escolher("9", mons, janela=(100, 500, 800, 600))["nome"], "HDMI-1")  # numero invalido cai no auto
+
+    def test_cantos_alcancaveis_em_monitor_retrato(self):
+        mon = {"id": 1, "nome": "HDMI", "x": 1920, "y": 0, "w": 1080, "h": 1920, "principal": False}
+        e = P.Externo(FakeBackend(), None, True)
+        e.monitor_fn = lambda: mon
+        self.assertEqual(e.para_tela(0.0, 0.0, 16 / 9)[:2], (1920, 0))  # proporcao do slide nao cria barras: canto exato
+        self.assertEqual(e.para_tela(1.0, 1.0, 16 / 9)[2:], (1.0, 1.0))
+
+    def test_aspecto_segue_o_monitor_da_projecao(self):
+        est = P.Estado(None, 9999, "fade", "t", P.Externo(FakeBackend()), "", 16 / 9)
+        est._mon_cache = (0, {"id": 1, "x": 0, "y": 0, "w": 1080, "h": 1920})
+        self.assertAlmostEqual(est.aspecto(), 1080 / 1920, places=3)
+        self.assertAlmostEqual(est.snapshot()["aspecto"], 1080 / 1920, places=3)
+
+    def test_laser_preto_valido_e_com_halo(self):
+        self.assertEqual(P.cfg_validar({"laser_cor": "#000000"})["laser_cor"], "#000000")
+        for arq in ("overlay_gtk.py", "overlay_tk.py", "overlay.swift"):
+            self.assertIn("escuro", (Path(__file__).resolve().parent.parent / arq).read_text(encoding="utf-8"), arq)
 
     def test_para_tela_no_monitor_deslocado(self):
         mons = [{"id": 1, "nome": "HDMI", "x": 1920, "y": 0, "w": 1280, "h": 720, "principal": False}]

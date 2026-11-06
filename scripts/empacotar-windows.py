@@ -82,6 +82,7 @@ def main():
         pth.write_text("\r\n".join(linhas) + "\r\n")
     for nome in ARQUIVOS:
         shutil.copy2(RAIZ / nome, pasta / "baton" / nome)
+    shutil.copytree(RAIZ / "vendor", pasta / "baton" / "vendor", dirs_exist_ok=True)  # pdf.js e QR embutidos (sem internet)
     if a.convite:
         (pasta / "baton" / "convite.txt").write_text(a.convite.strip() + "\n", encoding="utf-8")
     try:

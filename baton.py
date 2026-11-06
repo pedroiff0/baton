@@ -300,6 +300,7 @@ class Estado:
         self.local_url = ""
         self.tls_porta = 0  # porta HTTPS (sensores do celular exigem contexto seguro); 0 = desligada
         self.captura = True  # previa da tela do computador para o celular quando nao ha PDF (--sem-captura desliga)
+        self.tela_desde = 0.0
         self.tela_propria, self.tela_proc = False, None  # tela cheia do proprio Baton (PDF carregado pelo painel)
         self._bases_fixas, self.bases_fn, self._bases_cache = [], None, (0.0, [])  # enderecos do computador (ver calcular_bases)
         self.dispositivos = []  # celulares pareados: {id, nome, token, criado, ultimo_visto, ua}
@@ -356,7 +357,9 @@ class Estado:
                 "cortina": self.cortina, "fim": {"txt": self.fim_txt[0], "sub": self.fim_txt[1]},
                 "auth": self.autorizado, "ativo": self.prefs["ativo"], "pedido": self.pedido,
                 "acess": self.acessibilidade(), "so": sys.platform,
+                "tela_falha": bool(self.tela_propria and not self.tela_conectada() and time.time() - self.tela_desde > 8),
                 "zoom_sistema": (zoom_sistema_cfg() or {}).get("nome") if self.ext else None,
+                "aspecto": self.aspecto(),
                 "remotos": self.remotos, "zoom": self.zoom, "zx": self.zx, "zy": self.zy, "seq": self.seq,
                 "timer": {"rodando": self.t_rodando, "elapsed": round(self.decorrido(), 1), "voltas": self.voltas}}
 
@@ -407,6 +410,7 @@ class Estado:
         proc = abrir_tela_cheia(url, self.monitor())
         with self.lock:
             self.tela_propria, self.tela_proc = True, proc
+            self.tela_desde = time.time()
         if proc is not None:
             def _vigia():
                 proc.wait()
@@ -577,6 +581,13 @@ class Estado:
             URL_PUBLICA = ""
             self._url_derivada = ""
 
+    def aspecto(self):
+        """Largura/altura da area de apontar: o monitor da projecao no modo externo, senao o slide."""
+        m = self._mon_cache[1] if self.ext else None
+        if m and m.get("h"):
+            return round(m["w"] / m["h"], 4)
+        return round(float(self.proporcao), 4)
+
     def monitor_pref(self):
         return self.monitor_cli or str(self.prefs.get("monitor", "auto"))
 
@@ -592,7 +603,11 @@ class Estado:
             m = monitores.escolher(self.monitor_pref(), anterior=self._mon_cache[1])
         except Exception:
             m = self._mon_cache[1]
+        ant = self._mon_cache[1]
         self._mon_cache = (time.monotonic(), m)
+        chave = lambda d: (d["x"], d["y"], d["w"], d["h"]) if d else None
+        if self.ext and chave(ant) != chave(m):
+            self.publicar(self.snapshot())  # celulares ajustam o formato da area de apontar
 
     def monitor_vigiar(self, intervalo=2.0):
         def _loop():
@@ -604,7 +619,7 @@ class Estado:
     def painel_estado(self):
         return {"ativo": self.prefs["ativo"], "modo": self.prefs["modo"], "autorizado": self.autorizado,
                 "pedido": self.pedido, "apps_ok": self.prefs["apps_ok"], "apps_nao": self.prefs["apps_nao"],
-                "residente": self.residente, "acessibilidade": self.acessibilidade(), "deck": self.deck_info(), "tela_propria": self.tela_propria, "captura": self.captura,
+                "residente": self.residente, "acessibilidade": self.acessibilidade(), "deck": self.deck_info(), "tela_propria": self.tela_propria, "tela_conectada": self.tela_conectada(), "captura": self.captura,
                 "conexoes": len(self.conectados()), "dispositivos": self.dispositivos_info(),
                 "plataforma": sys.platform, "rede_bluetooth": self.rede_bluetooth(),
                 "pareamento_urls": self.urls_pareamento(), "relay": getattr(self.relay, "status", ""), "relay_publico": bool(self.prefs.get("relay_publico", True)), "relay_url": RELAY_PADRAO,
@@ -1495,12 +1510,14 @@ class Externo:
         else:
             w, h = self.b.tela()
             mx = my = 0.0
-        if proporcao > w / h:  # o slide ocupa a tela inteira, com barras se a proporcao diferir
-            largura, altura = w, w / proporcao
+        if mon:  # a area do toque no celular tem o formato do monitor: 0..1 cobre o monitor inteiro, cantos incluidos
+            px, py = x * w, y * h
         else:
-            largura, altura = h * proporcao, h
-        ox, oy = (w - largura) / 2, (h - altura) / 2
-        px, py = ox + x * largura, oy + y * altura
+            if proporcao > w / h:  # sem dados do monitor: o slide ocupa a tela, com barras se a proporcao diferir
+                largura, altura = w, w / proporcao
+            else:
+                largura, altura = h * proporcao, h
+            px, py = (w - largura) / 2 + x * largura, (h - altura) / 2 + y * altura
         return mx + px, my + py, px / w, py / h  # pixels absolutos (cursor) e normalizados dentro do monitor (camada)
 
     def _monitor(self):
@@ -2343,6 +2360,7 @@ PAGINA_BASE = """<!doctype html><html lang="pt-br"><head><meta charset="utf-8">
 <link rel="manifest" href="/manifest.json?k=__TOKEN__"><link rel="apple-touch-icon" href="/icon.png">
 <meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black"><meta name="apple-mobile-web-app-title" content="Baton">
 <script src="__PDFJS__pdf.min.js"></script>
+<script>if(typeof pdfjsLib==='undefined'){window.PDFJS_FALHA=true;window.pdfjsLib={GlobalWorkerOptions:{},getDocument:function(){return{promise:Promise.reject(new Error('pdf.js nao carregou'))}}}}  // sem o leitor de PDF a pagina segue conectada e avisa</script>
 <script src="__QRJS__"></script>
 <style>__CSS__</style></head><body class="__CLASSE__">__HTML__
 <script>
@@ -2480,8 +2498,9 @@ let tracos=[],cfg={laser_tam:24,laser_cor:'#ff2d2d',foco_raio:12,foco_blur:100,f
 const rgba=(h,a)=>{const n=parseInt(h.slice(1),16);return 'rgba('+(n>>16&255)+','+(n>>8&255)+','+(n&255)+','+a+')'};
 function aplicarCfg(){
   const t=cfg.laser_tam;laserEl.style.width=laserEl.style.height=(t*2)+'px';laserEl.style.margin=(-t)+'px 0 0 '+(-t)+'px';
-  laserEl.style.background='radial-gradient(circle,#fff 0,'+cfg.laser_cor+' 35%,'+rgba(cfg.laser_cor,.35)+' 60%,'+rgba(cfg.laser_cor,0)+' 72%)';
-  laserEl.style.boxShadow='0 0 '+t*.9+'px '+t*.35+'px '+rgba(cfg.laser_cor,.55);
+  const n=parseInt(cfg.laser_cor.slice(1),16),escuro=.299*(n>>16&255)+.587*(n>>8&255)+.114*(n&255)<76;
+  laserEl.style.background='radial-gradient(circle,'+(escuro?cfg.laser_cor:'#fff')+' 0,'+cfg.laser_cor+' 35%,'+rgba(cfg.laser_cor,.35)+' 60%,'+rgba(cfg.laser_cor,0)+' 72%)';
+  laserEl.style.boxShadow=escuro?'0 0 '+t*.5+'px '+t*.3+'px rgba(255,255,255,.85)':'0 0 '+t*.9+'px '+t*.35+'px '+rgba(cfg.laser_cor,.55);
   redesenhar();
 }
 stage.style.transition='transform .3s ease';
@@ -2617,15 +2636,16 @@ addEventListener('click',()=>{if(QUER_FS&&!document.fullscreenElement)document.d
 addEventListener('resize',()=>{ajustarOv();if(atual){const n=paginaAtual;paginaAtual=0;atual.remove();atual=null;ir(n)}});
 setTimeout(()=>{const d=document.getElementById('dica');d.style.opacity=0},6000);
 ajustarOv();desenharQR();mostrarQR(true);
-let es=null,ultimaMsg=Date.now();
+let es=null,ultimaMsg=Date.now(),ultimoSnap=null;
 function conectar(){
   if(es){try{es.close()}catch(e){}}
   es=new EventSource('/events?k='+encodeURIComponent(TOKEN));ultimaMsg=Date.now();
-  es.onmessage=ev=>{ultimaMsg=Date.now();msg(JSON.parse(ev.data))};
+  es.onmessage=ev=>{ultimaMsg=Date.now();const m=JSON.parse(ev.data);if(m.pagina!==undefined)ultimoSnap=m;msg(m)};
 }
 setInterval(()=>{if(Date.now()-ultimaMsg>12000)conectar()},3000);
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')conectar()});
-pdfjsLib.getDocument('/pdf?k='+encodeURIComponent(TOKEN)).promise.then(async d=>{pdf=d;try{await detectaLado(d);mapa=await agruparPassos(d)}catch(e){}conectar()});
+conectar();  // o SSE nao depende do leitor de PDF: sem ele o Baton achava que a tela nao conectou e mandava teclas a outro app
+pdfjsLib.getDocument('/pdf?k='+encodeURIComponent(TOKEN)).promise.then(async d=>{pdf=d;try{await detectaLado(d);mapa=await agruparPassos(d)}catch(e){}if(ultimoSnap)msg(ultimoSnap)}).catch(()=>{const d=document.getElementById('dica');if(d){d.style.opacity=1;d.textContent='Leitor de PDF indisponivel (sem internet?). O Baton segue conectado; abra o PDF no seu leitor.'}});
 """
 
 # ------------------------------------------------------------------ celular (iPhone)
@@ -2663,7 +2683,7 @@ select{background:#1d1d1f;color:#fff;border:0;border-radius:12px;font-size:14px;
 #excorpo input{width:100%;background:#1d1d1f;color:#fff;border:0;border-radius:10px;font-size:15px;padding:10px;margin-bottom:6px;user-select:text;-webkit-user-select:text}
 #ajcorpo{flex:1;overflow:auto;padding:2px 12px 10px;touch-action:pan-y}
 .ajl{display:flex;align-items:center;gap:10px;font-size:13px;color:#ccc;margin:7px 0}.ajl label{flex:0 0 118px}.ajl input{flex:1;accent-color:#0a84ff}.ajl output{flex:0 0 38px;text-align:right;color:#888;font-variant-numeric:tabular-nums}
-.ajc{display:flex;gap:12px;margin:8px 0 4px;align-items:center;font-size:13px;color:#ccc}.ajc i{width:26px;height:26px;border-radius:50%;border:3px solid transparent;display:block}.ajc i.sel{border-color:#fff}
+.ajc{display:flex;gap:12px;margin:8px 0 4px;align-items:center;font-size:13px;color:#ccc}.ajc i{width:26px;height:26px;border-radius:50%;border:3px solid transparent;display:block;box-shadow:0 0 0 1px #666}.ajc i.sel{border-color:#fff}
 #info{display:flex;gap:10px;align-items:stretch;flex:0 0 auto}
 #prevbox{flex:1;display:flex;align-items:center;gap:10px;background:#111;border-radius:12px;padding:8px 10px;min-width:0}
 #prevbox canvas{height:92px;max-width:68%;border-radius:6px;background:#1a1a1c}#prevlbl{font-size:13px;color:#999;line-height:1.25}
@@ -2901,6 +2921,7 @@ function avisoUI(s){
   const el=$('aviso');
   if(s.acess===false){el.innerHTML='<b>O Mac nao deixou o Baton enviar teclas.</b> No computador: Ajustes do Sistema > Privacidade e Seguranca > Acessibilidade, ative o Baton (painel em localhost:8765/painel).'}
   else if(s.ativo===false){el.innerHTML='<b>Baton pausado</b> no computador. Retome pelo painel (localhost:8765/painel).'}
+  else if(s.tela_falha){el.innerHTML='<b>A tela cheia do Baton nao conectou.</b> Feche a janela e use Apresentar de novo no painel, ou abra o PDF no seu leitor.'}
   else if(s.auth!==false){el.style.display='none';return}
   else if(s.pedido){el.innerHTML='<b>Apresentacao detectada</b> ('+esc(s.pedido.app)+'). Controlar com o Baton?<div class="avb"><button data-a="sim">Controlar</button><button data-a="sempre">Sempre neste app</button><button data-a="nao">Agora nao</button><button data-a="nunca">Nunca neste app</button></div>'}
   else{el.style.display='none';return}  // em espera sem apresentacao detectada: tocar em Proximo/Anterior ja libera o controle
@@ -3017,7 +3038,7 @@ function montaAjustes(){
     d.innerHTML='<label>'+rot+'</label><input type="range" id="aj_'+k+'" min="'+lo+'" max="'+hi+'" step="'+st+'"><output id="av_'+k+'"></output>';c.appendChild(d);
     d.querySelector('input').oninput=e=>enviaCfg({[k]:parseFloat(e.target.value)})});
   const lc=document.createElement('div');lc.className='ajc';lc.innerHTML='<span>Cor do laser</span>';
-  ['#ff2d2d','#0a84ff','#30d158','#ffd60a','#ffffff'].forEach(h=>{const i=document.createElement('i');i.style.background=h;i.dataset.c=h;i.onclick=()=>enviaCfg({laser_cor:h});lc.appendChild(i)});
+  ['#ff2d2d','#0a84ff','#30d158','#ffd60a','#ffffff','#000000'].forEach(h=>{const i=document.createElement('i');i.style.background=h;i.dataset.c=h;i.onclick=()=>enviaCfg({laser_cor:h});lc.appendChild(i)});
   c.appendChild(lc);mostraCfg();
 }
 function mostraCfg(){
@@ -3223,7 +3244,7 @@ let ultimaMsg=Date.now(),es=null;
 function status(ok,t){$('dot').classList.toggle('ok',ok);$('st').textContent=t}
 const cid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,8);
 // ---- zoom: laser/foco apontam na tela; com zoom, a tela mostra so uma regiao do slide, e o ponto precisa cair nela
-let zoom={z:1,x:.5,y:.5},ultSlide={x:.5,y:.5};
+let zoom={z:1,x:.5,y:.5},ultSlide={x:.5,y:.5},ASP=16/9;
 const NIVEIS=[1,1.5,2,3,4,5];
 function regiao(){const w=1/Math.max(1,zoom.z),cx=Math.max(w/2,Math.min(1-w/2,zoom.x)),cy=Math.max(w/2,Math.min(1-w/2,zoom.y));return{w,x0:cx-w/2,y0:cy-w/2}}
 function paraSlide(x,y){if(zoom.z<=1.001)return{x,y};const r=regiao();return{x:r.x0+x*r.w,y:r.y0+y*r.w}}
@@ -3252,12 +3273,13 @@ function dicaZoomSistema(){let k=null;try{k=localStorage.getItem('baton-zsis')}c
 function avisoUI(s){const el=$('aviso');let t='';
   if(s.acess===false)t='<b>O Mac nao deixou o Baton enviar teclas.</b> No Mac: Ajustes do Sistema > Privacidade e Seguranca > Acessibilidade, ative o Baton.';
   else if(s.ativo===false)t='<b>Baton pausado</b> no computador. Retome em localhost:8765/painel.';
+  else if(s.tela_falha)t='<b>A tela cheia do Baton nao conectou.</b> Feche a janela e use Apresentar de novo no painel, ou abra o PDF no seu leitor.';
   if(!t&&/Zoom do sistema/.test(el.innerHTML))return;el.innerHTML=t;el.style.display=t?'block':'none'}
 async function medeMs(){if(document.visibilityState!=='visible')return;const t0=performance.now();
   try{const r=await fetch('/estado',{cache:'no-store',headers:{'X-Token':TOKEN}});await r.text();const ms=Math.round(performance.now()-t0);
     const e=$('ms');e.textContent=ms+' ms';e.className=ms>300?'ruim':ms>120?'lento':''}catch(x){$('ms').textContent=''}}
 setInterval(medeMs,5000);setTimeout(medeMs,1500);
-function aplicaSnap(s){if(s.so)window.SO_PC=s.so;zoomSistemaUI(s);if(s.acess!==undefined||s.ativo!==undefined)avisoUI(s);if(s.cfg){mostraAj(s.cfg);tick();return}if(s.timer)sincTimer(s.timer);if(s.zoom!==undefined&&ativo!=='zoom'){zoom={z:s.zoom||1,x:s.zx===undefined?.5:s.zx,y:s.zy===undefined?.5:s.zy};mostraZoom()}}
+function aplicaSnap(s){if(s.so)window.SO_PC=s.so;if(s.aspecto>0)ASP=s.aspecto;zoomSistemaUI(s);if(s.acess!==undefined||s.ativo!==undefined)avisoUI(s);if(s.cfg){mostraAj(s.cfg);tick();return}if(s.timer)sincTimer(s.timer);if(s.zoom!==undefined&&ativo!=='zoom'){zoom={z:s.zoom||1,x:s.zx===undefined?.5:s.zx,y:s.zy===undefined?.5:s.zy};mostraZoom()}}
 // ---- cronometro (o mesmo do controle completo: vive no computador, todos os celulares veem o mesmo tempo)
 let tm={rodando:false,elapsed:0,rec:performance.now()},metaMin=50,voltasVistas='';
 const mmss=t=>{t=Math.max(0,Math.floor(t));const h=Math.floor(t/3600),m=Math.floor(t%3600/60),s=t%60;return(h?h+':'+String(m).padStart(2,'0'):String(m).padStart(2,'0'))+':'+String(s).padStart(2,'0')};
@@ -3350,8 +3372,9 @@ function bombeiaZoom(){if(!zPend){zEnv=false;return}zEnv=true;const d=zPend;zPen
 function mostraMapa(){const el=$(modoUlt==='zoom'?'zaim':modoUlt).querySelector('.mapa i');el.style.left=(sx*100)+'%';el.style.top=(sy*100)+'%'}
 function atualiza(){
   if(!base||!ori)return;const f=direcao(ori,base.eixo),an=angulos(f);
-  const x=pad.x+dif(an.yaw-base.yaw)/gan,y=pad.y-(an.pitch-base.pitch)/(gan*9/16);
-  const t=performance.now();sx=Math.max(0,Math.min(1,fx.f(Math.max(0,Math.min(1,x)),t)));sy=Math.max(0,Math.min(1,fy.f(Math.max(0,Math.min(1,y)),t)));
+  const x=pad.x+dif(an.yaw-base.yaw)/gan,y=pad.y-(an.pitch-base.pitch)*ASP/gan;
+  const t=performance.now(),ov=(v)=>(v-.5)*1.06+.5;  // 6% de folga: encostar o celular no limite leva o ponteiro ate a borda
+  sx=Math.max(0,Math.min(1,ov(fx.f(Math.max(0,Math.min(1,x)),t))));sy=Math.max(0,Math.min(1,ov(fy.f(Math.max(0,Math.min(1,y)),t))));
   mostraMapa();if(ativo==='zoom'){moveZoom();return}
   envLaser(sx,sy,true)}
 async function permissao(){
@@ -4145,12 +4168,6 @@ def main():
         except Exception:
             mon0 = None
     externo = criar_externo(not a.sem_overlay, a.tela, a.cursor, a.nivel, mon0) if a.externo else None
-    if externo and not pdf and not a.proporcao:
-        try:
-            tw, th = externo.b.tela()
-            prop = tw / th  # area do laser com o formato da tela do Mac
-        except Exception:
-            pass
     total = contar_paginas(pdf) if pdf else 9999
     estado = Estado(pdf, total, a.transicao, token, externo, "", prop)
     estado.monitor_cli = "" if mon_cli == "auto" else mon_cli

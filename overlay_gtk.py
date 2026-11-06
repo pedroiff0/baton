@@ -117,10 +117,20 @@ class Camada(Gtk.Window):
             cr.stroke()
         if self.laser_on:
             cx, cy, r = self.pt[0] * w, self.pt[1] * h, self.aj["laser_tam"]
-            gr = cairo.RadialGradient(cx, cy, 0, cx, cy, r)
             lr, lg, lb = self.aj["laser_cor"]
-            gr.add_color_stop_rgba(0.0, 1, 1, 1, 1)
+            escuro = 0.299 * lr + 0.587 * lg + 0.114 * lb < 0.3
+            if escuro:  # cor escura (preto): halo branco por baixo para aparecer em fundo escuro e claro
+                hb = cairo.RadialGradient(cx, cy, 0, cx, cy, r * 1.15)
+                hb.add_color_stop_rgba(0.0, 1, 1, 1, 0.95)
+                hb.add_color_stop_rgba(0.6, 1, 1, 1, 0.8)
+                hb.add_color_stop_rgba(1.0, 1, 1, 1, 0)
+                cr.set_source(hb)
+                cr.arc(cx, cy, r * 1.15, 0, 2 * math.pi)
+                cr.fill()
+            gr = cairo.RadialGradient(cx, cy, 0, cx, cy, r)
+            gr.add_color_stop_rgba(0.0, lr, lg, lb, 1) if escuro else gr.add_color_stop_rgba(0.0, 1, 1, 1, 1)
             gr.add_color_stop_rgba(0.35, lr, lg, lb, 1)
+            gr.add_color_stop_rgba(0.8 if escuro else 1.0, lr, lg, lb, 0.9 if escuro else 0)
             gr.add_color_stop_rgba(1.0, lr, lg, lb, 0)
             cr.set_source(gr)
             cr.arc(cx, cy, r, 0, 2 * math.pi)

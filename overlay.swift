@@ -79,12 +79,25 @@ final class Quadro: NSView {
         if laserLigado {
             let c = CGPoint(x: laserPonto.x * w, y: laserPonto.y * h)
             let cs = CGColorSpaceCreateDeviceRGB()
+            let rgb = aj.laserCor.usingColorSpace(.deviceRGB) ?? aj.laserCor
+            let escuro = 0.299 * rgb.redComponent + 0.587 * rgb.greenComponent + 0.114 * rgb.blueComponent < 0.3
+            if escuro {  // cor escura (preto): halo branco por baixo para aparecer em fundo escuro e claro
+                let halo = [
+                    NSColor.white.withAlphaComponent(0.95).cgColor,
+                    NSColor.white.withAlphaComponent(0.8).cgColor,
+                    NSColor.white.withAlphaComponent(0.0).cgColor,
+                ] as CFArray
+                if let gh = CGGradient(colorsSpace: cs, colors: halo, locations: [0.0, 0.6, 1.0]) {
+                    g.drawRadialGradient(gh, startCenter: c, startRadius: 0, endCenter: c, endRadius: aj.laserTam * 1.15, options: [])
+                }
+            }
             let cores = [
-                NSColor.white.cgColor,
+                escuro ? aj.laserCor.cgColor : NSColor.white.cgColor,
                 aj.laserCor.cgColor,
+                aj.laserCor.withAlphaComponent(escuro ? 0.9 : 0.15).cgColor,
                 aj.laserCor.withAlphaComponent(0.0).cgColor,
             ] as CFArray
-            let locais: [CGFloat] = [0.0, 0.35, 1.0]
+            let locais: [CGFloat] = [0.0, 0.35, escuro ? 0.8 : 0.9, 1.0]
             if let grad = CGGradient(colorsSpace: cs, colors: cores, locations: locais) {
                 g.drawRadialGradient(grad, startCenter: c, startRadius: 0, endCenter: c, endRadius: aj.laserTam, options: [])
             }

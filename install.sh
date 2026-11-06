@@ -12,6 +12,7 @@ mkdir -p "$DEST" "$HOME/.local/bin"
 cp "$SRC"/baton.py "$SRC"/residente.py "$SRC"/relay.py "$SRC"/monitores.py "$SRC"/launcher.swift "$SRC"/overlay.swift "$SRC"/overlay_gtk.py "$SRC"/overlay_tk.py "$SRC"/tray_gtk.py "$SRC"/LICENSE "$DEST"/
 [ -f "$SRC/relay.json" ] && cp "$SRC/relay.json" "$DEST/" && chmod 600 "$DEST/relay.json"
 [ -n "$BATON_CONVITE" ] && python3 "$DEST/baton.py" --convite "$BATON_CONVITE" || true
+rm -rf "$DEST/vendor" && cp -R "$SRC/vendor" "$DEST/vendor"  # pdf.js e gerador de QR embutidos: funciona sem internet na primeira vez
 git -C "$SRC" rev-parse --short HEAD > "$DEST/VERSION" 2>/dev/null || true
 printf '#!/bin/sh\nexec python3 "%s/baton.py" "$@"\n' "$DEST" > "$HOME/.local/bin/baton"
 chmod +x "$HOME/.local/bin/baton"

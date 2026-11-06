@@ -123,9 +123,15 @@ class App:
                 self.dim.c.create_oval(x - r, y - r, x + r, y + r, fill=CHAVE, outline="", tags="furo", **opts)
         else:
             r, cor = self.aj["laser_tam"], self.aj["laser_cor"]
-            c.create_oval(x - r, y - r, x + r, y + r, fill=cor, outline="", stipple="gray50", tags="laser")
+            rgb = [int(cor[i:i + 2], 16) for i in (1, 3, 5)]
+            escuro = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2] < 76
+            if escuro:  # cor escura (preto): disco branco por baixo para aparecer em fundo escuro
+                c.create_oval(x - r * .9, y - r * .9, x + r * .9, y + r * .9, fill="white", outline="", stipple="gray50", tags="laser")
+                c.create_oval(x - r * .65, y - r * .65, x + r * .65, y + r * .65, fill="white", outline="", tags="laser")
+            else:
+                c.create_oval(x - r, y - r, x + r, y + r, fill=cor, outline="", stipple="gray50", tags="laser")
             c.create_oval(x - r * .55, y - r * .55, x + r * .55, y + r * .55, fill=cor, outline="", tags="laser")
-            c.create_oval(x - r * .2, y - r * .2, x + r * .2, y + r * .2, fill="white", outline="", tags="laser")
+            c.create_oval(x - r * .2, y - r * .2, x + r * .2, y + r * .2, fill=("#555555" if escuro else "white"), outline="", tags="laser")
 
     # ---------------------------------------------------------------- caneta e marca-texto
     def desenhar(self, m):
