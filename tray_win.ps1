@@ -2,6 +2,8 @@
 # Conversa com o Baton em 127.0.0.1 (mesma API do painel): pausar/retomar, escolher a apresentacao,
 # mostrar o QR code, abrir o painel e sair. Iniciado pelo baton.py no modo residente.
 param([int]$Porta = 8765)
+$ErrorActionPreference = "Continue"
+trap { Write-Output ("erro: " + $_.Exception.Message + " @ " + $_.InvocationInfo.PositionMessage); continue }
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 $base = "http://127.0.0.1:$Porta"
@@ -37,6 +39,7 @@ $notify = New-Object System.Windows.Forms.NotifyIcon
 $notify.Icon = $icAtivo
 $notify.Text = "Baton"
 $notify.Visible = $true
+$notify.ShowBalloonTip(5000, "Baton", "Icone do Baton na bandeja. Se nao aparecer, clique na seta ^ perto do relogio e arraste-o para a barra.", "Info")
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
 $notify.ContextMenuStrip = $menu
 

@@ -14,10 +14,36 @@ git -C "$SRC" rev-parse --short HEAD > "$DEST/VERSION" 2>/dev/null || true
 printf '#!/bin/sh\nexec python3 "%s/baton.py" "$@"\n' "$DEST" > "$HOME/.local/bin/baton"
 chmod +x "$HOME/.local/bin/baton"
 
+# Linux: teclas (xdotool) e deteccao da apresentacao (xprop, do x11-utils). Pede a senha do sudo uma vez; BATON_SEM_DEPS=1 pula.
+if [ "$(uname)" = "Linux" ] && [ -z "$BATON_SEM_DEPS" ] && { ! command -v xdotool >/dev/null 2>&1 || ! command -v xprop >/dev/null 2>&1; }; then
+  echo "Instalando dependencias do Linux (xdotool, x11-utils)..."
+  if command -v apt-get >/dev/null 2>&1; then sudo apt-get install -y xdotool x11-utils
+  elif command -v dnf >/dev/null 2>&1; then sudo dnf install -y xdotool xorg-x11-utils
+  elif command -v pacman >/dev/null 2>&1; then sudo pacman -S --needed --noconfirm xdotool xorg-xprop
+  elif command -v zypper >/dev/null 2>&1; then sudo zypper install -y xdotool xprop
+  else echo "aviso: gerenciador de pacotes nao reconhecido; instale xdotool e xprop a mao." >&2; fi \
+    || echo "aviso: nao instalei xdotool/x11-utils; o Baton funciona sem eles, mas sem enviar teclas ao app em primeiro plano." >&2
+fi
+
 python3 "$DEST/baton.py" --instalar
 python3 "$DEST/baton.py" --preparar-offline || echo "aviso: sem internet agora; rode 'baton --preparar-offline' quando estiver online (o celular usa a CDN ate la)"
 if [ "$(uname)" != "Darwin" ] && [ -z "$BATON_SEM_INICIAR" ]; then
   nohup python3 "$DEST/baton.py" --residente >"$HOME/.cache/baton.log" 2>&1 &  # no Mac o launchd ja iniciou
+fi
+
+# Linux: icone na bandeja. O GNOME nao tem bandeja: precisa do AppIndicator (biblioteca + extensao do GNOME Shell).
+if [ "$(uname)" = "Linux" ] && [ -z "$BATON_SEM_DEPS" ] && command -v apt-get >/dev/null 2>&1; then
+  if ! python3 -c 'import gi; gi.require_version("AyatanaAppIndicator3","0.1")' >/dev/null 2>&1; then
+    echo "Instalando o suporte a icone na bandeja (AppIndicator)..."
+    sudo apt-get install -y gir1.2-ayatanaappindicator3-0.1 python3-gi || echo "aviso: sem suporte a AppIndicator; o icone pode nao aparecer." >&2
+  fi
+  case "${XDG_CURRENT_DESKTOP:-}" in *GNOME*)
+    if ! gnome-extensions list 2>/dev/null | grep -qi appindicator; then
+      sudo apt-get install -y gnome-shell-extension-appindicator || true
+    fi
+    gnome-extensions enable appindicatorsupport@rgcjonas.gmail.com 2>/dev/null || true
+    echo "GNOME: se o icone nao aparecer, saia e entre na sessao de novo (a extensao AppIndicator so carrega no login)." ;;
+  esac
 fi
 
 echo

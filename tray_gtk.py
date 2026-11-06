@@ -109,6 +109,8 @@ def main():
         ind.set_menu(menu)
         icone.update(obj=ind, usa_indicador=True)
     else:
+        print("tray_gtk: sem AppIndicator (instale gir1.2-ayatanaappindicator3-0.1; no GNOME tambem a extensao "
+              "gnome-shell-extension-appindicator): o icone pode nao aparecer", file=sys.stderr)
         si = Gtk.StatusIcon.new_from_icon_name("emblem-ok-symbolic")
         si.set_tooltip_text("Baton")
         si.connect("popup-menu", lambda i, b, t: menu.popup(None, None, Gtk.StatusIcon.position_menu, i, b, t))

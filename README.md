@@ -57,6 +57,12 @@ Requisitos: Python 3.8+. O celular conecta pelo Wi-Fi do computador (sem VPN) ou
 ./uninstall.sh      # ou .\uninstall.ps1
 ```
 
+**Prévia sem PDF:** sem arquivo carregado o celular mostra uma captura da tela principal do computador (a apresentação em tela cheia) no lugar do slide atual, só para celulares pareados; `--sem-captura` desliga. Para o próximo slide, carregue o PDF no painel. No macOS libere o Baton em Ajustes > Privacidade > Gravação de Tela; no Linux use `grim` (Wayland) ou `import`/`maim`/`scrot` (X11), ou `pip install pillow`.
+
+**Ícone na bandeja (Linux):** o GNOME não tem bandeja; o `install.sh` instala o AppIndicator e a extensão, e é preciso sair e entrar na sessão uma vez. KDE, XFCE e Cinnamon mostram o ícone direto.
+
+**Windows sem instalar (portátil):** `python3 scripts/empacotar-windows.py` gera `dist/Baton-windows.zip` (Python embutido, pdf.js e QR offline, ~11 MB). No Windows, extraia o zip (pendrive serve) e abra `Baton.bat`: não precisa de Python, de instalação nem de administrador, e tudo fica na pasta `dados/` ao lado (nada no perfil do PC). Sem Tk no Python embutido, só a camada de desenho sobre outros apps fica indisponível; a tela cheia do Baton e o controle pelo celular funcionam normalmente. O Firewall pode pedir permissão para redes privadas.
+
 **Mac, permissão de teclas:** se o Baton não aparecer em Acessibilidade, rode `baton --permissao` (ou use o botão no painel): ele pede a permissão pelo `Baton.app`, mostra o app no Finder e abre os Ajustes; se ainda não listar, clique em **+** e escolha `~/Applications/Baton.app`. `baton --diagnostico` imprime um resumo (Baton.app, assinatura, swiftc, launchd, log) para suporte.
 
 Dependências opcionais:

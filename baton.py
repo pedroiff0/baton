@@ -293,6 +293,7 @@ class Estado:
         self.externo = externo
         self.remote_url = remote_url
         self.local_url = ""
+        self.captura = True  # previa da tela do computador para o celular quando nao ha PDF (--sem-captura desliga)
         self.tela_propria, self.tela_proc = False, None  # tela cheia do proprio Baton (PDF carregado pelo painel)
         self._bases_fixas, self.bases_fn, self._bases_cache = [], None, (0.0, [])  # enderecos do computador (ver calcular_bases)
         self.dispositivos = []  # celulares pareados: {id, nome, token, criado, ultimo_visto, ua}
@@ -358,14 +359,32 @@ class Estado:
                 pass
 
     # ---- modo residente: pausa, consentimento e deteccao de apresentacao
+    def tela_conectada(self):
+        """True se a pagina de tela cheia do proprio Baton (computador, sem token de celular) esta com o SSE aberto."""
+        return any(getattr(q, "dispositivo", 0) is None for q in list(self.clientes))
+
+    def _tela_ativa(self):
+        return self.tela_propria and self.tela_conectada()
+
     def permitido(self):
-        return self.prefs["ativo"] and (self.autorizado or self.tela_propria)
+        return self.prefs["ativo"] and (self.autorizado or self._tela_ativa())
 
     @property
     def ext(self):
-        """Backend de teclas do app em primeiro plano; fica desligado enquanto a tela cheia do proprio Baton esta aberta
-        (senao a tecla iria tambem para o navegador e o slide avancaria duas vezes)."""
-        return None if self.tela_propria else self.externo
+        """Backend de teclas do app em primeiro plano; fica desligado so enquanto a tela cheia do proprio Baton esta aberta E
+        conectada (senao a tecla iria tambem para o navegador e o slide avancaria duas vezes; se a janela foi fechada, as
+        teclas voltam a ir para o app)."""
+        return None if self._tela_ativa() else self.externo
+
+    def autorizar_por_toque(self):
+        """Tocar em Proximo/Anterior num celular pareado e consentimento explicito: libera o controle sem exigir o
+        'Controlar mesmo assim'. Nao vale se o Baton esta pausado, em modo 'nunca' ou o app esta na lista de bloqueados."""
+        app = (self.pedido or {}).get("app")
+        if not self.prefs["ativo"] or self.prefs["modo"] == "nunca" or (app and app in self.prefs["apps_nao"]):
+            return False
+        self.autorizado, self.pedido = True, None
+        self._mudou()
+        return True
 
     def apresentar(self):
         """Abre o PDF carregado em tela cheia neste computador (navegador em modo quiosque) e passa a controla-lo."""
@@ -513,7 +532,7 @@ class Estado:
     def painel_estado(self):
         return {"ativo": self.prefs["ativo"], "modo": self.prefs["modo"], "autorizado": self.autorizado,
                 "pedido": self.pedido, "apps_ok": self.prefs["apps_ok"], "apps_nao": self.prefs["apps_nao"],
-                "residente": self.residente, "acessibilidade": self.acessibilidade(), "deck": self.deck_info(), "tela_propria": self.tela_propria,
+                "residente": self.residente, "acessibilidade": self.acessibilidade(), "deck": self.deck_info(), "tela_propria": self.tela_propria, "captura": self.captura,
                 "conexoes": len(self.conectados()), "dispositivos": self.dispositivos_info(),
                 "plataforma": sys.platform, "rede_bluetooth": self.rede_bluetooth(),
                 "pareamento_urls": self.urls_pareamento()}
@@ -1555,6 +1574,69 @@ def parse_interfaces(saida):
     return achados
 
 
+def capturar_tela(largura=960, qualidade=60):
+    """JPEG da tela principal (para a previa do celular quando nao ha PDF) ou None se nao ha como capturar.
+    Usa o Pillow se existir; senao ferramentas do sistema (screencapture, PowerShell, grim, import, maim, scrot)."""
+    teste = os.environ.get("BATON_CAPTURA")  # arquivo JPEG fixo, para testes
+    if teste:
+        try:
+            return Path(teste).read_bytes()
+        except OSError:
+            return None
+    try:
+        from PIL import ImageGrab
+        import io
+        img = ImageGrab.grab().convert("RGB")
+        img.thumbnail((largura, largura))
+        buf = io.BytesIO()
+        img.save(buf, "JPEG", quality=qualidade)
+        return buf.getvalue()
+    except Exception:
+        pass
+    with tempfile.TemporaryDirectory() as d:
+        arq = Path(d) / "t.jpg"
+        q = str(qualidade)
+        try:
+            if sys.platform == "darwin":
+                subprocess.run(["screencapture", "-x", "-t", "jpg", str(arq)], capture_output=True, timeout=8)
+                subprocess.run(["sips", "-Z", str(largura), "--setProperty", "formatOptions", q, str(arq)], capture_output=True, timeout=8)
+            elif sys.platform == "win32":
+                ps = ("Add-Type -AssemblyName System.Windows.Forms,System.Drawing;"
+                      "Add-Type -MemberDefinition '[DllImport(\"user32.dll\")] public static extern bool SetProcessDPIAware();' -Name D -Namespace W;"
+                      "[void][W.D]::SetProcessDPIAware();"
+                      "$b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds;$bmp=New-Object System.Drawing.Bitmap $b.Width,$b.Height;"
+                      "$g=[System.Drawing.Graphics]::FromImage($bmp);$g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size);"
+                      f"$h=[int]($b.Height*{largura}/$b.Width);$o=New-Object System.Drawing.Bitmap $bmp,{largura},$h;"
+                      "$c=[System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders()|Where-Object{$_.MimeType -eq 'image/jpeg'};"
+                      f"$p=New-Object System.Drawing.Imaging.EncoderParameters 1;$p.Param[0]=New-Object System.Drawing.Imaging.EncoderParameter ([System.Drawing.Imaging.Encoder]::Quality),{q}L;"
+                      f"$o.Save('{arq}',$c,$p)")
+                subprocess.run(["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps], capture_output=True,
+                               timeout=15, creationflags=0x08000000)
+            else:
+                for cmd in ((["grim", "-t", "jpeg", "-q", q, "-s", "0.5", str(arq)] if os.environ.get("WAYLAND_DISPLAY") else None),
+                            ["import", "-silent", "-window", "root", "-resize", f"{largura}x", "-quality", q, str(arq)],
+                            ["maim", "-f", "jpg", "-m", "7", str(arq)], ["scrot", "-q", q, str(arq)],
+                            ["gnome-screenshot", "-f", str(arq)]):
+                    if cmd and shutil.which(cmd[0]):
+                        subprocess.run(cmd, capture_output=True, timeout=8)
+                        if arq.exists() and arq.stat().st_size > 0:
+                            break
+            return arq.read_bytes() if arq.exists() and arq.stat().st_size > 0 else None
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+
+
+_CAPTURA = {"t": 0.0, "dados": None, "lock": threading.Lock()}
+
+
+def tela_em_cache(validade=1.2):
+    """Ultima captura (no maximo uma a cada `validade` s, mesmo com varios celulares pedindo)."""
+    with _CAPTURA["lock"]:
+        if time.time() - _CAPTURA["t"] > validade:
+            _CAPTURA["dados"], _CAPTURA["t"] = capturar_tela(), time.time()
+        return _CAPTURA["dados"]
+
+
 def navegadores_chromium():
     """Navegadores baseados em Chromium instalados (aceitam --kiosk e --app)."""
     cand = []
@@ -1990,6 +2072,7 @@ body{display:flex;flex-direction:column;padding:env(safe-area-inset-top) max(12p
 #dot{width:10px;height:10px;border-radius:50%;background:#e33;display:inline-block;margin-right:6px}#dot.ok{background:#3c6}
 #vista{position:relative;flex:0 0 auto;background:#111;border-radius:10px;overflow:hidden;align-self:center;touch-action:none}
 #vista canvas{width:100%;height:100%;position:absolute;left:0;top:0}
+#cap{display:none;position:absolute;left:0;top:0;width:100%;height:100%;object-fit:contain;background:#000;pointer-events:none}
 #ponto{position:absolute;width:30px;height:30px;margin:-15px 0 0 -15px;border-radius:50%;pointer-events:none;display:none;
 background:radial-gradient(circle,#fff 0,#ff2d2d 35%,rgba(255,0,0,.4) 60%,rgba(255,0,0,0) 72%);box-shadow:0 0 18px 6px rgba(255,40,40,.6)}
 #zrect{position:absolute;border:2px solid #0a84ff;background:rgba(10,132,255,.15);pointer-events:none;display:none;border-radius:3px}
@@ -2054,7 +2137,7 @@ select{background:#1d1d1f;color:#fff;border:0;border-radius:12px;font-size:14px;
 }
 """
 HTML_REMOTO = """<div id="aviso"></div><div id="app"><div id="colA"><div id="topo"><span><i id="dot"></i><span id="st">conectando</span></span><span id="pos">- / -</span></div>
-<div id="vista"><canvas id="cv"></canvas><canvas id="ovp"></canvas><div id="zrect"></div><div id="ponto"></div></div>
+<div id="vista"><img id="cap" alt=""><canvas id="cv"></canvas><canvas id="ovp"></canvas><div id="zrect"></div><div id="ponto"></div></div>
 <div class="linha" id="tools"><button id="bl">Laser</button><button id="bf">Foco</button><button id="bc">Caneta</button><button id="bm">Marca</button><button id="bz">Zoom</button></div>
 <div class="linha" id="zbar"><button id="zm">&minus;</button><span id="zv">1x</span><button id="zp">+</button><button id="z1">1x</button></div>
 <div class="linha" id="raiobar"><span>Raio do foco</span><input id="raio" type="range" min="4" max="30" value="12"></div>
@@ -2133,7 +2216,7 @@ async function mostra(){
   let hmax=innerHeight*0.33;
   if(paisagem){let o=0,n=0;for(const c of $('colA').children){if(c.id==='vista'||getComputedStyle(c).display==='none')continue;o+=c.offsetHeight;n++}
     const bs=getComputedStyle(document.body);hmax=Math.max(90,innerHeight-o-n*5-parseFloat(bs.paddingTop)-parseFloat(bs.paddingBottom)-2)}
-  if(!pdf){const w0=Math.min(larg,hmax*16/9);$('vista').style.width=w0+'px';$('vista').style.height=(w0*9/16)+'px';ajustaOvp();return}
+  if(!pdf){const w0=Math.min(larg,hmax*16/9);$('vista').style.width=w0+'px';$('vista').style.height=(w0*9/16)+'px';ajustaOvp();$('prevbox').style.display='none';$('relogio').style.flex='1';capturaTela(450);return}
   if(desenhado===pag&&!window.__remedir)return;desenhado=pag;window.__remedir=false;limpaLocal();
   const p=await pdf.getPage(pag),v0=p.getViewport({scale:1});
   const uw=larguraUtil(v0.width),w=Math.min(larg,hmax*uw/v0.height);
@@ -2146,10 +2229,24 @@ if(window.ResizeObserver){const ro=new ResizeObserver(()=>{clearTimeout(window._
   document.querySelectorAll('#colA>*').forEach(c=>{if(c.id!=='vista')ro.observe(c)})}
 addEventListener('resize',()=>{clearTimeout(window.__rt);window.__rt=setTimeout(remedir,150)});
 addEventListener('orientationchange',()=>setTimeout(remedir,250));
+// sem PDF o Baton nao tem a imagem do slide: mostra uma captura da tela do computador (a apresentacao em tela cheia)
+let capOcupada=false,capTimer=null,capSemSuporte=false;
+function capturaTela(atraso){
+  if(TEM_PDF||capSemSuporte)return;clearTimeout(capTimer);
+  capTimer=setTimeout(async()=>{
+    if(capOcupada||document.visibilityState!=='visible'){capturaTela(3000);return}
+    capOcupada=true;
+    try{const r=await fetch('/tela.jpg?k='+encodeURIComponent(TOKEN)+'&t='+Date.now());
+      if(r.status===404){capSemSuporte=true;$('prevlbl').textContent='Sem previa: nao consegui capturar a tela do computador';return}
+      if(r.ok){const url=URL.createObjectURL(await r.blob()),im=$('cap');const velha=im.src;im.src=url;im.style.display='block';const dz=$('lzdica');if(dz)dz.style.display='none';if(velha.startsWith('blob:'))URL.revokeObjectURL(velha)}
+    }catch(e){}
+    capOcupada=false;capturaTela(LEVE?6000:2500);
+  },atraso===undefined?0:atraso)
+}
 function previa(){
   const prox=pag+1;
   if(!pdf||prox>total){const c=$('cvp'),g=c.getContext('2d');g.clearRect(0,0,c.width,c.height);c.style.visibility='hidden';
-    $('prevlbl').textContent=!pdf?'sem PDF: sem previa':'ultimo slide';return}
+    $('prevlbl').textContent=!pdf?'Sem PDF: a previa acima e a tela do computador. Carregue o PDF no painel para ver o proximo slide.':'ultimo slide';return}
   $('cvp').style.visibility='visible';
   const mesmo=mapa&&mapa.frameDe[prox]===mapa.frameDe[pag];
   $('prevlbl').textContent=mesmo?'Proximo passo':'Proximo slide';desenha(prox,$('cvp'),150);
@@ -2359,7 +2456,7 @@ setInterval(async()=>{
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){wake();conectar()}});
 addEventListener('online',conectar);addEventListener('pageshow',conectar);wake();carregaNotas();montaAjustes();carregaCfg();
 if(TEM_PDF){pdfjsLib.getDocument(Object.assign({url:'/pdf?k='+encodeURIComponent(TOKEN)},LEVE?{disableAutoFetch:true,disableStream:true,rangeChunkSize:65536}:{})).promise.then(async d=>{pdf=d;total=d.numPages;try{await detectaLado(d);if(!LEVE){notasPdf=await notasDoPdf(d);mapa=await agruparPassos(d)}}catch(e){}mostraNotas();conectar()})}
-else{$('vista').style.background='#1a1a1c';$('vista').insertAdjacentHTML('beforeend','<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#666;font-size:14px;text-align:center;padding:12px;pointer-events:none">area do laser<br>(mapeada na tela do Mac)</div>');conectar()}
+else{$('vista').style.background='#1a1a1c';$('vista').insertAdjacentHTML('beforeend','<div id="lzdica" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#666;font-size:14px;text-align:center;padding:12px;pointer-events:none">area do laser<br>(mapeada na tela do Mac)</div>');conectar()}
 """
 
 
@@ -2587,6 +2684,15 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
                     return self._enviar(403, "token invalido", "text/plain; charset=utf-8")
                 d = self._dispositivo(u)
                 return self._sse(d["id"] if d else None)
+            if u.path == "/tela.jpg":
+                if not self._leitura_ok(u):
+                    return self._enviar(403, "token invalido", "text/plain; charset=utf-8")
+                if not estado.captura:
+                    return self._enviar(404, "captura desligada (--sem-captura)", "text/plain; charset=utf-8")
+                jpg = tela_em_cache()
+                if not jpg:
+                    return self._enviar(404, "sem como capturar a tela neste sistema", "text/plain; charset=utf-8")
+                return self._enviar(200, jpg, "image/jpeg")
             if u.path == "/cfg":
                 if not self._leitura_ok(u):
                     return self._enviar(403, "{}")
@@ -2700,6 +2806,9 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
                 if dados.get("acao") == "sair":
                     threading.Timer(0.3, lambda: os._exit(0)).start()
                 return
+            if (self.path == "/cmd" and dados.get("cmd") in ("next", "prev", "first", "last", "goto")
+                    and not estado.permitido()):
+                estado.autorizar_por_toque()
             if self.path in ("/cmd", "/laser", "/draw") and not estado.permitido():
                 return self._enviar(423, json.dumps(estado.snapshot()))
             if self.path == "/cmd":
@@ -2860,6 +2969,7 @@ def main():
     ap.add_argument("--transicao", choices=TRANSICOES, default="slide")
     ap.add_argument("--host", help="IP extra para escutar (padrao: IP do Tailscale e 127.0.0.1)")
     ap.add_argument("--proporcao", help="proporcao do slide no modo externo, ex.: 16:9 (padrao: le do PDF)")
+    ap.add_argument("--sem-captura", action="store_true", help="nao envia ao celular a previa (captura) da tela do computador quando nao ha PDF")
     ap.add_argument("--sem-abrir", action="store_true", help="nao abre o navegador no Mac")
     ap.add_argument("--tela", type=int, default=0, help="modo externo: indice da tela onde a camada desenha (0 = principal)")
     ap.add_argument("--nivel", type=int, help="modo externo: nivel da janela da camada (padrao: o maximo do sistema)")
@@ -2962,6 +3072,7 @@ def main():
             pass
     total = contar_paginas(pdf) if pdf else 9999
     estado = Estado(pdf, total, a.transicao, token, externo, "", prop)
+    estado.captura = not a.sem_captura
     estado.bases_fn = lambda: calcular_bases(a.porta, a.host)
     estado.carregar_dispositivos()
     if a.novo_token:

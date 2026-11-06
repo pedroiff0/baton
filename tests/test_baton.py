@@ -238,8 +238,14 @@ class TelaPropriaTest(unittest.TestCase):
         proc = mock.Mock()
         proc.poll.return_value = None
         proc.wait.side_effect = lambda: time.sleep(5)
+        tela = __import__("queue").Queue()
+        tela.dispositivo = None  # pagina de tela cheia do proprio computador conectada
         with mock.patch.object(P, "abrir_tela_cheia", return_value=proc) as ab:
             self.assertTrue(e.apresentar())
+        self.assertTrue(e.tela_propria)
+        self.assertFalse(e.permitido())  # janela ainda nao conectou: teclas continuam indo ao app
+        self.assertIsNotNone(e.ext)
+        e.clientes.append(tela)
         self.assertTrue(ab.call_args[0][0].endswith("/apresentar"))
         self.assertTrue(e.permitido())
         self.assertIsNone(e.ext)  # a tecla nao vai tambem para o navegador
@@ -247,6 +253,25 @@ class TelaPropriaTest(unittest.TestCase):
         proc.terminate.assert_called()
         self.assertFalse(e.tela_propria)
         self.assertIsNotNone(e.ext)
+
+    def test_toque_em_proximo_autoriza(self):
+        e = P.Estado(None, 9999, "slide", "tok")
+        e.prefs.update(ativo=True, modo="perguntar", apps_nao=["Blocos"])
+        e.autorizado, e.pedido = False, {"app": "PowerPoint"}
+        self.assertTrue(e.autorizar_por_toque())
+        self.assertTrue(e.permitido())
+        self.assertIsNone(e.pedido)
+        e.autorizado, e.pedido = False, {"app": "Blocos"}
+        self.assertFalse(e.autorizar_por_toque())  # app bloqueado pelo usuario
+        e.pedido, e.prefs["modo"] = None, "nunca"
+        self.assertFalse(e.autorizar_por_toque())
+
+    def test_captura_de_teste(self):
+        with tempfile.NamedTemporaryFile(suffix=".jpg") as f:
+            f.write(b"\xff\xd8jpg")
+            f.flush()
+            with mock.patch.dict(os.environ, {"BATON_CAPTURA": f.name}):
+                self.assertEqual(P.capturar_tela(), b"\xff\xd8jpg")
 
     def test_sem_pdf_nao_apresenta(self):
         self.assertFalse(P.Estado(None, 9999, "slide", "tok").apresentar())

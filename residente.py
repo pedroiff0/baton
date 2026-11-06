@@ -246,8 +246,11 @@ def iniciar_tray(porta):
             ps1 = base / "tray_win.ps1"
             if not ps1.exists():
                 return None
+            log = Path.home() / ".cache" / "baton"
+            log.mkdir(parents=True, exist_ok=True)
             return subprocess.Popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
-                                     "-File", str(ps1), "-Porta", str(porta)])
+                                     "-File", str(ps1), "-Porta", str(porta)], stdout=open(log / "tray.log", "w"),
+                                    stderr=subprocess.STDOUT, creationflags=0x08000000)  # CREATE_NO_WINDOW
         if sys.platform.startswith("linux"):
             py = base / "tray_gtk.py"
             if not py.exists():
