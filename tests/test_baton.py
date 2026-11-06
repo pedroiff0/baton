@@ -908,9 +908,9 @@ class RelayTest(unittest.TestCase):
         self.assertIs(r.achar(token="tok1"), a1)
         self.assertIsNone(r.achar(token="outro"))
         self.assertIs(r.achar(sid=a2.sid), a2)
-        self.assertIsNotNone(r.achar(estatico=True))
+        self.assertIsNone(r.achar(estatico=True))  # estatico sem credencial: nunca "qualquer agente"
         a1.vivo = a2.vivo = False
-        self.assertIsNone(r.achar(estatico=True))
+        self.assertIsNone(r.achar(sid=a2.sid))
 
     def test_relay_json_do_pacote(self):
         with tempfile.TemporaryDirectory() as d:
@@ -976,6 +976,27 @@ class RelayTest(unittest.TestCase):
                 time.sleep(0.1)
             self.assertFalse(srv.relay.agentes)  # revogado: desconectado na hora
             ag.parar = True
+            srv.shutdown()
+
+    def test_registro_aberto_com_limites(self):
+        import http.client
+        with tempfile.TemporaryDirectory() as d:
+            srv = RL.servir(0, "admin-chave-de-teste-1", max_sessoes=10, host="127.0.0.1", registro=RL.Registro(Path(d) / "r.json"))
+            porta = srv.server_address[1]
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            ags = []
+            for _ in range(RL.Relay.MAX_ABERTOS_POR_IP):  # sem chave: entra (registro aberto)
+                a = RL.AgenteRelay(f"ws://127.0.0.1:{porta}", "", 1, lambda: ([], []))
+                a._ws = a._conectar()
+                ags.append(a)
+            with self.assertRaises(ConnectionError):  # 4o do mesmo IP: recusado
+                RL.AgenteRelay(f"ws://127.0.0.1:{porta}", "", 1, lambda: ([], []))._conectar()
+            for a in ags:
+                a._ws.fechar()
+            time.sleep(0.3)
+            srv.relay.registro.definir_aberto(False)
+            with self.assertRaises(ConnectionError):  # fechado: so com convite
+                RL.AgenteRelay(f"ws://127.0.0.1:{porta}", "", 1, lambda: ([], []))._conectar()
             srv.shutdown()
 
     def test_limite_de_sessoes(self):

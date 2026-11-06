@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 PREFS_ARQ = Path.home() / ".cache" / "baton" / "estado.json"
-PADRAO = {"ativo": True, "modo": "perguntar", "apps_ok": [], "apps_nao": [], "monitor": "auto"}
+PADRAO = {"ativo": True, "modo": "perguntar", "apps_ok": [], "apps_nao": [], "monitor": "auto", "relay_publico": True}
 MODOS = ("perguntar", "sempre", "nunca")
 # apps de video e arquivos: tela cheia que quase nunca e uma apresentacao
 IGNORADOS = ("vlc", "iina", "quicktime", "mpv", "finder", "explorer.exe", "dwm.exe", "steam", "netflix", "spotify")
@@ -28,6 +28,8 @@ def prefs_carregar():
             p["ativo"] = d["ativo"]
         if d.get("modo") in MODOS:
             p["modo"] = d["modo"]
+        if isinstance(d.get("relay_publico"), bool):
+            p["relay_publico"] = d["relay_publico"]
         if isinstance(d.get("monitor"), str) and (d["monitor"] == "auto" or d["monitor"].isdigit()):
             p["monitor"] = d["monitor"]
         for k in ("apps_ok", "apps_nao"):
@@ -302,6 +304,8 @@ select{background:#3a3a3c;color:#fff;border:0;border-radius:10px;padding:10px;fo
 <h2>Quando uma apresentacao em tela cheia abrir</h2><div class="cartao"><select id="modo">
 <option value="perguntar">Perguntar no celular</option><option value="sempre">Controlar sempre, sem perguntar</option><option value="nunca">Nunca controlar</option></select>
 <p><small>Ate alguem aceitar, o Baton nao envia nenhuma tecla ao computador.</small></p></div>
+<h2>Relay publico</h2><div class="cartao"><label><input type="checkbox" id="rel"> Usar o relay publico (baton.phrandrade.com)</label> <small id="relst"></small>
+<p><small>Permite abrir o QR de qualquer rede, com HTTPS e sensores no iPhone, sem configurar nada. Os comandos dos slides (e o PDF e as notas, se o celular os carregar) passam por esse servidor so em transito: sem login, sem conta, sem guardar IP nem conteudo. Desligado, o Baton usa so a rede local. Codigo aberto: voce pode rodar o seu proprio relay (README).</small></p></div>
 <h2>Monitor da projecao</h2><div class="cartao"><select id="mon"></select>
 <p><small>Onde ficam o laser, a camada de desenho, a previa do celular e a tela cheia do Baton. "Automatico" segue a janela em tela cheia (ou o monitor secundario, quando ha dois).</small></p></div>
 <h2>Apps lembrados</h2><div class="cartao"><b>Sempre controlar</b><ul id="ok"></ul><b>Nunca controlar</b><ul id="nao"></ul></div>
@@ -326,6 +330,7 @@ $('tbi').onclick=()=>{btAba='iphone';verBt()};$('tba').onclick=()=>{btAba='andro
 function ver(){
   $('st').innerHTML=est.ativo?'<span class="ok">Ativo</span>'+(est.autorizado?' - controlando':' - em espera')+(est.pedido?'<br><small>Pedido pendente: '+est.pedido.app+'</small>':''):'<span class="pausa">Pausado</span>';
   $('bp').textContent=est.ativo?'Pausar':'Retomar';$('modo').value=est.modo;
+  $('rel').checked=!!est.relay_publico;$('relst').textContent=est.relay_publico?('- '+(est.relay||'conectando')):'- desligado';
   {const ms=est.monitores||[],sel=$('mon'),chave=ms.map(m=>m.id+m.nome+m.w+m.h).join('|');
    if(sel.dataset.chave!==chave){sel.dataset.chave=chave;sel.innerHTML='<option value="auto">Automatico'+(est.monitor_ativo!=null&&ms[est.monitor_ativo]?' (agora: monitor '+(est.monitor_ativo+1)+')':'')+'</option>'+
      ms.map((m,i)=>'<option value="'+(i+1)+'">Monitor '+(i+1)+': '+m.nome.replace(/</g,'&lt;')+' '+m.w+'x'+m.h+(m.principal?' (principal)':'')+'</option>').join('')}
@@ -340,7 +345,7 @@ function ver(){
   $('bap').style.display=est.deck?'inline-block':'none';$('bap').textContent=est.tela_propria?'Fechar tela cheia':'Apresentar em tela cheia';
   lista($('ok'),est.apps_ok||[]);lista($('nao'),est.apps_nao||[]);$('ba').textContent=est.autorizado?'Revogar autorizacao':'Autorizar agora'}
 $('bp').onclick=()=>acao(est.ativo?'pausar':'retomar');$('ba').onclick=()=>acao(est.autorizado?'revogar':'autorizar');
-$('modo').onchange=e=>acao('modo',e.target.value);$('mon').onchange=e=>acao('monitor',e.target.value);$('bi').onclick=()=>acao('instalar');$('br').onclick=()=>acao('desinstalar');
+$('modo').onchange=e=>acao('modo',e.target.value);$('mon').onchange=e=>acao('monitor',e.target.value);$('rel').onchange=e=>acao('relay',e.target.checked);$('bi').onclick=()=>acao('instalar');$('br').onclick=()=>acao('desinstalar');
 $('bq').onclick=()=>window.open('/qr','_blank');$('bs').onclick=()=>{if(confirm('Encerrar o Baton?'))acao('sair')};
 async function enviarDeck(f){if(!f)return;$('dmsg').textContent='Carregando '+f.name+' (arquivos pptx sao convertidos, pode levar um minuto)...';
   try{const r=await fetch('/painel/deck?nome='+encodeURIComponent(f.name),{method:'POST',body:await f.arrayBuffer()});const j=await r.json();

@@ -5,7 +5,7 @@ O relay roda no servidor (`baton --servir-relay`); cada Baton e um agente que se
 e recebe as requisicoes dos celulares. O roteamento usa a credencial do proprio celular (codigo do QR em /p/<codigo>
 ou token), entao as paginas continuam com caminhos absolutos e nada muda no celular. Somente biblioteca padrao.
 
-Privacidade: sem login, sem conta, sem analytics. O relay nao registra IP nem le o conteudo (so repassa); nao recebe nome,
+Privacidade: sem login, sem conta, sem analytics. O relay nao registra IP (so conta, em memoria, conexoes simultaneas por IP no registro aberto) nem le o conteudo (so repassa); nao recebe nome,
 sistema ou qualquer dado do computador. Guarda em disco apenas o hash da chave de cada computador autorizado e o rotulo
 que o administrador deu ao convite; o resto (quem esta online, fluxos abertos) existe so em memoria.
 """
@@ -125,7 +125,7 @@ class Registro:
     def __init__(self, arquivo=None):
         self.arq = Path(arquivo) if arquivo else None
         self.lock = threading.RLock()
-        self.d = {"computadores": [], "convites": []}
+        self.d = {"computadores": [], "convites": [], "aberto": True}  # aberto: registro sem convite (chave vazia), com limites
         try:
             if self.arq:
                 self.d.update(json.loads(self.arq.read_text(encoding="utf-8")))
@@ -141,6 +141,15 @@ class Registro:
             os.chmod(self.arq, 0o600)
         except OSError:
             pass
+
+    @property
+    def aberto(self):
+        return bool(self.d.get("aberto", True))
+
+    def definir_aberto(self, valor):
+        with self.lock:
+            self.d["aberto"] = bool(valor)
+            self._salvar()
 
     @staticmethod
     def _norm(codigo):
@@ -207,6 +216,7 @@ class Agente:
         self.ws, self.cid, self.sid = ws, cid, secrets.token_urlsafe(8)  # cid vazio = chave de administrador (este servidor)
         self.codigos, self.tokens, self.pend, self.lock, self._id = set(), set(), {}, threading.Lock(), 0
         self.vivo, self.desde, self.fluxos = True, time.time(), 0  # fluxos: /events abertos (celulares conectados), so em memoria
+        self.aberto, self.ip_chave = False, ""  # aberto: entrou sem convite; ip_chave so conta conexoes simultaneas (apagado ao sair)
 
     def novo_id(self):
         with self.lock:
@@ -227,6 +237,25 @@ class Relay:
         self.chave, self.max_sessoes, self.agentes, self.lock = chave, max_sessoes, {}, threading.Lock()
         self.registro, self.publico = registro or Registro(), publico
         self.falhas = {}  # ip -> instantes de tentativas erradas (limite por minuto; nao e gravado)
+
+    MAX_ABERTOS_POR_IP = 3
+
+    def abertos_do_ip(self, ip):
+        with self.lock:
+            return sum(1 for a in self.agentes.values() if a.ip_chave == ip)
+
+    def vagas_abertas(self):
+        """Registro aberto nunca ocupa as ultimas 20% das vagas: sobram para computadores com convite."""
+        with self.lock:
+            n = sum(1 for a in self.agentes.values() if a.aberto)
+        return n < int(self.max_sessoes * 0.8)
+
+    def derrubar(self, sid):
+        with self.lock:
+            a = self.agentes.get(sid)
+        if a:
+            a.cair()
+        return bool(a)
 
     def desconectar(self, cid):
         with self.lock:
@@ -270,7 +299,7 @@ class Relay:
         for a in ags:
             if sid and a.sid == sid:
                 return a
-        return ags[0] if (estatico and ags) else None
+        return None  # nunca "qualquer agente": um agente aberto serviria scripts sob o dominio de outro
 
 
 def _igual(a, b):
@@ -309,6 +338,7 @@ pre{margin:6px 0;padding:10px;border-radius:10px;background:var(--bg);border:1px
 <div id="login" class="card"><div class="lin"><div class="g"><input id="chave" type="password" placeholder="Chave de administrador" autocomplete="current-password"></div><button class="az" id="entrar">Entrar</button></div><small id="erro" style="color:var(--vm)"></small></div>
 <div id="app" style="display:none">
 <h2>Computadores</h2><div id="comps"></div>
+<h2>Registro aberto</h2><div class="card"><div class="lin"><div class="g"><b id="abtit"></b><br><small>Aberto: qualquer Baton entra sem convite, com limite por IP e vagas reservadas. Fechado: so com convite.</small></div><button id="abtog"></button></div><div id="abertos"></div></div>
 <h2>Novo computador</h2><div class="card"><div class="lin"><div class="g"><input id="rotulo" placeholder="Rotulo so seu, opcional (ex.: Mac do instituto)" maxlength="40"></div><button class="az" id="criar">Criar convite</button></div>
 <div id="novo"></div></div>
 <h2>Convites pendentes</h2><div id="convs"></div>
@@ -323,15 +353,19 @@ function mostra(ok){$('login').style.display=ok?'none':'block';$('app').style.di
 const dur=s=>s<60?s+' s':s<3600?Math.floor(s/60)+' min':Math.floor(s/3600)+' h '+Math.floor(s%3600/60)+' min';
 const host=()=>(ES&&ES.publico?ES.publico.replace(/^https?:\/\//,''):location.host);
 async function ver(){try{ES=await api('estado')}catch(e){return}mostra(true);
-  const on=ES.computadores.filter(c=>c.online).length+ES.locais.length;
-  $('resumo').textContent=on+' de '+ES.max+' sessoes online - '+(ES.computadores.reduce((a,c)=>a+c.celulares,0)+ES.locais.reduce((a,c)=>a+c.celulares,0))+' celulares conectados agora';
+  const on=ES.computadores.filter(c=>c.online).length+ES.locais.length+ES.abertos.length;
+  $('resumo').textContent=on+' de '+ES.max+' sessoes online - '+(ES.computadores.reduce((a,c)=>a+c.celulares,0)+ES.locais.reduce((a,c)=>a+c.celulares,0)+ES.abertos.reduce((a,c)=>a+c.celulares,0))+' celulares conectados agora';
   $('comps').innerHTML=(ES.locais.map(l=>'<div class="card lin"><span class="dot on"></span><div class="g"><b>Este servidor</b> <small>(chave de administrador)</small><br><small>online ha '+dur(l.online_ha)+' - '+l.celulares+' celular(es)</small></div></div>').join('')+
    ES.computadores.map(c=>'<div class="card lin"><span class="dot '+(c.online?'on':'')+'"></span><div class="g"><b>'+esc(c.rotulo||'Computador '+c.id)+'</b> <small>'+c.id+'</small><br><small>'+(c.online?'online ha '+dur(c.online_ha)+' - '+c.celulares+' celular(es)':'offline')+'</small></div>'+
    '<button data-r="'+c.id+'">Renomear</button><button class="vm" data-v="'+c.id+'">Revogar</button></div>').join(''))||'<div class="vazio">Nenhum computador ainda. Crie um convite abaixo.</div>';
+  $('abtit').textContent=ES.aberto?'Ligado ('+ES.abertos.length+' online)':'Desligado';$('abtog').textContent=ES.aberto?'Fechar registro':'Abrir registro';$('abtog').className=ES.aberto?'vm':'az';
+  $('abertos').innerHTML=ES.abertos.map(a=>'<div class="lin" style="margin-top:8px"><span class="dot on"></span><div class="g"><b>Sessao '+a.sid.slice(0,4)+'</b> <small>online ha '+dur(a.online_ha)+' - '+a.celulares+' celular(es)</small></div><button class="vm" data-d="'+a.sid+'">Derrubar</button></div>').join('');
+  document.querySelectorAll('[data-d]').forEach(b=>b.onclick=async()=>{await api('derrubar',{sid:b.dataset.d});ver()});
   $('convs').innerHTML=ES.convites.map(c=>'<div class="card lin"><div class="g"><b>'+esc(c.rotulo||'Sem rotulo')+'</b><br><small>expira em '+dur(Math.max(0,Math.floor(c.expira-Date.now()/1000)))+'</small></div><button class="vm" data-i="'+c.id+'">Cancelar</button></div>').join('')||'<div class="vazio">Nenhum.</div>';
   document.querySelectorAll('[data-v]').forEach(b=>b.onclick=async()=>{if(confirm('Revogar este computador? Ele para de conectar agora.')){await api('revogar',{id:b.dataset.v});ver()}});
   document.querySelectorAll('[data-r]').forEach(b=>b.onclick=async()=>{const n=prompt('Novo rotulo:');if(n!==null){await api('rotular',{id:b.dataset.r,rotulo:n});ver()}});
   document.querySelectorAll('[data-i]').forEach(b=>b.onclick=async()=>{await api('revogar-convite',{id:b.dataset.i});ver()})}
+$('abtog').onclick=async()=>{await api('aberto',{valor:!ES.aberto});ver()};
 $('entrar').onclick=()=>{K=$('chave').value;sessionStorage.setItem('baton-adm',K);$('erro').textContent='';ver()};
 $('chave').onkeydown=e=>{if(e.key==='Enter')$('entrar').click()};
 $('criar').onclick=async()=>{const r=await api('convite',{rotulo:$('rotulo').value});$('rotulo').value='';const h=r.publico?r.publico.replace(/^https?:\/\//,''):location.host,c=h+'/'+r.codigo;
@@ -414,8 +448,10 @@ def criar_handler(relay):
                     a = online.get(c["id"])
                     saida.append({"id": c["id"], "rotulo": c["rotulo"], "criado": c["criado"], "online": bool(a),
                                   "online_ha": int(agora - a.desde) if a else 0, "celulares": a.fluxos if a else 0})
-                locais = [{"online_ha": int(agora - a.desde), "celulares": a.fluxos} for a in ags if a.vivo and not a.cid]
-                return self._json(200, {"computadores": saida, "locais": locais, "max": relay.max_sessoes, "publico": relay.publico,
+                locais = [{"online_ha": int(agora - a.desde), "celulares": a.fluxos} for a in ags if a.vivo and not a.cid and not a.aberto]
+                abertos = [{"sid": a.sid, "online_ha": int(agora - a.desde), "celulares": a.fluxos} for a in ags if a.vivo and a.aberto]
+                return self._json(200, {"computadores": saida, "locais": locais, "abertos": abertos, "aberto": reg.aberto,
+                                        "max": relay.max_sessoes, "publico": relay.publico,
                                         "convites": [{"id": c["id"], "rotulo": c["rotulo"], "expira": c["expira"]} for c in convs]})
             if self.command == "POST":
                 d = self._corpo_json()
@@ -427,6 +463,11 @@ def criar_handler(relay):
                     return self._json(200, {"ok": ok})
                 if caminho == "revogar-convite":
                     return self._json(200, {"ok": relay.registro.revogar_convite(str(d.get("id", "")))})
+                if caminho == "aberto":
+                    relay.registro.definir_aberto(bool(d.get("valor")))
+                    return self._json(200, {"aberto": relay.registro.aberto})
+                if caminho == "derrubar":
+                    return self._json(200, {"ok": relay.derrubar(str(d.get("sid", "")))})
                 if caminho == "rotular":
                     return self._json(200, {"ok": relay.registro.rotular(str(d.get("id", "")), d.get("rotulo", ""))})
             return self._json(404, {"erro": "rota desconhecida"})
@@ -435,19 +476,29 @@ def criar_handler(relay):
             chave = self.headers.get("X-Baton-Chave", "")
             if relay.limite(self._ip()):
                 return self._texto(429, "muitas tentativas")
-            cid = ""
-            if not _igual(chave, relay.chave):  # chave de administrador (este servidor) ou de um computador convidado
+            cid, aberto = "", False
+            if chave and not _igual(chave, relay.chave):  # chave de administrador (este servidor) ou de um computador convidado
                 comp = relay.registro.autenticar(chave)
                 if comp is None:
                     relay.falhou(self._ip())
                     time.sleep(1)
                     return self._texto(403, "chave do relay invalida ou revogada")
                 cid = comp["id"]
+            elif not chave:  # sem chave: registro aberto (Baton padrao, sem configurar), com limites
+                ip = self._ip()
+                if not relay.registro.aberto:
+                    return self._texto(403, "este relay exige convite")
+                if relay.abertos_do_ip(ip) >= relay.MAX_ABERTOS_POR_IP or not relay.vagas_abertas():
+                    return self._texto(503, "relay aberto lotado; tente de novo em instantes")
+                aberto = True
             k = self.headers.get("Sec-WebSocket-Key", "")
             if not k or "websocket" not in self.headers.get("Upgrade", "").lower():
                 return self._texto(400, "WebSocket esperado")
             ws = WS(self.connection, False)
             ag = Agente(ws, cid)
+            ag.aberto = aberto
+            if aberto:
+                ag.ip_chave = self._ip()
             if not relay.registrar(ag):
                 return self._texto(503, "relay lotado")
             acc = base64.b64encode(hashlib.sha1((k + GUID).encode()).digest()).decode()
@@ -531,7 +582,7 @@ def criar_handler(relay):
                     ag.pend.pop(rid, None)
 
         def _responder(self, ag, rid, fila):
-            comecou = False
+            comecou, html, janela = False, False, b""
             while True:
                 try:
                     tipo, dados = fila.get(timeout=90 if comecou else 30)
@@ -545,6 +596,7 @@ def criar_handler(relay):
                     break
                 if tipo == T_CAB:
                     cab = json.loads(dados)
+                    html = any(k.lower() == "content-type" and "html" in v.lower() for k, v in cab["h"])
                     self.send_response_only(int(cab["status"]))
                     for k, v in cab["h"]:
                         if k.lower() not in HOP:
@@ -554,6 +606,11 @@ def criar_handler(relay):
                     self.end_headers()
                     comecou = True
                 elif tipo == T_DADOS and comecou:
+                    if ag.aberto and html:  # o Baton nunca tem campo de senha: agente aberto servindo um e tentativa de phishing
+                        janela = (janela + dados.lower())[-4096:]
+                        if b"type=\"password\"" in janela or b"type=password" in janela or b"type='password'" in janela:
+                            ag.cair()
+                            break
                     try:
                         self.wfile.write(dados)
                         self.wfile.flush()
@@ -638,7 +695,13 @@ class AgenteRelay(threading.Thread):
         super().__init__(daemon=True)
         self.url, self.chave, self.porta, self.anuncio_fn = url.rstrip("/"), chave, porta, anuncio_fn
         self.status = "conectando"
-        self.reqs, self.conns, self.parar = {}, {}, False
+        self.reqs, self.conns, self.parar, self.ws_atual = {}, {}, False, None
+
+    def desligar(self):
+        self.parar = True
+        self.status = "desligado"
+        if self.ws_atual is not None:
+            self.ws_atual.fechar()
 
     def run(self):
         espera = 1
@@ -647,7 +710,10 @@ class AgenteRelay(threading.Thread):
                 self._sessao()
                 espera = 1
             except Exception as e:
-                self.status = f"desconectado ({type(e).__name__})"
+                if not self.parar:
+                    self.status = f"desconectado ({type(e).__name__})"
+            if self.parar:
+                return
             time.sleep(espera)
             espera = min(30, espera * 2)
 
@@ -678,6 +744,10 @@ class AgenteRelay(threading.Thread):
 
     def _sessao(self):
         ws = self._conectar()
+        self.ws_atual = ws
+        if self.parar:
+            ws.fechar()
+            return
         self.status = "conectado"
         vivo = threading.Event()
 

@@ -305,6 +305,7 @@ class Estado:
         self.dispositivos = []  # celulares pareados: {id, nome, token, criado, ultimo_visto, ua}
         self.monitor_cli = ""  # --monitor N (sobrepoe a preferencia do painel)
         self._mon_cache = (0.0, None)
+        self.porta_local, self._url_derivada = 8765, ""
         self.relay = None  # AgenteRelay (sessao no relay central), se configurado
         self.pareamento = None  # {"codigo", "expira"}: QR de uso unico
         self._salvo_em = 0.0
@@ -503,6 +504,12 @@ class Estado:
             p["ativo"] = True
         elif acao == "modo" and valor in residente.MODOS:
             p["modo"] = valor
+        elif acao == "relay":
+            p["relay_publico"] = bool(valor)
+            if valor:
+                self.relay_iniciar(RELAY_PADRAO)
+            else:
+                self.relay_parar()
         elif acao == "monitor" and (valor == "auto" or str(valor).isdigit()):
             p["monitor"] = str(valor)
             self._mon_cache = (0.0, None)
@@ -547,6 +554,27 @@ class Estado:
     def acessibilidade(self):
         return acessibilidade_mac() if self.ext else None
 
+    def relay_iniciar(self, url, chave=""):
+        global RELAY_AGENTE, URL_PUBLICA
+        if self.relay is not None and getattr(self.relay, "status", "") != "desligado":
+            return
+        self.relay = relay_mod.AgenteRelay(url, chave, self.porta_local, lambda: (
+            [self.codigo_pareamento()], [relay_mod.hash_token(d["token"]) for d in list(self.dispositivos)]))
+        self.relay.start()
+        RELAY_AGENTE = self.relay
+        if not URL_PUBLICA and "127.0.0.1" not in url and "localhost" not in url:
+            URL_PUBLICA = url.replace("wss://", "https://").replace("ws://", "http://").rstrip("/")
+            self._url_derivada = URL_PUBLICA
+
+    def relay_parar(self):
+        global RELAY_AGENTE, URL_PUBLICA
+        if self.relay is not None:
+            self.relay.desligar()
+        RELAY_AGENTE = None
+        if self._url_derivada and URL_PUBLICA == self._url_derivada:
+            URL_PUBLICA = ""
+            self._url_derivada = ""
+
     def monitor_pref(self):
         return self.monitor_cli or str(self.prefs.get("monitor", "auto"))
 
@@ -568,7 +596,7 @@ class Estado:
                 "residente": self.residente, "acessibilidade": self.acessibilidade(), "deck": self.deck_info(), "tela_propria": self.tela_propria, "captura": self.captura,
                 "conexoes": len(self.conectados()), "dispositivos": self.dispositivos_info(),
                 "plataforma": sys.platform, "rede_bluetooth": self.rede_bluetooth(),
-                "pareamento_urls": self.urls_pareamento(), "relay": getattr(self.relay, "status", ""),
+                "pareamento_urls": self.urls_pareamento(), "relay": getattr(self.relay, "status", ""), "relay_publico": bool(self.prefs.get("relay_publico", True)), "relay_url": RELAY_PADRAO,
                 "monitores": monitores.listar(), "monitor_pref": self.monitor_pref(), "monitor_ativo": (self.monitor() or {}).get("id")}
 
     def comando(self, cmd, valor=None, cid=None):
@@ -2028,6 +2056,7 @@ def salvar_url_publica(url):
         pass
 
 
+RELAY_PADRAO = "wss://baton.phrandrade.com"  # relay publico e aberto (sem login, sem coleta); desligue com --relay - ou no painel
 ARQ_RELAY = Path.home() / ".cache" / "baton" / "relay.json"
 ARQ_CHAVE_RELAY = Path.home() / ".config" / "baton" / "relay-chave"
 
@@ -3791,6 +3820,7 @@ def main():
     ap.add_argument("--relay", default=os.environ.get("BATON_RELAY", ""), metavar="URL",
                     help="conecta este Baton a um relay central (ex.: wss://baton.exemplo.com): varios computadores atras da mesma URL publica, "
                          "cada um com sua sessao. Com --instalar vira o padrao; '-' remove")
+    ap.add_argument("--sem-relay-publico", action="store_true", help="nao usa o relay publico padrao (so rede local e a URL publica que voce configurar)")
     ap.add_argument("--chave-relay", default="", metavar="CHAVE", help="chave de registro do relay (ou BATON_RELAY_CHAVE)")
     ap.add_argument("--convite", default="", metavar="HOST/CODIGO",
                     help="entra no relay com um convite de uso unico (ex.: baton.exemplo.com/ABCD-EFGH-JKLM); sem login, nada e coletado")
@@ -3960,10 +3990,10 @@ def main():
     URL_PUBLICA = "" if pedido == "-" else (pedido or url_publica_salva())
     resgatar_convite_do_pacote()
     relay_url, relay_chave = (a.relay.strip(), chave_do_relay(a.chave_relay)) if a.relay.strip() else relay_salvo()
-    if not relay_chave:
-        relay_url = ""  # sem chave nao ha como se registrar: segue so pela rede local / URL publica configurada
     if relay_url == "-":
         relay_url = ""
+    elif not relay_url and not os.environ.get("BATON_SEM_RELAY") and not a.sem_relay_publico and residente.prefs_carregar().get("relay_publico", True):
+        relay_url = RELAY_PADRAO  # padrao: clonar e usar; se a internet falhar, o QR segue pela rede local
     if relay_url and not URL_PUBLICA and "127.0.0.1" not in relay_url and "localhost" not in relay_url:
         URL_PUBLICA = relay_url.replace("wss://", "https://").replace("ws://", "http://").rstrip("/")  # QR e HTTPS pela URL do relay
     estado.captura = not a.sem_captura
@@ -4040,11 +4070,9 @@ def main():
             print(f"aviso: sem HTTPS na porta {a.porta + 1} ({e}); o laser por apontamento volta ao dedo", file=sys.stderr)
     local = f"http://localhost:{a.porta}/"
     estado.local_url = local
+    estado.porta_local = a.porta
     if relay_url:
-        estado.relay = relay_mod.AgenteRelay(relay_url, relay_chave, a.porta, lambda: (
-            [estado.codigo_pareamento()], [relay_mod.hash_token(d["token"]) for d in list(estado.dispositivos)]))
-        estado.relay.start()
-        RELAY_AGENTE = estado.relay
+        estado.relay_iniciar(relay_url, relay_chave)
         print(f"Relay: {relay_url} (sessao propria; QR e celulares isolados dos outros computadores)")
     tray = residente.iniciar_tray(a.porta) if (a.residente or a.tray) and not a.sem_tray else None
     print(f"\nModo: {'externo (teclas e mouse para o app em primeiro plano)' if externo else 'tela do Baton'}")
