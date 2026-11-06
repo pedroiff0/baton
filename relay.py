@@ -380,6 +380,7 @@ if(K)ver();else mostra(false);setInterval(()=>{if(K&&document.visibilityState===
 def criar_handler(relay):
     class H(BaseHTTPRequestHandler):
         server_version = "BatonRelay"
+        disable_nagle_algorithm = True  # quadros pequenos (comandos, laser) saem na hora, sem esperar o ACK
 
         def log_message(self, *a):
             pass
@@ -721,6 +722,7 @@ class AgenteRelay(threading.Thread):
         u = urlsplit(self.url.replace("wss://", "https://").replace("ws://", "http://"))
         tls = u.scheme == "https"
         sock = socket.create_connection((u.hostname, u.port or (443 if tls else 80)), timeout=10)
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         if tls:
             sock = ssl.create_default_context().wrap_socket(sock, server_hostname=u.hostname)
         chave = base64.b64encode(os.urandom(16)).decode()
@@ -739,7 +741,7 @@ class AgenteRelay(threading.Thread):
         acc = base64.b64encode(hashlib.sha1((chave + GUID).encode()).digest()).decode()
         if acc.encode() not in cab:
             raise ConnectionError("handshake invalido")
-        sock.settimeout(None)
+        sock.settimeout(70)  # o agente manda ping a cada 20 s e o relay responde: 70 s sem nada = caminho morto (rede trocou, PC dormiu): reconecta
         return WS(sock, True, resto)
 
     def _sessao(self):
@@ -767,7 +769,7 @@ class AgenteRelay(threading.Thread):
                 except OSError:
                     ws.fechar()
                     return
-                vivo.wait(1.0)
+                vivo.wait(0.25)  # codigo/token novos chegam ao relay em ate 0,25 s (QR escaneado e logo usado)
 
         threading.Thread(target=pulso, daemon=True).start()
         try:

@@ -306,6 +306,7 @@ class Estado:
         self.monitor_cli = ""  # --monitor N (sobrepoe a preferencia do painel)
         self._mon_cache = (0.0, None)
         self.porta_local, self._url_derivada = 8765, ""
+        self.laser_seq = {}  # (token, id da pagina) -> ultima sequencia de /laser aceita
         self.relay = None  # AgenteRelay (sessao no relay central), se configurado
         self.pareamento = None  # {"codigo", "expira"}: QR de uso unico
         self._salvo_em = 0.0
@@ -2783,12 +2784,13 @@ function riscaLocal(t,pts,de){
   g.lineWidth=t==='hl'?Math.max(6,w*0.022):Math.max(2,w*0.004);g.strokeStyle=cores[t==='hl'?'hl':'pen'];if(t==='hl')g.globalAlpha=.4;
   g.beginPath();g.moveTo(pts[de][0]*w,pts[de][1]*h);for(let i=de+1;i<pts.length;i++)g.lineTo(pts[i][0]*w,pts[i][1]*h);if(pts.length===1)g.lineTo(pts[0][0]*w+.1,pts[0][1]*h);g.stroke();g.restore();
 }
-let lsEnv=false,lsPend=null;
-function envLaser(x,y,on,m){const t=performance.now();if(on&&t-ultimo<25)return;ultimo=t;lsPend={x,y,on,m,r:raioFoco};if(!lsEnv)bombeiaLaser()}
+let lsAb=0,lsPend=null,lsSeq=0;const lsQid=Math.random().toString(36).slice(2,8);
+function envLaser(x,y,on,m){const t=performance.now();if(on&&t-ultimo<25)return;ultimo=t;lsPend={x,y,on,m,r:raioFoco};bombeiaLaser()}
+// ate 3 envios em voo: com RTT alto (relay, internet fraca) a taxa de pontos nao cai para 1/RTT; o servidor descarta os fora de ordem (q)
 function bombeiaLaser(){
-  if(!lsPend){lsEnv=false;return}lsEnv=true;const d=lsPend;lsPend=null;
-  const ac=new AbortController(),to=setTimeout(()=>ac.abort(),1500);
-  fetch('/laser',{method:'POST',headers:{'Content-Type':'application/json','X-Token':TOKEN},body:JSON.stringify(d),keepalive:true,signal:ac.signal}).catch(()=>{}).finally(()=>{clearTimeout(to);bombeiaLaser()})}
+  while(lsPend&&lsAb<3){const d=lsPend;lsPend=null;d.q=++lsSeq;d.i=lsQid;lsAb++;
+    const ac=new AbortController(),to=setTimeout(()=>ac.abort(),2500);
+    fetch('/laser',{method:'POST',headers:{'Content-Type':'application/json','X-Token':TOKEN},body:JSON.stringify(d),keepalive:true,signal:ac.signal}).catch(()=>{}).finally(()=>{clearTimeout(to);lsAb--;bombeiaLaser()})}}
 function posTela(e){const r=$('vista').getBoundingClientRect();return{x:Math.max(0,Math.min(1,(e.clientX-r.left)/r.width)),y:Math.max(0,Math.min(1,(e.clientY-r.top)/r.height))}}
 function pos(e){const p=posTela(e),V=vistaZ();return V?{x:V.x0+p.x*V.w,y:V.y0+p.y*V.w}:p}  // coordenada no slide (considera o zoom)
 function ponto(e,on){const t=posTela(e),{x,y}=pos(e);const p=$('ponto');p.style.display=on?'block':'none';p.style.left=t.x*100+'%';p.style.top=t.y*100+'%';envLaser(x,y,on,ferr==='foco'?'foco':'laser')}
@@ -3047,6 +3049,7 @@ body.canhoto #navrow,body.canhoto #zctl{flex-direction:row-reverse}
 #folha label{display:flex;align-items:center;gap:10px;font-size:14px;color:#ccc;margin:10px 0}#folha input{flex:1;min-width:0;accent-color:#0a84ff}#folha output{min-width:34px;text-align:right;color:#888}
 #folha h3{margin:0 0 4px;font-size:15px;color:#fff;display:flex;justify-content:space-between;align-items:center}
 #folha .mao{display:flex;gap:8px;margin-top:10px}#folha .mao button{flex:1;padding:11px 0;font-size:14px;border-radius:12px;border:0;background:#1d1d1f;color:#fff;font-weight:600}#folha .mao button.sel{background:#0a84ff}
+#aviso{display:none;position:fixed;left:10px;right:10px;top:max(60px,calc(env(safe-area-inset-top) + 48px));z-index:12;background:#3a1212;border:1px solid #ff453a;border-radius:14px;padding:11px 13px;font-size:14px;line-height:1.35}
 #dicainst{display:none;position:fixed;left:12px;right:12px;top:max(50px,env(safe-area-inset-top));background:#2c2c2e;border:1px solid #0a84ff;border-radius:14px;padding:12px;font-size:14px;z-index:11;line-height:1.4}
 @media (orientation:landscape){
   body{padding-top:max(10px,env(safe-area-inset-top))}
@@ -3075,7 +3078,7 @@ body.canhoto #navrow,body.canhoto #zctl{flex-direction:row-reverse}
   <label>Alcance do apontador (graus)<input id="s_gan" type="range" min="15" max="80" value="35"><output>35</output></label>
   <div class="mao"><button id="mdestro">Destro</button><button id="mcanhoto">Canhoto</button></div>
 </div>
-<div id="dicainst"></div>
+<div id="dicainst"></div><div id="aviso"></div>
 <script>
 const TOKEN="__TOKEN__",HTTPS="__HTTPS__",AUTO="__AUTO__"==="1",EXTERNO="__EXTERNO__"==="1",$=id=>document.getElementById(id);
 let ultimaMsg=Date.now(),es=null;
@@ -3099,7 +3102,11 @@ function passoZoom(d){let i=NIVEIS.findIndex(n=>n>=zoom.z-1e-6);if(i<0)i=NIVEIS.
 $('zp').onclick=()=>{passoZoom(1);navigator.vibrate&&navigator.vibrate(8)};$('zm').onclick=()=>{passoZoom(-1);navigator.vibrate&&navigator.vibrate(8)};
 $('z1').onclick=()=>{zoom={z:1,x:.5,y:.5};mostraZoom();cmd('zoom',zoom)};
 if(EXTERNO)$('zrow').style.display='none';  // modo externo (app de terceiros): o Baton nao amplia a janela do outro programa
-function aplicaSnap(s){if(s.cfg){mostraAj(s.cfg);tick();return}if(s.timer)sincTimer(s.timer);if(s.zoom!==undefined&&ativo!=='zoom'){zoom={z:s.zoom||1,x:s.zx===undefined?.5:s.zx,y:s.zy===undefined?.5:s.zy};mostraZoom()}}
+function avisoUI(s){const el=$('aviso');let t='';
+  if(s.acess===false)t='<b>O Mac nao deixou o Baton enviar teclas.</b> No Mac: Ajustes do Sistema > Privacidade e Seguranca > Acessibilidade, ative o Baton.';
+  else if(s.ativo===false)t='<b>Baton pausado</b> no computador. Retome em localhost:8765/painel.';
+  el.innerHTML=t;el.style.display=t?'block':'none'}
+function aplicaSnap(s){if(s.acess!==undefined||s.ativo!==undefined)avisoUI(s);if(s.cfg){mostraAj(s.cfg);tick();return}if(s.timer)sincTimer(s.timer);if(s.zoom!==undefined&&ativo!=='zoom'){zoom={z:s.zoom||1,x:s.zx===undefined?.5:s.zx,y:s.zy===undefined?.5:s.zy};mostraZoom()}}
 // ---- cronometro (o mesmo do controle completo: vive no computador, todos os celulares veem o mesmo tempo)
 let tm={rodando:false,elapsed:0,rec:performance.now()},metaMin=50,voltasVistas='';
 const mmss=t=>{t=Math.max(0,Math.floor(t));const h=Math.floor(t/3600),m=Math.floor(t%3600/60),s=t%60;return(h?h+':'+String(m).padStart(2,'0'):String(m).padStart(2,'0'))+':'+String(s).padStart(2,'0')};
@@ -3172,10 +3179,12 @@ let ori=null,semSensor=true,base=null,sx=.5,sy=.5,ativo=null,pad={x:.5,y:.5},pad
 function aoOrientar(e){if(e.alpha===null||e.alpha===undefined)return;semSensor=false;ori={a:e.alpha,b:e.beta,g:e.gamma};if(ativo)atualiza()}
 addEventListener('deviceorientation',aoOrientar,true);
 const sensor=()=>!semSensor;
-let lsEnv=false,lsPend=null,ultimo=0;
-function envLaser(x,y,on){const t=performance.now();if(on&&t-ultimo<6)return;ultimo=t;const p=paraSlide(x,y);ultSlide=p;lsPend={x:p.x,y:p.y,on,m:modoUlt,r:raio};if(!lsEnv)bombeia()}
-function bombeia(){if(!lsPend){lsEnv=false;return}lsEnv=true;const d=lsPend;lsPend=null;
-  fetch('/laser',{method:'POST',headers:{'Content-Type':'application/json','X-Token':TOKEN},body:JSON.stringify(d),keepalive:true}).catch(()=>{}).finally(bombeia)}
+let lsAb=0,lsPend=null,lsSeq=0,ultimo=0;const lsQid=Math.random().toString(36).slice(2,8);
+function envLaser(x,y,on){const t=performance.now();if(on&&t-ultimo<6)return;ultimo=t;const p=paraSlide(x,y);ultSlide=p;lsPend={x:p.x,y:p.y,on,m:modoUlt,r:raio};bombeia()}
+// ate 3 envios em voo (RTT alto no relay): o servidor descarta os fora de ordem (q)
+function bombeia(){
+  while(lsPend&&lsAb<3){const d=lsPend;lsPend=null;d.q=++lsSeq;d.i=lsQid;lsAb++;
+    fetch('/laser',{method:'POST',headers:{'Content-Type':'application/json','X-Token':TOKEN},body:JSON.stringify(d),keepalive:true}).catch(()=>{}).finally(()=>{lsAb--;bombeia()})}}
 // zoom apontado: segurar o botao e apontar leva o centro da ampliacao para onde voce aponta (a pose ao apertar = centro atual)
 let zbase=null,zEnv=false,zPend=null,zUlt=0;
 function moveZoom(){
@@ -3659,6 +3668,15 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
                 ok = estado.comando(dados.get("cmd"), dados.get("valor"), dados.get("cid"))
                 return self._enviar(200 if ok else 400, json.dumps(estado.snapshot()))
             if self.path == "/laser":
+                chave = (self.headers.get("X-Token") or self.client_address[0], str(dados.get("i", "")))
+                q = dados.get("q")
+                if isinstance(q, int):
+                    ult = estado.laser_seq.get(chave, 0)
+                    if q <= ult:
+                        return self._enviar(200, "{}")  # chegou depois de um ponto mais novo: descarta
+                    estado.laser_seq[chave] = q
+                    if len(estado.laser_seq) > 64:
+                        estado.laser_seq.clear()
                 x, y = float(dados.get("x", 0)), float(dados.get("y", 0))
                 estado.laser(x, y, bool(dados.get("on")), "foco" if dados.get("m") == "foco" else "laser",
                              dados.get("r"))
