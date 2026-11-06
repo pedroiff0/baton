@@ -1,6 +1,7 @@
 # Changelog
 
 ## Não lançado
+- macOS: o pedido de Acessibilidade agora sai de dentro do laço de eventos do aplicativo (1,5 s depois de abrir) e inclui `CGRequestPostEventAccess`; o item "Permissão de teclas..." do ícone na barra de menu repete o pedido e abre os Ajustes.
 - macOS: o Python do Baton encerra sozinho quando o `Baton.app` morre (antes ficava órfão segurando a porta 8765 e o app novo desistia), e a cópia nova espera até ~7 s a porta liberar antes de desistir; `--diagnostico` lista também processos `baton.py` soltos.
 - Se já há um Baton na porta, a segunda cópia sai sem erro e o launchd só reinicia em caso de falha (antes ficava reiniciando e enchendo o log).
 - Correção (macOS): os marcadores de versão eram gravados dentro do `Baton.app` depois do `codesign`, o que invalidava a assinatura ("a sealed resource is missing or invalid") e impedia o app de aparecer em Acessibilidade; agora ficam em `~/.cache/baton`, o app é recompilado uma vez e a assinatura é verificada ao montar (e mostrada no `--diagnostico`).

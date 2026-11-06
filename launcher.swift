@@ -11,6 +11,17 @@ import AppKit
 #endif
 
 
+// Pede as duas permissoes que o envio de teclas usa: Acessibilidade (dialogo + entrada na lista) e acesso a eventos
+// de teclado sinteticos (CGRequestPostEventAccess). Devolve se a Acessibilidade ja esta liberada.
+func pedirAcessos() -> Bool {
+    let opcoes = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+    let ok = AXIsProcessTrustedWithOptions(opcoes)
+    if #available(macOS 10.15, *) {
+        _ = CGRequestPostEventAccess()
+    }
+    return ok
+}
+
 #if BANDEJA
 // ---------------------------------------------------------------- icone na barra de menu
 // Casca fina sobre a API local do Baton (a mesma do painel): pausar/retomar, escolher a apresentacao,
@@ -140,7 +151,10 @@ final class Bandeja: NSObject {
     @objc func removerDeck() { acao("remover_deck") }
     @objc func abrirQR() { NSWorkspace.shared.open(URL(string: "http://localhost:\(porta)/")!) }
     @objc func abrirPainel() { NSWorkspace.shared.open(URL(string: "http://localhost:\(porta)/painel")!) }
-    @objc func pedirPermissao() { acao("abrir_acessibilidade") }
+    @objc func pedirPermissao() {
+        _ = pedirAcessos()
+        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+    }
     @objc func sair() {
         acao("sair")
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { exit(0) }
@@ -183,8 +197,7 @@ aplicativo.setActivationPolicy(.accessory)
 
 // Baton.app --pedir-acesso: so pede a permissao de Acessibilidade (o app passa a aparecer na lista) e sai.
 if argumentos.first == "--pedir-acesso" {
-    let opcoes = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-    let ok = AXIsProcessTrustedWithOptions(opcoes)
+    let ok = pedirAcessos()
     print(ok ? "Acessibilidade: liberada" : "Acessibilidade: pendente, ative o Baton nos Ajustes")
     #if BANDEJA
     RunLoop.main.run(until: Date().addingTimeInterval(4))
@@ -198,8 +211,9 @@ guard argumentos.count >= 2 else {
     exit(2)
 }
 
-let opcoes = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-_ = AXIsProcessTrustedWithOptions(opcoes)
+#if !BANDEJA
+_ = pedirAcessos()
+#endif
 
 let filho = Process()
 filho.executableURL = URL(fileURLWithPath: argumentos[0])
@@ -241,6 +255,8 @@ var porta = 8765
 if let i = argumentos.firstIndex(of: "--porta"), i + 1 < argumentos.count, let n = Int(argumentos[i + 1]) { porta = n }
 let bandeja = Bandeja(porta: porta)
 _ = bandeja
+// o pedido sai de dentro do laco de eventos do aplicativo (so la o macOS apresenta o dialogo e lista o app)
+DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { _ = pedirAcessos() }
 aplicativo.run()
 #else
 filho.waitUntilExit()
