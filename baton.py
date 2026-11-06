@@ -1146,11 +1146,14 @@ def pedir_acessibilidade():
     if not exe or not app.exists():
         return ("nao consegui montar o Baton.app (precisa do swiftc: rode 'xcode-select --install' e tente de novo); "
                 "veja ~/.cache/baton/baton.log")
-    subprocess.Popen(["open", "-n", str(app), "--args", "--pedir-acesso"])
-    time.sleep(1.5)
+    try:  # direto, como o launchd o executa: o `open` falha com -10825 em alguns Macs
+        r = subprocess.run([exe, "--pedir-acesso"], capture_output=True, text=True, timeout=20)
+        estado_txt = (r.stdout or "").strip() or ("liberada" if r.returncode == 0 else "pendente")
+    except (OSError, subprocess.TimeoutExpired):
+        estado_txt = "sem resposta do Baton.app"
     subprocess.Popen(["open", "-R", str(app)])
     subprocess.Popen(["open", "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"])
-    return ("pedi a permissao pelo Baton.app. Se ele nao aparecer na lista de Acessibilidade, clique em + e escolha "
+    return (f"{estado_txt}. Se o Baton nao aparecer na lista de Acessibilidade, clique em + e escolha "
             f"{app} (ja mostrado no Finder)")
 
 
