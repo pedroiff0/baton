@@ -213,6 +213,22 @@ class BluetoothTest(unittest.TestCase):
             self.assertEqual(e.painel_estado()["rede_bluetooth"], {"interface": "Bluetooth (bnep0)", "ip": "10.251.0.1"})
 
 
+class AssinaturaTest(unittest.TestCase):
+    def test_requisito_fixo_e_fallback(self):
+        ok = mock.Mock(returncode=0, stderr="")
+        with mock.patch.object(P.shutil, "which", return_value="/usr/bin/codesign"), mock.patch.object(P.subprocess, "run", return_value=ok) as run:
+            self.assertTrue(P.assinar_app("/x/Baton.app"))
+        cmd = run.call_args_list[0][0][0]
+        self.assertIn("-r", cmd)
+        self.assertEqual(cmd[cmd.index("-r") + 1], '=designated => identifier "com.baton.app"')
+        falha = mock.Mock(returncode=1, stderr="erro")
+        with mock.patch.object(P.shutil, "which", return_value="/usr/bin/codesign"), mock.patch.object(P.subprocess, "run", return_value=falha) as run:
+            self.assertFalse(P.assinar_app("/x/Baton.app"))
+            self.assertEqual(run.call_count, 2)  # tenta de novo sem o requisito
+        with mock.patch.object(P.shutil, "which", return_value=None):
+            self.assertFalse(P.assinar_app("/x/Baton.app"))
+
+
 class BandejaTest(unittest.TestCase):
     def test_rotulo_por_estado(self):
         import tray_gtk as T

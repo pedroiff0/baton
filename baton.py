@@ -901,6 +901,7 @@ class _Mac:
 
 
 ARQ_ACESSO = Path.home() / ".cache" / "baton" / "acessibilidade"
+ARQ_ESQUEMA = Path.home() / ".cache" / "baton" / "assinatura-esquema"
 
 
 def acesso_do_launcher(max_idade=15):
@@ -1236,6 +1237,24 @@ MARCA_APP = Path.home() / ".cache" / "baton" / "launcher-hash"
 MARCA_APP_BANDEJA = Path.home() / ".cache" / "baton" / "launcher-bandeja"
 
 
+REQUISITO_APP = 'designated => identifier "com.baton.app"'
+ESQUEMA_ASSINATURA = "dr1"  # mudou a forma de assinar: o registro antigo da Acessibilidade e zerado UMA vez
+
+
+def assinar_app(app):
+    """Assina o Baton.app com requisito designado FIXO (so o identificador). A assinatura ad-hoc comum usa o hash do binario
+    como requisito: cada recompilacao vira outro 'app' para o macOS e a permissao some. Com o requisito fixo, a permissao
+    sobrevive a atualizacoes. Devolve True se assinou com o requisito fixo."""
+    if not shutil.which("codesign"):
+        return False
+    r = subprocess.run(["codesign", "--force", "--deep", "-s", "-", "-r", "=" + REQUISITO_APP, str(app)], capture_output=True, text=True)
+    if r.returncode == 0:
+        return True
+    print("aviso: nao consegui fixar o requisito da assinatura (" + (r.stderr or "").strip()[-200:] + "); a permissao pode se perder ao atualizar", file=sys.stderr)
+    subprocess.run(["codesign", "--force", "--deep", "-s", "-", str(app)], check=False, capture_output=True)
+    return False
+
+
 def montar_app_mac(forcar=False):
     """Cria ~/Applications/Baton.app (miolo em Swift): a lista de permissoes do macOS passa a mostrar 'Baton'."""
     base = Path(__file__).resolve().parent
@@ -1250,7 +1269,9 @@ def montar_app_mac(forcar=False):
     exe, marca = app / "Contents" / "MacOS" / "Baton", MARCA_APP
     marca.parent.mkdir(parents=True, exist_ok=True)
     h = hashlib.sha1(fonte.read_bytes() + INFO_PLIST_APP.encode()).hexdigest()[:10]
-    if not forcar and exe.exists() and marca.exists() and marca.read_text() == h:
+    antigo = marca.read_text() if marca.exists() else ""
+    esquema_novo = not (ARQ_ESQUEMA.exists() and ARQ_ESQUEMA.read_text() == ESQUEMA_ASSINATURA)
+    if not forcar and exe.exists() and antigo == h and not esquema_novo:
         return str(exe)  # nao recompila: assinatura estavel mantem a permissao ja concedida
     (app / "Contents" / "MacOS").mkdir(parents=True, exist_ok=True)
     (app / "Contents" / "Resources").mkdir(parents=True, exist_ok=True)
@@ -1282,9 +1303,14 @@ def montar_app_mac(forcar=False):
                                check=False, capture_output=True)
         except Exception:
             pass
-    if shutil.which("codesign"):
-        subprocess.run(["codesign", "--force", "--deep", "-s", "-", str(app)], check=False, capture_output=True)
-    subprocess.run(["tccutil", "reset", "Accessibility", "com.baton.app"], capture_output=True)  # assinatura nova: registro antigo nao vale
+    fixo = assinar_app(app)
+    if fixo and esquema_novo:  # so na migracao: a entrada antiga esta presa ao hash do binario antigo e nunca mais vale
+        subprocess.run(["tccutil", "reset", "Accessibility", "com.baton.app"], capture_output=True)
+        print("Acessibilidade: a assinatura agora e estavel; libere o Baton uma ultima vez e ela passa a sobreviver as atualizacoes.", flush=True)
+    if fixo:
+        ARQ_ESQUEMA.write_text(ESQUEMA_ASSINATURA)
+    elif not forcar and not antigo:
+        subprocess.run(["tccutil", "reset", "Accessibility", "com.baton.app"], capture_output=True)
     marca.write_text(h)
     MARCA_APP_BANDEJA.write_text("1" if bandeja else "0")
     v = subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app)], capture_output=True, text=True) if shutil.which("codesign") else None
@@ -1318,6 +1344,7 @@ def diagnostico():
                   MARCA_APP_BANDEJA.read_text().strip() if MARCA_APP_BANDEJA.exists() else "", "desconhecido"),
               "assinatura valida: " + (run("codesign", "--verify", "--deep", "--strict", str(app)) or "sim"),
               "bundle id: " + run("/usr/libexec/PlistBuddy", "-c", "Print :CFBundleIdentifier", str(app / "Contents" / "Info.plist")),
+              "requisito: " + (run("codesign", "-d", "-r-", str(app)).split("designated =>")[-1].strip()[:90] or "?"),
               "assinatura: " + " | ".join(x for x in run("codesign", "-dv", str(app)).splitlines() if x.startswith(("Identifier", "Signature", "CodeDirectory"))),
               "launchd: " + (run("launchctl", "list", "com.baton") or "(nao carregado)").replace("\n", " ")[:200],
               "processos: " + (run("pgrep", "-fli", "baton") or "(nenhum)").replace("\n", " ; ")[:200],
@@ -1344,7 +1371,7 @@ def reiniciar_baton_mac():
         subprocess.run(["launchctl", "load", str(plist)], capture_output=True)
 
 
-def pedir_acessibilidade():
+def pedir_acessibilidade(resetar=False):
     """macOS: garante o Baton.app, limpa o registro antigo da permissao (cada recompilacao ad-hoc muda a assinatura e deixa
     a entrada velha 'ligada' mas sem efeito), reinicia o app pelo launchd para ele pedir a permissao e abre os Ajustes."""
     if sys.platform != "darwin":
@@ -1359,7 +1386,8 @@ def pedir_acessibilidade():
     # abre o Finder e os Ajustes antes de reiniciar: quando chamado pelo painel, o reinicio encerra este proprio processo
     subprocess.Popen(["open", "-R", str(app)])
     subprocess.Popen(["open", "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"])
-    subprocess.run(["tccutil", "reset", "Accessibility", "com.baton.app"], capture_output=True)
+    if resetar:  # so por pedido explicito (--permissao --resetar): zerar apaga a entrada que o usuario acabou de adicionar
+        subprocess.run(["tccutil", "reset", "Accessibility", "com.baton.app"], capture_output=True)
     reiniciar_baton_mac()
     return ("pedi a permissao pelo Baton.app (reiniciado pelo launchd). Na lista de Acessibilidade ative o Baton; se ele nao "
             f"aparecer, clique em + e escolha {app} (ja mostrado no Finder). Depois rode: baton --diagnostico")
@@ -1693,6 +1721,27 @@ async function notaDaPagina(d,i){
     return txt;
   }
 }
+// Numero impresso no rodape de cada pagina (no beamer e o numero do frame: as paginas de um mesmo frame repetem o numero).
+// So vale se quase todas as paginas tem numero e a sequencia nunca anda para tras nem salta; senao devolve null e o
+// agrupamento por conteudo assume.
+async function numerosDeRodape(pdf){
+  const n=pdf.numPages,cand=[[]];
+  for(let i=1;i<=n;i++){
+    const pg=await pdf.getPage(i),v=pg.getViewport({scale:1}),W=v.width,H=v.height,tc=await pg.getTextContent();
+    const it=tc.items.filter(x=>x.str.trim()&&x.transform[5]<H*0.14&&(!LADO||x.transform[4]<W/2)).sort((a,b)=>a.transform[4]-b.transform[4]);
+    const nums=[];
+    for(const x of it){const t=x.str.trim(),m=t.match(/^(\d{1,4})$/)||t.match(/^(\d{1,4})\s*\/\s*\d{1,4}$/);if(m)nums.push(parseInt(m[1]))}
+    cand.push(nums);
+  }
+  // o numero do frame e a coluna do rodape cuja sequencia nunca anda para tras nem salta (o total de frames e constante)
+  let melhor=null;
+  for(let j=0;j<4;j++){
+    const r=[0];let com=0,ant=0,ok=true;
+    for(let i=1;i<=n;i++){let x=cand[i][j]||0;if(x)com++;else x=ant||1;if(x<ant||(ant>0&&x>ant+1)){ok=false;break}r.push(x);ant=x}
+    if(ok&&com>=n*0.8&&ant>1&&(!melhor||ant>melhor[n]))melhor=r;
+  }
+  return melhor;
+}
 async function agruparPassos(pdf){
   const n=pdf.numPages,tok=[];
   for(let i=1;i<=n;i++){
@@ -1701,6 +1750,9 @@ async function agruparPassos(pdf){
     tok.push(m);
   }
   const contido=(a,b)=>{let tb=0,ta=0;for(const[k,v]of b)tb+=v;for(const[k,v]of a){ta+=v;if((b.get(k)||0)<v)return false}return ta>0&&tb>ta};
+  const rod=await numerosDeRodape(pdf);
+  if(rod){const paginas=[];let tot=0;for(let i=1;i<=n;i++){const f=rod[i];(paginas[f]=paginas[f]||[]).push(i);tot=Math.max(tot,f)}
+    return{frameDe:[0].concat(rod.slice(1)),paginas,total:tot,rodape:true}}
   const frameDe=[0],paginas=[[]];let f=0;
   for(let i=1;i<=n;i++){if(i===1||!contido(tok[i-2],tok[i-1])){f++;paginas[f]=[]}frameDe[i]=f;paginas[f].push(i)}
   return{frameDe,paginas,total:f};
@@ -2725,6 +2777,7 @@ def main():
     ap.add_argument("--preparar-offline", action="store_true", help="baixa pdf.js e o gerador de QR para o Baton funcionar sem internet")
     ap.add_argument("--vendor", action="store_true", help="com --preparar-offline: grava em <pasta do baton>/vendor (pendrive)")
     ap.add_argument("--diagnostico", action="store_true", help="imprime um resumo do ambiente (Baton.app, permissao, log) para suporte")
+    ap.add_argument("--resetar", action="store_true", help="com --permissao: zera antes o registro de Acessibilidade do Baton.app")
     ap.add_argument("--permissao", action="store_true", help="macOS: pede a permissao de Acessibilidade para o Baton.app e abre os Ajustes")
     ap.add_argument("--rede", action="store_true", help="(sem efeito: a rede local ja e o endereco principal)")
     ap.add_argument("--residente", action="store_true",
@@ -2749,7 +2802,7 @@ def main():
               else "falhou: conecte-se a internet uma vez e rode de novo", file=sys.stdout if ok else sys.stderr)
         return 0 if ok else 1
     if a.permissao:
-        return print(pedir_acessibilidade())
+        return print(pedir_acessibilidade(resetar=a.resetar))
     if a.pausar or a.retomar:
         p = residente.prefs_carregar()
         p["ativo"] = a.retomar

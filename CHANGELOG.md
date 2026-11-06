@@ -1,6 +1,8 @@
 # Changelog
 
 ## Não lançado
+- Correção (macOS): a permissão de Acessibilidade se perdia a cada atualização porque a assinatura ad-hoc usa o hash do binário como requisito. O `Baton.app` agora é assinado com requisito fixo (`identifier "com.baton.app"`), e o registro só é zerado uma vez na migração (e não mais a cada recompilação ou a cada clique em "Permissão"). Depois de atualizar, libere o Baton uma última vez; `baton --permissao --resetar` zera à mão e `--diagnostico` mostra o requisito.
+- Número do slide pelo rodapé: em PDFs de beamer com transições (`\only`, `\pause`) o contador usa o número impresso no rodapé (o do frame), em vez de contar páginas do PDF; sem rodapé numerado, volta ao agrupamento por conteúdo.
 - Bluetooth sem internet: o painel ganhou o cartão **Sem internet (Bluetooth)** (abas iPhone/Android, passos por sistema e status ao vivo); os endereços do QR são recalculados a cada ~3 s e ordenados Bluetooth, hotspot, Wi-Fi, Tailscale; no macOS a porta "Bluetooth PAN" (`enN`) é reconhecida pelo `networksetup`.
 - Modo leve (rede Bluetooth/hotspot): `/pdf` aceita `Range` (206) e o celular lê o PDF em blocos de 64 KB, com notas do beamer e prévia por página sob demanda; o SSE não envia laser/desenho aos celulares.
 - `--preparar-offline` (e `--vendor`) baixa pdf.js e o gerador de QR; `install.sh`/`install.ps1` rodam no fim; `vendor/` ao lado do `baton.py` tem prioridade sobre `~/.cache/baton`.
