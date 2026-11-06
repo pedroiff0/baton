@@ -282,6 +282,27 @@ class TelaPropriaTest(unittest.TestCase):
         self.assertIn("fs=1", w.call_args[0][0])
 
 
+class WaylandTest(unittest.TestCase):
+    def test_teclas_do_externo_tem_keysym(self):
+        for tecla in list(P.Externo.TECLAS.values()) + ["Home", "Right", "b"]:
+            self.assertIn(tecla, P.KEYSYMS)
+
+    def test_sessao_wayland(self):
+        with mock.patch.dict(os.environ, {"XDG_SESSION_TYPE": "wayland"}, clear=False):
+            self.assertTrue(P.sessao_wayland())
+        with mock.patch.dict(os.environ, {"XDG_SESSION_TYPE": "x11"}, clear=True):
+            self.assertFalse(P.sessao_wayland())
+
+    def test_externo_usa_portal_no_wayland_e_cai_para_xdotool(self):
+        with mock.patch.object(P.sys, "platform", "linux"), mock.patch.object(P, "sessao_wayland", return_value=True), \
+                mock.patch.dict(os.environ, {"BATON_OVERLAY": "log"}), mock.patch.object(P, "_Portal") as portal:
+            self.assertIs(P.criar_externo().b, portal.return_value)
+        with mock.patch.object(P.sys, "platform", "linux"), mock.patch.object(P, "sessao_wayland", return_value=True), \
+                mock.patch.dict(os.environ, {"BATON_OVERLAY": "log"}), mock.patch.object(P, "_Portal", side_effect=ImportError("gi")), \
+                mock.patch.object(P.shutil, "which", return_value="/usr/bin/xdotool"):
+            self.assertIsInstance(P.criar_externo().b, P._Xdotool)
+
+
 class BandejaTest(unittest.TestCase):
     def test_rotulo_por_estado(self):
         import tray_gtk as T

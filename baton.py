@@ -34,6 +34,7 @@ import time
 import urllib.request
 import wave
 import zlib
+import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -1045,6 +1046,122 @@ class _Xdotool:
         return float(out[0]), float(out[1])
 
 
+KEYSYMS = {"Right": 0xFF53, "Left": 0xFF51, "Up": 0xFF52, "Down": 0xFF54, "Home": 0xFF50, "End": 0xFF57, "Next": 0xFF56,
+           "Prior": 0xFF55, "Return": 0xFF0D, "Escape": 0xFF1B, "space": 0x20, "b": 0x62, "period": 0x2E}
+PORTAL_TOKEN = Path.home() / ".cache" / "baton" / "portal-token"
+
+
+class _Portal:
+    """Teclas no Linux com Wayland (GNOME, KDE) pelo portal RemoteDesktop do xdg-desktop-portal: o xdotool so alcanca janelas
+    X11/XWayland, o resto (LibreOffice, Okular, navegadores em Wayland) ignora. O sistema pede a permissao uma vez (o token
+    fica salvo em ~/.cache/baton/portal-token); enquanto nao houver sessao, usa o xdotool como reserva."""
+
+    def __init__(self):
+        import gi  # PyGObject: python3-gi
+        from gi.repository import Gio, GLib
+        self.Gio, self.GLib = Gio, GLib
+        self.sessao, self.estado, self.erro = None, "iniciando", None
+        self.pronto = threading.Event()
+        threading.Thread(target=self._rodar, daemon=True).start()
+        self.pronto.wait(2.0)  # so para dar tempo de saber se o portal existe
+
+    def _rodar(self):
+        Gio, GLib = self.Gio, self.GLib
+        try:
+            self.ctx = GLib.MainContext.new()
+            self.ctx.push_thread_default()
+            self.con = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+            self.sender = self.con.get_unique_name()[1:].replace(".", "_")
+            ok, res = self._pedido("CreateSession", None, {"session_handle_token": GLib.Variant("s", "baton" + uuid.uuid4().hex[:8])}, 15)
+            if not ok:
+                raise RuntimeError("CreateSession recusado")
+            sessao = res["session_handle"]
+            opc = {"types": GLib.Variant("u", 3), "persist_mode": GLib.Variant("u", 2)}  # teclado + ponteiro; lembra a permissao
+            try:
+                opc["restore_token"] = GLib.Variant("s", PORTAL_TOKEN.read_text().strip())
+            except OSError:
+                pass
+            ok, res = self._pedido("SelectDevices", sessao, opc, 15)
+            if not ok:
+                raise RuntimeError("SelectDevices recusado")
+            self.estado = "aguardando permissao"
+            print("Wayland: o sistema vai pedir permissao para o Baton controlar o teclado (uma vez).", flush=True)
+            ok, res = self._pedido("Start", sessao, {}, 300, extra="")
+            if not ok:
+                raise RuntimeError("permissao negada ou cancelada")
+            tok = res.get("restore_token")
+            if tok:
+                PORTAL_TOKEN.parent.mkdir(parents=True, exist_ok=True)
+                PORTAL_TOKEN.write_text(tok)
+                os.chmod(PORTAL_TOKEN, 0o600)
+            self.sessao, self.estado = sessao, "pronto"
+            print("Wayland: controle de teclado liberado pelo portal.", flush=True)
+        except Exception as e:
+            self.erro, self.estado = str(e), "indisponivel"
+            print(f"aviso: teclas no Wayland indisponiveis ({e}); usando xdotool (so janelas X11)", file=sys.stderr, flush=True)
+        finally:
+            self.pronto.set()
+
+    def _pedido(self, metodo, sessao, opcoes, espera, extra=None):
+        """Chama um metodo do RemoteDesktop e espera o sinal Response. Devolve (ok, resultados)."""
+        Gio, GLib = self.Gio, self.GLib
+        tok = "baton" + uuid.uuid4().hex[:10]
+        opcoes = dict(opcoes, handle_token=GLib.Variant("s", tok))
+        caminho = f"/org/freedesktop/portal/desktop/request/{self.sender}/{tok}"
+        resp = {}
+        sub = self.con.signal_subscribe("org.freedesktop.portal.Desktop", "org.freedesktop.portal.Request", "Response", caminho,
+                                        None, Gio.DBusSignalFlags.NONE, lambda *a: resp.setdefault("v", a[5].unpack()))
+        try:
+            if sessao is None:
+                args = GLib.Variant("(a{sv})", (opcoes,))
+            elif extra is None:
+                args = GLib.Variant("(oa{sv})", (sessao, opcoes))
+            else:
+                args = GLib.Variant("(osa{sv})", (sessao, extra, opcoes))
+            self.con.call_sync("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
+                               "org.freedesktop.portal.RemoteDesktop", metodo, args, None, Gio.DBusCallFlags.NONE, 5000, None)
+            fim = time.time() + espera
+            while "v" not in resp and time.time() < fim:
+                self.ctx.iteration(False)
+                time.sleep(0.02)
+        finally:
+            self.con.signal_unsubscribe(sub)
+        if "v" not in resp:
+            return False, {}
+        codigo, resultados = resp["v"]
+        return codigo == 0, resultados
+
+    def tecla(self, nome):
+        sym = KEYSYMS.get(nome)
+        if self.sessao and sym:
+            try:
+                for estado in (1, 0):
+                    self.con.call_sync("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
+                                       "org.freedesktop.portal.RemoteDesktop", "NotifyKeyboardKeysym",
+                                       self.GLib.Variant("(oa{sv}iu)", (self.sessao, {}, sym, estado)), None,
+                                       self.Gio.DBusCallFlags.NONE, 2000, None)
+                return
+            except Exception as e:
+                print(f"aviso: portal recusou a tecla {nome} ({e})", file=sys.stderr)
+        if shutil.which("xdotool"):
+            subprocess.run(["xdotool", "key", nome], check=False, capture_output=True)
+
+    def mover(self, x, y):
+        if shutil.which("xdotool"):
+            subprocess.run(["xdotool", "mousemove", str(int(x)), str(int(y))], check=False, capture_output=True)
+
+    def tela(self):
+        try:
+            out = subprocess.run(["xdotool", "getdisplaygeometry"], capture_output=True, text=True, timeout=3).stdout.split()
+            return float(out[0]), float(out[1])
+        except Exception:
+            return 1920.0, 1080.0
+
+
+def sessao_wayland():
+    return os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland" or bool(os.environ.get("WAYLAND_DISPLAY"))
+
+
 class _OverlayLog:
     """Camada de teste: so imprime as mensagens."""
     def enviar(self, obj):
@@ -1198,6 +1315,11 @@ def criar_externo(usar_overlay=True, tela=0, cursor=False, nivel=None):
     if sys.platform == "win32":
         return Externo(_Windows(), overlay, cursor)
     if sys.platform.startswith("linux"):
+        if sessao_wayland():
+            try:
+                return Externo(_Portal(), overlay, cursor)
+            except Exception as e:  # sem PyGObject: so o xdotool (janelas X11/XWayland)
+                print(f"aviso: sem portal Wayland ({e}); usando xdotool", file=sys.stderr)
         return Externo(_Xdotool(), overlay, cursor)
     sys.exit("modo externo suportado no macOS, Windows e Linux (X11 com xdotool)")
 
@@ -1659,6 +1781,8 @@ def navegadores_chromium():
 def abrir_tela_cheia(url):
     """Abre a URL em tela cheia (quiosque) num navegador Chromium com perfil proprio; devolve o processo, ou None se so deu
     para abrir no navegador padrao (a pagina entao entra em tela cheia no primeiro toque/tecla)."""
+    if os.environ.get("BATON_SEM_TELA"):  # testes: nao abre janela nem navegador
+        return None
     perfil = Path.home() / ".cache" / "baton" / "navegador"
     for exe in navegadores_chromium():
         try:
@@ -2076,6 +2200,7 @@ body{display:flex;flex-direction:column;padding:env(safe-area-inset-top) max(12p
 #ponto{position:absolute;width:30px;height:30px;margin:-15px 0 0 -15px;border-radius:50%;pointer-events:none;display:none;
 background:radial-gradient(circle,#fff 0,#ff2d2d 35%,rgba(255,0,0,.4) 60%,rgba(255,0,0,0) 72%);box-shadow:0 0 18px 6px rgba(255,40,40,.6)}
 #zflut{position:absolute;right:6px;bottom:6px;z-index:5;display:flex;align-items:center;gap:2px;background:rgba(0,0,0,.62);border-radius:16px;padding:2px 4px}
+#bpdf{background:#0a84ff;padding:8px 10px;font-size:13px;border-radius:10px;flex:0 0 auto}
 #zflut button{width:30px;height:28px;padding:0;font-size:18px;line-height:1;border-radius:14px;background:transparent}#zflut span{min-width:30px;text-align:center;font-size:12px;color:#fff;font-weight:600}
 #zrect{position:absolute;border:2px solid #0a84ff;background:rgba(10,132,255,.15);pointer-events:none;display:none;border-radius:3px}
 button{border:0;border-radius:12px;background:#1d1d1f;color:#fff;font-size:15px;font-weight:600;touch-action:manipulation}
@@ -2136,17 +2261,25 @@ select{background:#1d1d1f;color:#fff;border:0;border-radius:12px;font-size:14px;
   #notas,#ajustes,#extras{min-height:0}
   #botoes{height:54px;gap:8px}#botoes button{font-size:16px;border-radius:14px}
   #irgrid{grid-template-columns:repeat(5,1fr)}
+  body.grande #notas,body.grande #ajustes,body.grande #extras{display:none!important}
+  body.grande #app{grid-template-columns:minmax(0,2.4fr) minmax(0,1fr)}
+  body.grande .linha button{padding:5px 0;font-size:12px}
+  body.grande #info{flex-direction:column;flex:1;min-height:0}
+  body.grande #prevbox{flex:1;flex-direction:column;align-items:stretch;justify-content:center;min-height:0;gap:3px}
+  body.grande #prevbox canvas{height:auto;width:auto;max-width:100%;max-height:100%;min-height:0;align-self:center;object-fit:contain}
+  body.grande #relogio{flex:0 0 auto;flex-direction:row;gap:10px;justify-content:space-between}
+  body.grande #rlbt{width:auto;margin:0}
 }
 """
 HTML_REMOTO = """<div id="aviso"></div><div id="app"><div id="colA"><div id="topo"><span><i id="dot"></i><span id="st">conectando</span></span><span id="pos">- / -</span></div>
-<div id="vista"><img id="cap" alt=""><canvas id="cv"></canvas><canvas id="ovp"></canvas><div id="zrect"></div><div id="ponto"></div><div id="zflut"><button id="zfm">&minus;</button><span id="zfv">1x</span><button id="zfp">+</button></div></div>
+<div id="vista"><img id="cap" alt=""><canvas id="cv"></canvas><canvas id="ovp"></canvas><div id="zrect"></div><div id="ponto"></div><div id="zflut"><button id="zfg" title="Ampliar a previa">&#x26F6;</button><button id="zfm">&minus;</button><span id="zfv">1x</span><button id="zfp">+</button></div></div>
 <div class="linha" id="tools"><button id="bl">Laser</button><button id="bf">Foco</button><button id="bc">Caneta</button><button id="bm">Marca</button><button id="bz">Zoom</button></div>
 <div class="linha" id="zbar"><button id="zm">&minus;</button><span id="zv">1x</span><button id="zp">+</button><button id="z1">1x</button></div>
 <div class="linha" id="raiobar"><span>Raio do foco</span><input id="raio" type="range" min="4" max="30" value="12"></div>
 <div id="cores"><i data-c="#ff3b30" style="background:#ff3b30"></i><i data-c="#0a84ff" style="background:#0a84ff"></i><i data-c="#30d158" style="background:#30d158"></i><i data-c="#ffd60a" style="background:#ffd60a"></i><i data-c="#ffffff" style="background:#fff"></i></div>
 <div class="linha" id="tools2"><button id="bx">Limpar</button><button id="bb">Preto</button><button id="bg">Ir para</button><button id="bk">Extras</button><button id="ba">Ajustes</button></div>
 </div><div id="colB">
-<div id="info"><div id="prevbox"><canvas id="cvp"></canvas><span id="prevlbl">Proximo</span></div><div id="relogio"><div id="tempo">00:00</div><div id="restante">toque para iniciar</div>
+<div id="info"><div id="prevbox"><canvas id="cvp"></canvas><span id="prevlbl">Proximo</span><button id="bpdf" style="display:none">Carregar PDF</button><input id="fpdf" type="file" accept=".pdf,.pptx,.ppt,.odp" style="display:none"></div><div id="relogio"><div id="tempo">00:00</div><div id="restante">toque para iniciar</div>
 <div id="rlbt"><button id="rvolta">Volta</button><button id="rzera">Zerar</button></div><div id="voltas"></div></div></div>
 <div id="ajustes"><div id="ajhead"><span>Ajustes</span><button id="ajrst">Restaurar padrao</button></div>
 <div class="ajc" id="ajtr"><span>Transicao</span><select id="tr"><option value="fade">Fade</option><option value="slide">Deslizar</option><option value="zoom">Zoom</option><option value="nenhuma">Sem transicao</option></select><button id="tz">Zerar cronometro</button></div>
@@ -2172,7 +2305,7 @@ const PADRAO={meta_min:50,laser_tam:24,laser_cor:'#ff2d2d',foco_raio:12,foco_blu
 const DEFS=[['meta_min','Meta de tempo (min)',5,120,5],['laser_tam','Laser: tamanho',6,80,1],['foco_raio','Foco: raio',3,35,1],['foco_blur','Foco: desfoque',0,100,5],['foco_escuro','Foco: escurecer',0,90,5],['pen_larg','Caneta: espessura',0.5,12,0.5],['hl_larg','Marca: espessura',3,40,1],['hl_alpha','Marca: opacidade',10,80,5]];
 let cfg=Object.assign({},PADRAO),tCfg=null;
 try{fonte=parseInt(localStorage.getItem('baton-fonte'))||17}catch(e){}
-if(EXTERNO){$('bz').style.display='none';$('zflut').style.display='none';$('tr').style.display='none';if(!OVERLAY){['bf','bc','bm','bx'].forEach(i=>$(i).style.display='none');document.querySelectorAll('#exk [data-k]:not([data-k=preto])').forEach(b=>b.style.display='none');document.querySelector('[data-s=confete]').style.display='none'}}
+if(EXTERNO){$('bz').style.display='none';['zfm','zfp','zfv'].forEach(i=>$(i).style.display='none');$('tr').style.display='none';if(!OVERLAY){['bf','bc','bm','bx'].forEach(i=>$(i).style.display='none');document.querySelectorAll('#exk [data-k]:not([data-k=preto])').forEach(b=>b.style.display='none');document.querySelector('[data-s=confete]').style.display='none'}}
 function status(ok,txt){$('dot').classList.toggle('ok',ok);$('st').textContent=(ok&&txt==='conectado'&&typeof rtt==='number'&&rtt>0)?txt+' - '+rtt+' ms'+(viaNome?' - '+viaNome.split(' ')[0]:''):txt}
 const cid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,8);
 async function cmd(c,v){
@@ -2214,11 +2347,11 @@ async function mostra(){
   rotulo();mostraNotas();
   const paisagem=innerWidth>innerHeight&&innerHeight<=560;
   const larg=paisagem?$('colA').clientWidth:document.body.clientWidth-24;
-  // paisagem: o slide ocupa a altura que sobra na coluna (mede o resto); retrato: ate 33% da tela
-  let hmax=innerHeight*0.33;
+  // paisagem: o slide ocupa a altura que sobra na coluna (mede o resto); retrato: ate 33% da tela (56% no modo ampliado)
+  let hmax=innerHeight*(document.body.classList.contains('grande')?0.56:0.33);
   if(paisagem){let o=0,n=0;for(const c of $('colA').children){if(c.id==='vista'||getComputedStyle(c).display==='none')continue;o+=c.offsetHeight;n++}
     const bs=getComputedStyle(document.body);hmax=Math.max(90,innerHeight-o-n*5-parseFloat(bs.paddingTop)-parseFloat(bs.paddingBottom)-2)}
-  if(!pdf){const w0=Math.min(larg,hmax*16/9);$('vista').style.width=w0+'px';$('vista').style.height=(w0*9/16)+'px';ajustaOvp();$('prevbox').style.display='none';$('relogio').style.flex='1';capturaTela(450);return}
+  if(!pdf){const w0=Math.min(larg,hmax*16/9);$('vista').style.width=w0+'px';$('vista').style.height=(w0*9/16)+'px';ajustaOvp();if(!TEM_PDF){$('cvp').style.display='none';$('prevlbl').textContent='Proximo slide: so com o PDF carregado';$('bpdf').style.display='block'}capturaTela(450);return}
   if(desenhado===pag&&!window.__remedir)return;desenhado=pag;window.__remedir=false;limpaLocal();
   const p=await pdf.getPage(pag),v0=p.getViewport({scale:1});
   const uw=larguraUtil(v0.width),w=Math.min(larg,hmax*uw/v0.height);
@@ -2248,10 +2381,10 @@ function capturaTela(atraso){
 function previa(){
   const prox=pag+1;
   if(!pdf||prox>total){const c=$('cvp'),g=c.getContext('2d');g.clearRect(0,0,c.width,c.height);c.style.visibility='hidden';
-    $('prevlbl').textContent=!pdf?'Sem PDF: a previa acima e a tela do computador. Carregue o PDF no painel para ver o proximo slide.':'ultimo slide';return}
-  $('cvp').style.visibility='visible';
+    $('prevlbl').textContent=!pdf?'Proximo slide: so com o PDF carregado':'ultimo slide';return}
+  $('cvp').style.visibility='visible';$('cvp').style.display='';$('bpdf').style.display='none';
   const mesmo=mapa&&mapa.frameDe[prox]===mapa.frameDe[pag];
-  $('prevlbl').textContent=mesmo?'Proximo passo':'Proximo slide';desenha(prox,$('cvp'),150);
+  $('prevlbl').textContent=mesmo?'Proximo passo':'Proximo slide';desenha(prox,$('cvp'),document.body.classList.contains('grande')?320:150);
 }
 // com zoom, a previa do celular mostra a mesma regiao ampliada (menos na ferramenta Zoom, que escolhe a regiao no slide inteiro):
 // assim laser, foco, caneta e marca-texto apontam e escrevem direto na parte ampliada
@@ -2296,7 +2429,7 @@ function avisoUI(s){
   else if(s.ativo===false){el.innerHTML='<b>Baton pausado</b> no computador. Retome pelo painel (localhost:8765/painel).'}
   else if(s.auth!==false){el.style.display='none';return}
   else if(s.pedido){el.innerHTML='<b>Apresentacao detectada</b> ('+esc(s.pedido.app)+'). Controlar com o Baton?<div class="avb"><button data-a="sim">Controlar</button><button data-a="sempre">Sempre neste app</button><button data-a="nao">Agora nao</button><button data-a="nunca">Nunca neste app</button></div>'}
-  else{el.innerHTML='Em espera: nenhuma apresentacao em tela cheia.<div class="avb"><button data-a="manual">Controlar mesmo assim</button></div>'}
+  else{el.style.display='none';return}  // em espera sem apresentacao detectada: tocar em Proximo/Anterior ja libera o controle
   el.style.display='block';el.querySelectorAll('button').forEach(b=>b.onclick=()=>consentir(b.dataset.a));
 }
 function consentir(a){fetch('/consent',{method:'POST',headers:{'Content-Type':'application/json','X-Token':TOKEN},body:JSON.stringify({acao:a})}).then(r=>r.json()).then(aplicar).catch(()=>{})}
@@ -2368,7 +2501,15 @@ $('vista').addEventListener('pointermove',e=>{
   const eraGest=gest||pan;
   if(!eraGest&&(ferr==='laser'||ferr==='foco'))ponto(e,false);fimTraco();toques.delete(e.pointerId);if(toques.size<2)dist0=0;
   if(toques.size===0){gest=pan=null;if(eraGest||ferr==='zoom')cmd('zoom',zoom)}}));
-['zfm','zfp'].forEach(i=>$(i).addEventListener('pointerdown',e=>e.stopPropagation()));
+['zfg','zfm','zfp'].forEach(i=>$(i).addEventListener('pointerdown',e=>e.stopPropagation()));
+function aplicaGrande(){try{document.body.classList.toggle('grande',localStorage.getItem('baton-grande')==='1')}catch(e){}}
+aplicaGrande();
+$('zfg').onclick=()=>{const g=!document.body.classList.contains('grande');document.body.classList.toggle('grande',g);try{localStorage.setItem('baton-grande',g?'1':'0')}catch(e){}remedir()};
+$('bpdf').onclick=()=>$('fpdf').click();
+$('fpdf').onchange=async e=>{const f=e.target.files[0];if(!f)return;const l=$('prevlbl');l.textContent='Enviando '+f.name+'...';$('bpdf').style.display='none';
+  try{const r=await fetch('/painel/deck?nome='+encodeURIComponent(f.name),{method:'POST',headers:{'X-Token':TOKEN},body:await f.arrayBuffer()});
+    if(!r.ok){let m='';try{m=(await r.json()).erro}catch(x){}l.textContent='Falhou: '+(m||r.status);$('bpdf').style.display='block'}}
+  catch(x){l.textContent='Falhou o envio';$('bpdf').style.display='block'}e.target.value=''};
 $('zfm').onclick=()=>passo(-1);$('zfp').onclick=()=>passo(1);
 $('seg').onclick=()=>cmd('next');$('ant').onclick=()=>cmd('prev');
 // teclas de volume e de midia (alguns navegadores Android e teclados/fones Bluetooth as repassam a pagina; no iOS e no Chrome
@@ -2812,8 +2953,6 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
             return self._enviar(200, json.dumps({"importadas": len(estado.importar_notas(notas))}))
 
         def _deck(self):
-            if not self._local():
-                return self._enviar(403, '{"erro":"local"}')
             n = int(self.headers.get("Content-Length", "0"))
             if n > 100 * 1024 * 1024:
                 return self._enviar(413, '{"erro":"arquivo maior que 100 MB"}')
