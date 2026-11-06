@@ -1908,8 +1908,23 @@ def e_rede_lenta(rotulo):
     return rotulo.startswith(("Bluetooth", "Hotspot"))
 
 
+URL_PUBLICA = ""  # ex.: https://baton.exemplo.com (Cloudflare Tunnel); vem de --url-publica ou BATON_URL_PUBLICA
+
+
 def calcular_bases(porta, host=None):
-    """Enderecos do computador, do melhor para o pior: Bluetooth > hotspot do celular > Wi-Fi/rota padrao > outras > Tailscale."""
+    """Enderecos do computador, do melhor para o pior: Bluetooth > hotspot do celular > (internet HTTPS, se configurada) >
+    Wi-Fi/rota padrao > outras > Tailscale."""
+    bases = _bases_locais(porta, host)
+    if URL_PUBLICA:
+        pub = {"nome": "Internet (HTTPS)", "base": URL_PUBLICA.rstrip("/")}
+        i = 0
+        while i < len(bases) and bases[i]["nome"].startswith(("Bluetooth", "Hotspot")):
+            i += 1
+        bases.insert(i, pub)
+    return bases
+
+
+def _bases_locais(porta, host=None):
     if host:
         return [{"nome": "Rede local", "base": f"http://{host}:{porta}"}]
     rota = ip_lan()
@@ -2906,8 +2921,20 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
         def log_message(self, *a):
             pass
 
+        CABECALHOS_PROXY = ("Cf-Connecting-Ip", "Cf-Ray", "Cf-Visitor", "X-Forwarded-For", "X-Forwarded-Proto", "Forwarded", "X-Real-Ip")
+
+        def _proxiado(self):
+            """True se a requisicao veio por um proxy/tunel (Cloudflare Tunnel, nginx...): ele conecta de 127.0.0.1, mas o cliente
+            real esta na internet. Um navegador no proprio computador nunca envia esses cabecalhos."""
+            return any(self.headers.get(h) for h in self.CABECALHOS_PROXY)
+
         def _local(self):
-            return self.client_address[0] in ("127.0.0.1", "::1")
+            return self.client_address[0] in ("127.0.0.1", "::1") and not self._proxiado()
+
+        def _ip_cliente(self):
+            h = self.headers
+            return (h.get("Cf-Connecting-Ip") or (h.get("X-Forwarded-For") or "").split(",")[0].strip()
+                    or h.get("X-Real-Ip") or self.client_address[0])
 
         def _dispositivo(self, u=None):
             """Celular dono do token: ?k= na URL ou cabecalho X-Token. None se o token nao e de nenhum celular pareado."""
@@ -2920,7 +2947,7 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
 
         def _parear(self, codigo):
             """QR de uso unico: valido -> o celular vira um dispositivo (token proprio) e segue para o controle."""
-            ip = self.client_address[0]
+            ip = self._ip_cliente()
             agora = time.time()
             falhas = [t for t in estado.falhas_pareamento.get(ip, []) if agora - t < 60]
             if len(falhas) >= 8:
@@ -3328,6 +3355,8 @@ def main():
     ap.add_argument("--transicao", choices=TRANSICOES, default="slide")
     ap.add_argument("--host", help="IP extra para escutar (padrao: IP do Tailscale e 127.0.0.1)")
     ap.add_argument("--proporcao", help="proporcao do slide no modo externo, ex.: 16:9 (padrao: le do PDF)")
+    ap.add_argument("--url-publica", default=os.environ.get("BATON_URL_PUBLICA", ""), metavar="URL",
+                    help="endereco HTTPS publico (ex.: https://baton.exemplo.com, via Cloudflare Tunnel apontando para esta porta); entra nos QR codes")
     ap.add_argument("--sem-https", action="store_true", help="nao abre a porta HTTPS (porta+1), usada pelo laser por apontamento com sensores")
     ap.add_argument("--sem-captura", action="store_true", help="nao envia ao celular a previa (captura) da tela do computador quando nao ha PDF")
     ap.add_argument("--sem-abrir", action="store_true", help="nao abre o navegador no Mac")
@@ -3432,6 +3461,8 @@ def main():
             pass
     total = contar_paginas(pdf) if pdf else 9999
     estado = Estado(pdf, total, a.transicao, token, externo, "", prop)
+    global URL_PUBLICA
+    URL_PUBLICA = a.url_publica.strip()
     estado.captura = not a.sem_captura
     estado.bases_fn = lambda: calcular_bases(a.porta, a.host)
     estado.carregar_dispositivos()

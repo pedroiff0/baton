@@ -303,6 +303,16 @@ class WaylandTest(unittest.TestCase):
             self.assertIsInstance(P.criar_externo().b, P._Xdotool)
 
 
+class ProxyTest(unittest.TestCase):
+    def test_bases_com_url_publica(self):
+        ips = [("Bluetooth (en6)", "10.0.0.2"), ("Rede (en0)", "192.168.0.5")]
+        with mock.patch.object(P, "ips_locais", return_value=ips), mock.patch.object(P, "ip_lan", return_value="192.168.0.5"), \
+                mock.patch.object(P, "ip_tailscale_cache", return_value=None), mock.patch.object(P, "URL_PUBLICA", "https://baton.exemplo.com/"):
+            b = P.calcular_bases(8765)
+        self.assertEqual(b[0]["base"], "http://10.0.0.2:8765")
+        self.assertEqual(b[1], {"nome": "Internet (HTTPS)", "base": "https://baton.exemplo.com"})
+
+
 class SimplesTest(unittest.TestCase):
     def test_pagina_simples(self):
         self.assertIn("__TOKEN__", P.PAGINA_SIMPLES)
