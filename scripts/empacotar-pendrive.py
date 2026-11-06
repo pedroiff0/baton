@@ -167,6 +167,30 @@ def extrair(tar_gz, destino):
                 break
 
 
+def copiar_com_progresso(origem, destino):
+    """Copia a arvore arquivo a arquivo (sem copiar atributos: exFAT/FAT nao os guardam e isso so deixa lento), com progresso."""
+    import time
+    arquivos = [f for f in origem.rglob("*") if f.is_file()]
+    total = sum(f.stat().st_size for f in arquivos) or 1
+    feito, t0 = 0, time.monotonic()
+    for i, f in enumerate(arquivos, 1):
+        alvo = destino / f.relative_to(origem)
+        alvo.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(f, alvo)
+        if f.stat().st_mode & 0o111:  # preserva o bit de execucao (Linux/ext4); exFAT ignora
+            try:
+                alvo.chmod(f.stat().st_mode & 0o777)
+            except OSError:
+                pass
+        feito += f.stat().st_size
+        if i % 150 == 0 or i == len(arquivos):
+            dt = max(time.monotonic() - t0, 0.001)
+            print(f"  {i}/{len(arquivos)} arquivos, {feito // 1048576}/{total // 1048576} MB ({100 * feito // total}%), {feito / 1048576 / dt:.1f} MB/s", flush=True)
+    for d in origem.rglob("*"):  # pastas vazias (dados/)
+        if d.is_dir():
+            (destino / d.relative_to(origem)).mkdir(parents=True, exist_ok=True)
+
+
 def clonar_repositorio(destino):
     """Repositorio completo (com .git, origin = GitHub) em `destino`; sem git, copia os arquivos."""
     def git(*args, pasta=RAIZ):
@@ -230,9 +254,12 @@ def main():
     print(f"pronto: {pasta} ({sum(f.stat().st_size for f in pasta.rglob('*') if f.is_file()) // 1048576} MB)")
     if a.destino:
         alvo = Path(a.destino).expanduser() / "Baton"
+        print(f"copiando para {alvo} (milhares de arquivos pequenos: em pen-drive USB leva alguns minutos; o progresso aparece abaixo)")
         for sub in ("runtime", "repositorio", "lancador", "baton"):  # codigo novo por cima do velho; dados/ nao e tocado
-            shutil.rmtree(alvo / sub, ignore_errors=True)
-        shutil.copytree(pasta, alvo, dirs_exist_ok=True)
+            if (alvo / sub).exists():
+                print(f"removendo versao antiga de {sub}/ ...", flush=True)
+                shutil.rmtree(alvo / sub, ignore_errors=True)
+        copiar_com_progresso(pasta, alvo)
         print(f"copiado para {alvo}:")
         for f in sorted(alvo.iterdir()):
             print("  ", f.name + ("/" if f.is_dir() else ""))
