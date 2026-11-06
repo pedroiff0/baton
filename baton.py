@@ -20,6 +20,7 @@ import math
 import os
 import queue
 import random
+import platform
 import re
 import secrets
 import shutil
@@ -1076,6 +1077,7 @@ INFO_PLIST_APP = """<?xml version="1.0" encoding="UTF-8"?>
 <key>CFBundleName</key><string>Baton</string><key>CFBundleDisplayName</key><string>Baton</string>
 <key>CFBundleIdentifier</key><string>com.baton.app</string><key>CFBundleExecutable</key><string>Baton</string>
 <key>CFBundlePackageType</key><string>APPL</string><key>CFBundleIconFile</key><string>Baton</string>
+<key>CFBundleVersion</key><string>1</string><key>LSMinimumSystemVersion</key><string>12.0</string>
 <key>CFBundleShortVersionString</key><string>0.1</string><key>LSUIElement</key><true/>
 <key>NSAppleEventsUsageDescription</key><string>O Baton detecta apresentacoes em tela cheia para perguntar se deve controla-las.</string>
 </dict></plist>
@@ -1104,11 +1106,18 @@ def montar_app_mac(forcar=False):
         return str(exe)  # nao recompila: assinatura estavel mantem a permissao ja concedida
     (app / "Contents" / "MacOS").mkdir(parents=True, exist_ok=True)
     (app / "Contents" / "Resources").mkdir(parents=True, exist_ok=True)
-    r = subprocess.run([swiftc, "-O", "-DBANDEJA", str(fonte), "-o", str(exe)], capture_output=True, text=True)
+    # alvo fixo (macOS 12+): sem isso o swiftc usa a versao do SDK instalado, que pode ser mais nova que o macOS em uso e o
+    # Finder/Ajustes recusam o app ("You can't use this version of the application with this version of macOS")
+    try:  # arquitetura do hardware (um Python sob Rosetta diria x86_64 num Mac arm64)
+        arm = subprocess.run(["sysctl", "-n", "hw.optional.arm64"], capture_output=True, text=True, timeout=5).stdout.strip() == "1"
+    except Exception:
+        arm = platform.machine() == "arm64"
+    alvo = ["-target", f"{'arm64' if arm else 'x86_64'}-apple-macos12.0"]
+    r = subprocess.run([swiftc, "-O", *alvo, "-DBANDEJA", str(fonte), "-o", str(exe)], capture_output=True, text=True)
     bandeja = r.returncode == 0
     if not bandeja:  # sem o icone da barra de menu, mas com o launcher (permissoes) funcionando
         print("aviso: sem icone na barra de menu (falha ao compilar a bandeja):\n" + r.stderr[-1200:], file=sys.stderr)
-        r = subprocess.run([swiftc, "-O", str(fonte), "-o", str(exe)], capture_output=True, text=True)
+        r = subprocess.run([swiftc, "-O", *alvo, str(fonte), "-o", str(exe)], capture_output=True, text=True)
     if r.returncode != 0:
         print("aviso: falha ao compilar launcher.swift:\n" + r.stderr[-800:], file=sys.stderr)
         return None
@@ -1169,6 +1178,8 @@ def diagnostico():
         L += ["macOS: " + run("sw_vers", "-productVersion") + " | arquitetura: " + run("uname", "-m"),
               "quarentena: " + (run("xattr", str(app)) or "(nenhuma)").replace("\n", " "),
               "binario: " + run("file", "-b", str(exe))[:120],
+              "versao minima do macOS no binario: " + " ".join(x.strip() for x in run("otool", "-l", str(exe)).splitlines()
+                                                              if x.strip().startswith(("minos", "sdk")) )[:80],
               "TCC (ultimos 10 min, com.baton.app):\n" + (run("log", "show", "--last", "10m", "--style", "compact", "--predicate",
                                                                  'eventMessage CONTAINS "com.baton.app"') or "(nada)").replace("Filtering the log data using", "")[-900:]]
         log = Path.home() / ".cache" / "baton" / "baton.log"

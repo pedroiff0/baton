@@ -1,6 +1,7 @@
 # Changelog
 
 ## Não lançado
+- Correção (macOS): o `Baton.app` é compilado com alvo fixo (`-target <arch>-apple-macos12.0`) e `LSMinimumSystemVersion`; antes o `swiftc` usava a versão do SDK instalado, e se fosse mais nova que o macOS o Finder recusava o app ("You can't use this version of the application with this version of macOS"), o `+` de Acessibilidade não aceitava e ele não aparecia na lista. `--diagnostico` mostra a versão mínima gravada no binário.
 - macOS: o pedido de Acessibilidade agora sai de dentro do laço de eventos do aplicativo (1,5 s depois de abrir) e inclui `CGRequestPostEventAccess`; o item "Permissão de teclas..." do ícone na barra de menu repete o pedido e abre os Ajustes.
 - macOS: o Python do Baton encerra sozinho quando o `Baton.app` morre (antes ficava órfão segurando a porta 8765 e o app novo desistia), e a cópia nova espera até ~7 s a porta liberar antes de desistir; `--diagnostico` lista também processos `baton.py` soltos.
 - Se já há um Baton na porta, a segunda cópia sai sem erro e o launchd só reinicia em caso de falha (antes ficava reiniciando e enchendo o log).
