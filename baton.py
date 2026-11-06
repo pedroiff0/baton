@@ -1878,6 +1878,12 @@ class Servidor(ThreadingHTTPServer):
     allow_reuse_address = True
     request_queue_size = 64
 
+    def handle_error(self, request, client_address):
+        """Celular que fecha a aba, troca de rede ou suspende a tela derruba a conexao: nao e erro, nao polui o log."""
+        if isinstance(sys.exc_info()[1], (ConnectionError, TimeoutError, BrokenPipeError)):
+            return
+        super().handle_error(request, client_address)
+
 
 def ajustar_socket(sock):
     """Mantem a conexao viva em Wi-Fi/Tailscale: sem atraso de Nagle e com keepalive curto."""
