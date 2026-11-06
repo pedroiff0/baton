@@ -2881,7 +2881,7 @@ const PADRAO={meta_min:50,laser_tam:24,laser_cor:'#ff2d2d',foco_raio:12,foco_blu
 const DEFS=[['meta_min','Meta de tempo (min)',5,120,5],['laser_tam','Laser: tamanho',6,80,1],['foco_raio','Foco: raio',3,35,1],['foco_blur','Foco: desfoque',0,100,5],['foco_escuro','Foco: escurecer',0,90,5],['pen_larg','Caneta: espessura',0.5,12,0.5],['hl_larg','Marca: espessura',3,40,1],['hl_alpha','Marca: opacidade',10,80,5]];
 let cfg=Object.assign({},PADRAO),tCfg=null;
 try{fonte=parseInt(localStorage.getItem('baton-fonte'))||17}catch(e){}
-if(EXTERNO){$('bz').style.display='none';['zfm','zfp','zfv'].forEach(i=>$(i).style.display='none');$('tr').style.display='none';if(!OVERLAY){['bf','bc','bm','bx'].forEach(i=>$(i).style.display='none');document.querySelectorAll('#exk [data-k]:not([data-k=preto])').forEach(b=>b.style.display='none');document.querySelector('[data-s=confete]').style.display='none'}}
+if(EXTERNO){['zfm','zfp','zfv'].forEach(i=>$(i).style.display='none');$('tr').style.display='none';if(!OVERLAY){['bf','bc','bm','bx'].forEach(i=>$(i).style.display='none');document.querySelectorAll('#exk [data-k]:not([data-k=preto])').forEach(b=>b.style.display='none');document.querySelector('[data-s=confete]').style.display='none'}}
 function status(ok,txt){$('dot').classList.toggle('ok',ok);$('st').textContent=(ok&&txt==='conectado'&&typeof rtt==='number'&&rtt>0)?txt+' - '+rtt+' ms'+(viaNome?' - '+viaNome.split(' ')[0]:''):txt}
 const cid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,8);
 async function cmd(c,v){
@@ -3022,7 +3022,8 @@ function avisoUI(s){
 }
 function consentir(a){fetch('/consent',{method:'POST',headers:{'Content-Type':'application/json','X-Token':TOKEN},body:JSON.stringify({acao:a})}).then(r=>r.json()).then(aplicar).catch(()=>{})}
 function aplicar(s){
-  if(s.seq!==undefined&&s.seq<seqVisto)return;avisoUI(s);sincTimer(s.timer);if(s.seq!==undefined)seqVisto=s.seq;
+  if(s.seq!==undefined&&s.seq<seqVisto)return;avisoUI(s);sincTimer(s.timer);
+  if(EXTERNO&&s.zoom_sistema!==undefined){$('bz').style.display=s.zoom_sistema?'':'none';if(!s.zoom_sistema&&ferr==='zoom')ferramenta('zoom')}  // zoom do modo externo: ampliacao da camada ou zoom do sistemaif(s.seq!==undefined)seqVisto=s.seq;
   pag=s.pagina;total=s.total;$('tr').value=s.transicao;$('bb').classList.toggle('on',s.preto);document.querySelectorAll('#exk [data-k]').forEach(b=>b.classList.toggle('on',b.dataset.k===s.cortina));
   zoom={z:s.zoom||1,x:s.zx,y:s.zy};$('zv').textContent=(zoom.z%1?zoom.z.toFixed(1):zoom.z)+'x';retangulo();mostra()
 }
