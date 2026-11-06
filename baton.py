@@ -34,6 +34,7 @@ import time
 import urllib.request
 import wave
 import zlib
+import signal
 import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -411,9 +412,15 @@ class Estado:
         proc, self.tela_proc = self.tela_proc, None
         if proc is not None and proc.poll() is None:
             try:
-                proc.terminate()
-            except OSError:
-                pass
+                if os.name == "posix":  # o navegador abre varios processos: encerra o grupo todo
+                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                else:
+                    proc.terminate()
+            except Exception:
+                try:
+                    proc.terminate()
+                except OSError:
+                    pass
         if self.tela_propria:
             self.tela_propria = False
             if avisar:
@@ -1816,10 +1823,12 @@ def abrir_tela_cheia(url):
     perfil = Path.home() / ".cache" / "baton" / "navegador"
     for exe in navegadores_chromium():
         try:
-            return subprocess.Popen([exe, "--kiosk", f"--app={url}", f"--user-data-dir={perfil}", "--no-first-run",
-                                     "--no-default-browser-check", "--disable-infobars", "--edge-kiosk-type=fullscreen",
-                                     "--autoplay-policy=no-user-gesture-required"],
-                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+            # --start-fullscreen (e nao --kiosk): o kiosk tranca a janela e nem Esc nem F11 saem; assim a pagina fecha com Esc/botao,
+            # e F11 e Alt+F4 continuam funcionando
+            return subprocess.Popen([exe, f"--app={url}", "--start-fullscreen", f"--user-data-dir={perfil}", "--no-first-run",
+                                     "--no-default-browser-check", "--disable-infobars", "--autoplay-policy=no-user-gesture-required"],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                                    start_new_session=(os.name == "posix"))
         except OSError:
             continue
     try:
@@ -2004,6 +2013,9 @@ canvas{display:block}
 
 # ------------------------------------------------------------------ tela (Mac)
 CSS_TELA = """
+#sair{position:fixed;top:16px;right:16px;z-index:60;opacity:0;pointer-events:none;transition:opacity .25s;background:rgba(0,0,0,.72);
+color:#fff;border:1px solid rgba(255,255,255,.35);border-radius:12px;padding:10px 16px;font:600 15px -apple-system,system-ui,sans-serif;cursor:pointer;display:none}
+body.mexeu #sair{opacity:1;pointer-events:auto}
 body{cursor:none}
 #stage{position:fixed;inset:0;display:flex;align-items:center;justify-content:center}
 .pg{position:absolute;box-shadow:0 0 60px rgba(0,0,0,.6)}
@@ -2034,7 +2046,7 @@ background:repeating-linear-gradient(90deg,#6b0a14 0,#b8202a 3.5%,#6b0a14 7%);bo
 #qr h1{font-size:28px;font-weight:600}#qr p{font-size:15px;color:#bbb;max-width:80vw;word-break:break-all}
 #dica{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:rgba(20,20,20,.8);color:#ddd;padding:10px 18px;border-radius:10px;font-size:15px;transition:opacity .6s}
 """
-HTML_TELA = """<div id="stage"></div><div id="laser"></div><div id="foco"></div><div id="cortina"><div class="cb"></div><div class="ct"></div><div class="ct r"></div><div id="fimbox"><h1 id="fimt"></h1><p id="fims"></p></div></div><canvas id="conf"></canvas>
+HTML_TELA = """<div id="stage"></div><div id="laser"></div><div id="foco"></div><div id="cortina"><div class="cb"></div><div class="ct"></div><div class="ct r"></div><div id="fimbox"><h1 id="fimt"></h1><p id="fims"></p></div></div><canvas id="conf"></canvas><button id="sair">Sair da tela cheia (Esc)</button>
 <div id="qr"><h1>Escaneie com o iPhone para controlar</h1><div class="cartao" id="qrsvg"></div><p id="qrurl"></p><p>Q: mostrar ou ocultar este codigo</p></div>
 <div id="dica">F: tela cheia &middot; setas: navegar &middot; B: preto &middot; W: branco &middot; T: teatro &middot; E: fim &middot; C: limpar &middot; Q: QR code &middot; clique: avancar</div>"""
 
@@ -2233,8 +2245,14 @@ addEventListener('keydown',e=>{
   else if(e.key==='c'||e.key==='C')cmd('limpar');
   else if(e.key==='q'||e.key==='Q'){mostrarQR(qrEl.style.display!=='flex')}
   else if(e.key==='f'||e.key==='F'){document.fullscreenElement?document.exitFullscreen():document.documentElement.requestFullscreen()}
-  else if(e.key==='Escape'&&location.pathname==='/apresentar'){fetch('/painel/acao',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({acao:'fechar_tela'})}).then(()=>{try{window.close()}catch(x){}})}
 });
+// tela cheia aberta pelo Baton (/apresentar): Esc ou o botao no canto fecham a janela e o Baton volta a mandar teclas ao app
+function fecharTela(){fetch('/painel/acao',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({acao:'fechar_tela'})}).catch(()=>{}).finally(()=>{try{window.close()}catch(x){}try{if(document.fullscreenElement)document.exitFullscreen()}catch(x){}})}
+if(location.pathname==='/apresentar'){
+  addEventListener('keydown',e=>{if(e.key==='Escape'){e.preventDefault();e.stopPropagation();fecharTela()}},true);
+  const bs=document.getElementById('sair');bs.style.display='block';bs.onclick=e=>{e.stopPropagation();fecharTela()};
+  let tMex=null;addEventListener('mousemove',()=>{document.body.classList.add('mexeu');clearTimeout(tMex);tMex=setTimeout(()=>document.body.classList.remove('mexeu'),2600)});
+}
 const QUER_FS=location.search.indexOf('fs=1')>=0;
 addEventListener('click',()=>{if(QUER_FS&&!document.fullscreenElement)document.documentElement.requestFullscreen().catch(()=>{});if(qrEl.style.display!=='flex')cmd('next')});
 addEventListener('resize',()=>{ajustarOv();if(atual){const n=paginaAtual;paginaAtual=0;atual.remove();atual=null;ir(n)}});
@@ -2752,28 +2770,36 @@ PAGINA_SIMPLES = r"""<!doctype html><html lang="pt-br"><head><meta charset="utf-
 <style>
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;-webkit-touch-callout:none}
 html,body{margin:0;height:100%;background:#000;color:#fff;font-family:-apple-system,system-ui,sans-serif;touch-action:none;user-select:none;-webkit-user-select:none;overflow:hidden}
-body{display:grid;grid-template-rows:auto 1fr;gap:8px;padding:max(8px,env(safe-area-inset-top)) max(10px,env(safe-area-inset-right)) max(10px,env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left))}
-#topo{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:13px;color:#aaa;min-height:34px}
+body{display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto 1fr;gap:8px;padding:max(8px,env(safe-area-inset-top)) max(10px,env(safe-area-inset-right)) max(10px,env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left))}
+#topo{display:flex;justify-content:space-between;align-items:center;gap:6px;font-size:13px;color:#aaa;min-height:34px;min-width:0}
+#dot.ok+#st{display:none}#topo>span:first-child{min-width:0;white-space:nowrap}
 #dot{width:10px;height:10px;border-radius:50%;background:#e33;display:inline-block;margin-right:6px}#dot.ok{background:#3c6}
 #topo .acoes{display:flex;gap:6px;align-items:center}
-.chip{border:0;background:#1d1d1f;color:#fff;border-radius:14px;padding:7px 11px;font-size:13px;font-weight:600;text-decoration:none;display:inline-block}
+#tempo{font-variant-numeric:tabular-nums;font-size:15px;letter-spacing:.5px;min-width:68px;text-align:center;touch-action:manipulation}
+#tempo.rodando{background:#12301c}#tempo.alerta{color:#ffd60a}#tempo.estouro{color:#ff453a}#tempo.pausado{opacity:.6}
+#folha .tm{display:flex;gap:8px;align-items:center;margin:10px 0 2px;font-size:13px;color:#aaa}#folha .tm button{padding:9px 14px;font-size:13px;border-radius:12px;border:0;background:#1d1d1f;color:#fff;font-weight:600}
+#voltas{font-size:12px;color:#888;max-height:54px;overflow:auto;margin-top:4px;font-variant-numeric:tabular-nums}
+.chip{border:0;background:#1d1d1f;color:#fff;border-radius:14px;padding:7px 10px;font-size:13px;font-weight:600;text-decoration:none;display:inline-block;white-space:nowrap}
 .chip.az{background:#0a84ff}
-#corpo{display:grid;grid-template-columns:1fr 1fr;grid-template-rows:.8fr 1.7fr;gap:10px;min-height:0}
+#corpo{display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr) auto minmax(0,.9fr) minmax(0,1.3fr);gap:10px;min-height:0;
+  grid-template-areas:"nav" "zoom" "foco" "laser"}
 button.g{border:0;border-radius:24px;color:#fff;font-weight:700;touch-action:manipulation;font-size:clamp(20px,6.2vmin,36px);position:relative;min-height:0}
-#ant{background:#1d1d1f}#seg{background:#0a84ff}#seg:active{background:#006fe0}#ant:active{background:#333}
+#navrow{grid-area:nav;display:flex;gap:10px;min-height:0}#navrow button{min-height:0}
+#ant{background:#1d1d1f;flex:.8}#seg{background:#0a84ff;flex:1.2}#seg:active{background:#006fe0}#ant:active{background:#333}
+#zrow{grid-area:zoom;display:flex;gap:10px}
+#zrow button{flex:1;height:clamp(46px,8.5vh,64px);border:0;border-radius:18px;background:#1d1d1f;color:#fff;font-weight:700;font-size:22px;touch-action:manipulation}
+#zrow button:active{background:#333}#zrow #z1{flex:1.2;font-size:17px;background:#2a2a2d}#zrow.ativo #z1{background:#0a84ff}
+#foco{grid-area:foco}#laser{grid-area:laser}
 #laser,#foco{touch-action:none}
 #laser{background:#3a1212;border:3px solid #ff3b30}#laser.on{background:#ff3b30}
 #foco{background:#10223a;border:3px solid #0a84ff}#foco.on{background:#0a84ff}
-/* zona do polegar: Laser e Foco embaixo; o Laser (mais usado) fica do lado da mao dominante e mais largo */
-#corpo{grid-template-areas:"ant seg" "foco laser";grid-template-columns:1fr 1fr}
-#ant{grid-area:ant}#seg{grid-area:seg}#foco{grid-area:foco}#laser{grid-area:laser}
-body.destro #corpo{grid-template-columns:.8fr 1.2fr}
-body.canhoto #corpo{grid-template-areas:"ant seg" "laser foco";grid-template-columns:1.2fr .8fr}
+body.canhoto #navrow,body.canhoto #zrow{flex-direction:row-reverse}
 .dica{position:absolute;left:0;right:0;bottom:9px;font-size:12px;font-weight:500;color:#cfd3d8;padding:0 8px;line-height:1.25}
 .on .dica{color:#fff}
-.mapa{display:none;position:absolute;left:50%;top:12px;width:62%;max-width:150px;aspect-ratio:16/9;transform:translateX(-50%);border:2px solid rgba(255,255,255,.7);border-radius:6px}
+.mapa{display:none;position:absolute;right:14px;top:50%;height:62%;max-height:96px;aspect-ratio:16/9;transform:translateY(-50%);border:2px solid rgba(255,255,255,.7);border-radius:6px}
 .mapa i{position:absolute;width:14px;height:14px;margin:-7px 0 0 -7px;border-radius:50%;background:#fff;box-shadow:0 0 8px 3px rgba(255,255,255,.7)}
 .on .mapa{display:block}
+#laser.on,#foco.on{display:flex;align-items:center;justify-content:flex-start;padding-left:26px}
 #folha{display:none;position:fixed;left:0;right:0;bottom:0;background:#141416;border-radius:22px 22px 0 0;padding:14px 16px max(16px,env(safe-area-inset-bottom));z-index:10;box-shadow:0 -8px 30px rgba(0,0,0,.6)}
 #folha.aberta{display:block}
 #folha label{display:flex;align-items:center;gap:10px;font-size:14px;color:#ccc;margin:10px 0}#folha input{flex:1;min-width:0;accent-color:#0a84ff}#folha output{min-width:34px;text-align:right;color:#888}
@@ -2781,21 +2807,23 @@ body.canhoto #corpo{grid-template-areas:"ant seg" "laser foco";grid-template-col
 #folha .mao{display:flex;gap:8px;margin-top:10px}#folha .mao button{flex:1;padding:11px 0;font-size:14px;border-radius:12px;border:0;background:#1d1d1f;color:#fff;font-weight:600}#folha .mao button.sel{background:#0a84ff}
 #dicainst{display:none;position:fixed;left:12px;right:12px;top:max(50px,env(safe-area-inset-top));background:#2c2c2e;border:1px solid #0a84ff;border-radius:14px;padding:12px;font-size:14px;z-index:11;line-height:1.4}
 @media (orientation:landscape){
-  #corpo{grid-template-rows:1fr;grid-template-columns:1fr 1fr 1.3fr 1.3fr;grid-template-areas:"ant seg foco laser"}
-  body.destro #corpo{grid-template-columns:1fr 1fr 1.1fr 1.5fr}
-  body.canhoto #corpo{grid-template-areas:"laser foco ant seg";grid-template-columns:1.5fr 1.1fr 1fr 1fr}
-  .mapa{top:8px;width:46%}
+  #corpo{grid-template-columns:minmax(0,1fr) minmax(0,1.5fr);grid-template-rows:minmax(0,1.2fr) minmax(0,1fr);grid-template-areas:"nav foco" "zoom laser"}
+  body.canhoto #corpo{grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);grid-template-areas:"foco nav" "laser zoom"}
+  #zrow button{height:auto}
 }
 </style></head><body class="destro">
 <div id="topo"><span><i id="dot"></i><span id="st">conectando</span></span>
+  <button class="chip" id="tempo" title="Toque: iniciar/pausar. Segure: volta">00:00</button>
   <span class="acoes"><button class="chip az" id="binst" style="display:none">Instalar</button><button class="chip" id="bcfg">Ajustes</button><a class="chip" href="/remote?k=__TOKEN__">Completo</a></span></div>
 <div id="corpo">
-  <button class="g" id="ant">&#9664; Anterior</button><button class="g" id="seg">Proximo &#9654;</button>
+  <div id="navrow"><button class="g" id="ant">&#9664; Anterior</button><button class="g" id="seg">Proximo &#9654;</button></div>
+  <div id="zrow"><button id="zm">&minus;</button><button id="z1">Zoom 1x</button><button id="zp">+</button></div>
   <button class="g" id="foco">FOCO<div class="mapa"><i></i></div><div class="dica">Segure e aponte</div></button>
   <button class="g" id="laser">LASER<div class="mapa"><i></i></div><div class="dica">Segure e aponte</div></button>
 </div>
 <div id="folha">
   <h3>Ajustes <button class="chip" id="bfecha">Fechar</button></h3>
+  <div class="tm"><span>Cronometro</span><button id="tvolta">Volta</button><button id="tzera">Zerar</button><span id="trest"></span></div><div id="voltas"></div>
   <label>Laser: tamanho<input id="s_laser_tam" type="range" min="6" max="120" value="24"><output>24</output></label>
   <label>Foco: raio<input id="raio" type="range" min="3" max="35" value="12"><output id="rv">12</output></label>
   <label>Foco: desfoque<input id="s_foco_blur" type="range" min="0" max="100" value="100"><output>100</output></label>
@@ -2805,14 +2833,41 @@ body.canhoto #corpo{grid-template-areas:"ant seg" "laser foco";grid-template-col
 </div>
 <div id="dicainst"></div>
 <script>
-const TOKEN="__TOKEN__",HTTPS="__HTTPS__",AUTO="__AUTO__"==="1",$=id=>document.getElementById(id);
+const TOKEN="__TOKEN__",HTTPS="__HTTPS__",AUTO="__AUTO__"==="1",EXTERNO="__EXTERNO__"==="1",$=id=>document.getElementById(id);
 let ultimaMsg=Date.now(),es=null;
 function status(ok,t){$('dot').classList.toggle('ok',ok);$('st').textContent=t}
 const cid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,8);
+// ---- zoom: laser/foco apontam na tela; com zoom, a tela mostra so uma regiao do slide, e o ponto precisa cair nela
+let zoom={z:1,x:.5,y:.5},ultSlide={x:.5,y:.5};
+const NIVEIS=[1,1.5,2,3,4];
+function regiao(){const w=1/Math.max(1,zoom.z),cx=Math.max(w/2,Math.min(1-w/2,zoom.x)),cy=Math.max(w/2,Math.min(1-w/2,zoom.y));return{w,x0:cx-w/2,y0:cy-w/2}}
+function paraSlide(x,y){if(zoom.z<=1.001)return{x,y};const r=regiao();return{x:r.x0+x*r.w,y:r.y0+y*r.w}}
+function mostraZoom(){$('z1').textContent='Zoom '+(zoom.z%1?zoom.z.toFixed(1):zoom.z)+'x';$('zrow').classList.toggle('ativo',zoom.z>1.001)}
+function passoZoom(d){let i=NIVEIS.findIndex(n=>n>=zoom.z-1e-6);if(i<0)i=NIVEIS.length-1;i=Math.max(0,Math.min(NIVEIS.length-1,i+d));const z=NIVEIS[i];
+  const c=zoom.z<=1.001&&z>1?ultSlide:{x:zoom.x,y:zoom.y};  // ao ampliar a partir de 1x, centraliza onde voce apontou por ultimo
+  zoom={z,x:z>1?c.x:.5,y:z>1?c.y:.5};mostraZoom();cmd('zoom',zoom)}
+$('zp').onclick=()=>{passoZoom(1);navigator.vibrate&&navigator.vibrate(8)};$('zm').onclick=()=>{passoZoom(-1);navigator.vibrate&&navigator.vibrate(8)};
+$('z1').onclick=()=>{zoom={z:1,x:.5,y:.5};mostraZoom();cmd('zoom',zoom)};
+if(EXTERNO)$('zrow').style.display='none';  // modo externo (app de terceiros): o Baton nao amplia a janela do outro programa
+function aplicaSnap(s){if(s.timer)sincTimer(s.timer);if(s.zoom!==undefined){zoom={z:s.zoom||1,x:s.zx===undefined?.5:s.zx,y:s.zy===undefined?.5:s.zy};mostraZoom()}}
+// ---- cronometro (o mesmo do controle completo: vive no computador, todos os celulares veem o mesmo tempo)
+let tm={rodando:false,elapsed:0,rec:performance.now()},metaMin=50,voltasVistas='';
+const mmss=t=>{t=Math.max(0,Math.floor(t));const h=Math.floor(t/3600),m=Math.floor(t%3600/60),s=t%60;return(h?h+':'+String(m).padStart(2,'0'):String(m).padStart(2,'0'))+':'+String(s).padStart(2,'0')};
+function sincTimer(t){tm={rodando:t.rodando,elapsed:t.elapsed,rec:performance.now()};const v=t.voltas||[],ch=v.join(',');
+  if(ch!==voltasVistas){voltasVistas=ch;$('voltas').innerHTML=v.map((x,i)=>'V'+(i+1)+'  '+mmss(x)+'  (+'+mmss(x-(i?v[i-1]:0))+')').reverse().join('<br>')}}
+function tick(){const el=tm.elapsed+(tm.rodando?(performance.now()-tm.rec)/1000:0),meta=metaMin*60,rest=meta-el,b=$('tempo');
+  b.textContent=mmss(el);b.classList.toggle('rodando',tm.rodando);b.classList.toggle('pausado',!tm.rodando&&el>0);b.classList.toggle('alerta',rest<=meta*.1&&rest>0);b.classList.toggle('estouro',rest<=0);
+  $('trest').textContent=el===0&&!tm.rodando?'':(rest>0?'restam '+mmss(rest):'+'+mmss(-rest)+' acima da meta')}
+setInterval(tick,500);tick();
+let tLongo=null,longo=false;
+$('tempo').addEventListener('pointerdown',()=>{longo=false;tLongo=setTimeout(()=>{longo=true;cmd('timer','lap');navigator.vibrate&&navigator.vibrate(20)},600)});
+['pointerup','pointercancel','pointerleave'].forEach(t=>$('tempo').addEventListener(t,()=>clearTimeout(tLongo)));
+$('tempo').addEventListener('click',()=>{if(!longo){cmd('timer','toggle');navigator.vibrate&&navigator.vibrate(8)}});
+$('tvolta').onclick=()=>cmd('timer','lap');$('tzera').onclick=()=>cmd('timer','reset');
 async function cmd(c,v){const id=cid();
   for(let t=0;t<4;t++){const ac=new AbortController(),to=setTimeout(()=>ac.abort(),2000);
     try{const r=await fetch('/cmd',{method:'POST',headers:{'Content-Type':'application/json','X-Token':TOKEN},body:JSON.stringify({cmd:c,valor:v,cid:id}),signal:ac.signal});clearTimeout(to);
-      if(r.ok||r.status===423){status(true,'conectado');return r.ok}}catch(e){clearTimeout(to)}
+      if(r.ok||r.status===423){status(true,'conectado');try{aplicaSnap(await r.clone().json())}catch(e){}return r.ok}}catch(e){clearTimeout(to)}
     status(false,'reenviando...');await new Promise(r=>setTimeout(r,200*(t+1)))}
   status(false,'sem conexao');return false}
 $('seg').onclick=()=>{cmd('next');navigator.vibrate&&navigator.vibrate(8)};$('ant').onclick=()=>{cmd('prev');navigator.vibrate&&navigator.vibrate(8)};
@@ -2820,7 +2875,7 @@ addEventListener('keydown',e=>{
   if(['AudioVolumeUp','VolumeUp','MediaTrackNext','PageDown','ArrowRight'].includes(e.key)){cmd('next');e.preventDefault()}
   else if(['AudioVolumeDown','VolumeDown','MediaTrackPrevious','PageUp','ArrowLeft'].includes(e.key)){cmd('prev');e.preventDefault()}});
 function conectar(){if(es){try{es.close()}catch(e){}}es=new EventSource('/events?k='+encodeURIComponent(TOKEN));ultimaMsg=Date.now();
-  es.onmessage=()=>{ultimaMsg=Date.now();status(true,'conectado')};es.onerror=()=>status(false,'reconectando...')}
+  es.onmessage=ev=>{ultimaMsg=Date.now();status(true,'conectado');try{aplicaSnap(JSON.parse(ev.data))}catch(e){}};es.onerror=()=>status(false,'reconectando...')}
 setInterval(()=>{if(Date.now()-ultimaMsg>12000)conectar()},3000);conectar();
 async function wake(){try{if('wakeLock' in navigator)await navigator.wakeLock.request('screen')}catch(e){}}
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){wake();conectar()}});wake();
@@ -2835,7 +2890,7 @@ $('mdestro').onclick=()=>poeMao('destro');$('mcanhoto').onclick=()=>poeMao('canh
 let raio=.12,tCfg=null,pend={},gan=35;try{gan=parseFloat(localStorage.getItem('baton-gan2')||'35')}catch(e){}
 $('bcfg').onclick=()=>$('folha').classList.toggle('aberta');$('bfecha').onclick=()=>$('folha').classList.remove('aberta');
 const AJ={laser_tam:'s_laser_tam',foco_raio:'raio',foco_blur:'s_foco_blur',foco_escuro:'s_foco_escuro'};
-function mostraAj(c){for(const k in AJ){if(c[k]===undefined)continue;const el=$(AJ[k]);el.value=c[k];el.parentNode.querySelector('output').textContent=Math.round(c[k])}if(c.foco_raio)raio=c.foco_raio/100}
+function mostraAj(c){if(c.meta_min)metaMin=c.meta_min;for(const k in AJ){if(c[k]===undefined)continue;const el=$(AJ[k]);el.value=c[k];el.parentNode.querySelector('output').textContent=Math.round(c[k])}if(c.foco_raio)raio=c.foco_raio/100}
 fetch('/cfg?k='+encodeURIComponent(TOKEN)).then(r=>r.json()).then(mostraAj).catch(()=>{});
 function salvaCfg(k,v){pend[k]=v;clearTimeout(tCfg);tCfg=setTimeout(()=>{const d=pend;pend={};
   fetch('/cfg',{method:'POST',headers:{'Content-Type':'application/json','X-Token':TOKEN},body:JSON.stringify(d)}).catch(()=>{})},150)}
@@ -2866,7 +2921,7 @@ function aoOrientar(e){if(e.alpha===null||e.alpha===undefined)return;semSensor=f
 addEventListener('deviceorientation',aoOrientar,true);
 const sensor=()=>!semSensor;
 let lsEnv=false,lsPend=null,ultimo=0;
-function envLaser(x,y,on){const t=performance.now();if(on&&t-ultimo<6)return;ultimo=t;lsPend={x,y,on,m:modoUlt,r:raio};if(!lsEnv)bombeia()}
+function envLaser(x,y,on){const t=performance.now();if(on&&t-ultimo<6)return;ultimo=t;const p=paraSlide(x,y);ultSlide=p;lsPend={x:p.x,y:p.y,on,m:modoUlt,r:raio};if(!lsEnv)bombeia()}
 function bombeia(){if(!lsPend){lsEnv=false;return}lsEnv=true;const d=lsPend;lsPend=null;
   fetch('/laser',{method:'POST',headers:{'Content-Type':'application/json','X-Token':TOKEN},body:JSON.stringify(d),keepalive:true}).catch(()=>{}).finally(bombeia)}
 function mostraMapa(){const el=$(modoUlt).querySelector('.mapa i');el.style.left=(sx*100)+'%';el.style.top=(sy*100)+'%'}
@@ -3175,7 +3230,7 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
                 else:
                     https = (f"https://{host}:{estado.tls_porta}/simples?k={k}" if estado.tls_porta and not self.server.tls else "")
                     auto = "0"
-                return self._enviar(200, PAGINA_SIMPLES.replace("__TOKEN__", k).replace("__HTTPS__", https).replace("__AUTO__", auto),
+                return self._enviar(200, PAGINA_SIMPLES.replace("__TOKEN__", k).replace("__HTTPS__", https).replace("__AUTO__", auto).replace("__EXTERNO__", "1" if estado.ext else "0"),
                                     "text/html; charset=utf-8")
             if u.path == "/cfg":
                 if not self._leitura_ok(u):
@@ -3288,7 +3343,7 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
                 if dados.get("acao") == "sair":
                     threading.Timer(0.3, lambda: os._exit(0)).start()
                 return
-            if (self.path == "/cmd" and dados.get("cmd") in ("next", "prev", "first", "last", "goto")
+            if (self.path == "/cmd" and dados.get("cmd") in ("next", "prev", "first", "last", "goto", "timer", "zoom")
                     and not estado.permitido()):
                 estado.autorizar_por_toque()
             if self.path == "/laser" and dados.get("on") and not estado.permitido():
