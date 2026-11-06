@@ -145,10 +145,14 @@ def extrair(tar_gz, destino):
                 fonte, alvo = destino / origem, destino / rel
                 if fonte.is_file():
                     alvo.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copyfile(fonte, alvo)
-                    alvo.chmod(fonte.stat().st_mode | stat.S_IRUSR | stat.S_IWUSR)
+                    try:
+                        shutil.copyfile(fonte, alvo)
+                        alvo.chmod(fonte.stat().st_mode | stat.S_IRUSR | stat.S_IWUSR)
+                    except shutil.SameFileError:  # Mac/Windows ignoram maiusculas: n/x e N/X sao o mesmo arquivo (terminfo)
+                        pass
                 elif fonte.is_dir():
-                    shutil.copytree(fonte, alvo, dirs_exist_ok=True)
+                    if fonte.resolve() != alvo.resolve():
+                        shutil.copytree(fonte, alvo, dirs_exist_ok=True)
                 else:
                     pend.append((rel, m))
             links = pend
