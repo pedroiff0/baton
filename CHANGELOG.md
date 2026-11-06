@@ -1,6 +1,7 @@
 # Changelog
 
 ## Não lançado
+- macOS: `--permissao` agora limpa o registro antigo da Acessibilidade (`tccutil reset`, a assinatura muda a cada recompilação) e reinicia o Baton.app pelo launchd, para o pedido ser atribuído ao app e não ao terminal; `--diagnostico` mostra a permissão do Baton.app separada da do terminal.
 - Redes sem internet: o Baton lista todos os caminhos do computador (Wi-Fi, cabo, Bluetooth, hotspot) além do Tailscale, um QR para cada; funciona com roteador sem internet, hotspot do celular ou rede por Bluetooth.
 - macOS: o `Baton.app` vira um aplicativo de verdade (AppKit, sem Dock) antes de pedir a Acessibilidade, para entrar na lista; `baton --diagnostico` resume o ambiente para suporte.
 - Ícone na bandeja (macOS: barra de menu no `Baton.app`; Windows: `tray_win.ps1`; Linux: `tray_gtk.py`) com Pausar/Retomar, Escolher apresentação (seletor nativo), Remover, QR code, painel e Sair; `--tray`/`--sem-tray`. Se a bandeja não compilar no Mac, o `Baton.app` é montado sem ela.

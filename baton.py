@@ -751,6 +751,20 @@ class _Mac:
         return r.s.w, r.s.h
 
 
+ARQ_ACESSO = Path.home() / ".cache" / "baton" / "acessibilidade"
+
+
+def acesso_do_launcher(max_idade=15):
+    """O que o Baton.app (nao o terminal!) enxerga: True/False pelo arquivo que o launcher grava a cada 2 s; None se
+    o arquivo nao existe ou esta velho (launcher parado)."""
+    try:
+        if time.time() - ARQ_ACESSO.stat().st_mtime > max_idade:
+            return None
+        return ARQ_ACESSO.read_text().strip() == "1"
+    except OSError:
+        return None
+
+
 def acessibilidade_mac():
     """True/False se o macOS deixou o Baton enviar teclas (Acessibilidade); None fora do Mac ou sem como saber.
     Pelo Baton.app o launcher grava o estado em ~/.cache/baton/acessibilidade (a permissao e do app, nao do Python filho)."""
@@ -758,7 +772,7 @@ def acessibilidade_mac():
         return None
     if os.environ.get("BATON_LAUNCHER"):
         try:
-            return (Path.home() / ".cache" / "baton" / "acessibilidade").read_text().strip() == "1"
+            return ARQ_ACESSO.read_text().strip() == "1"
         except OSError:
             return None
     try:
@@ -1106,6 +1120,7 @@ def montar_app_mac(forcar=False):
             pass
     if shutil.which("codesign"):
         subprocess.run(["codesign", "--force", "--deep", "-s", "-", str(app)], check=False, capture_output=True)
+    subprocess.run(["tccutil", "reset", "Accessibility", "com.baton.app"], capture_output=True)  # assinatura nova: registro antigo nao vale
     marca.write_text(h)
     (app / "Contents" / ".launcher-bandeja").write_text("1" if bandeja else "0")
     print("Baton.app compilado " + ("(com icone na barra de menu)" if bandeja else "(SEM icone na barra de menu)"), flush=True)
@@ -1138,15 +1153,25 @@ def diagnostico():
               "assinatura: " + " | ".join(x for x in run("codesign", "-dv", str(app)).splitlines() if x.startswith(("Identifier", "Signature", "CodeDirectory"))),
               "launchd: " + (run("launchctl", "list", "com.baton") or "(nao carregado)").replace("\n", " ")[:200],
               "processos: " + (run("pgrep", "-fl", "Baton") or "(nenhum)").replace("\n", " ; ")[:200],
-              f"acessibilidade (launcher): {acessibilidade_mac()}"]
+              f"acessibilidade do Baton.app (o que importa): {acesso_do_launcher()} (None = launcher parado)",
+              f"acessibilidade deste terminal (nao conta): {acessibilidade_mac()}"]
         log = Path.home() / ".cache" / "baton" / "baton.log"
         L.append("log (ultimas linhas):\n" + "\n".join(log.read_text(errors="replace").splitlines()[-12:]) if log.exists() else "log: ausente")
     return "\n".join(L)
 
 
+def reiniciar_baton_mac():
+    """Reinicia o Baton.app pelo launchd (assim o pedido de Acessibilidade e atribuido ao proprio app, nao ao terminal)."""
+    plist = Path.home() / "Library" / "LaunchAgents" / "com.baton.plist"
+    r = subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/com.baton"], capture_output=True, text=True)
+    if r.returncode != 0 and plist.exists():
+        subprocess.run(["launchctl", "unload", str(plist)], capture_output=True)
+        subprocess.run(["launchctl", "load", str(plist)], capture_output=True)
+
+
 def pedir_acessibilidade():
-    """macOS: garante o Baton.app, pede a permissao por ele (via LaunchServices, que faz o app aparecer na lista),
-    mostra o app no Finder (para arrastar para a lista com o +) e abre os Ajustes. Devolve uma mensagem."""
+    """macOS: garante o Baton.app, limpa o registro antigo da permissao (cada recompilacao ad-hoc muda a assinatura e deixa
+    a entrada velha 'ligada' mas sem efeito), reinicia o app pelo launchd para ele pedir a permissao e abre os Ajustes."""
     if sys.platform != "darwin":
         return "so no macOS"
     app = Path.home() / "Applications" / "Baton.app"
@@ -1154,15 +1179,15 @@ def pedir_acessibilidade():
     if not exe or not app.exists():
         return ("nao consegui montar o Baton.app (precisa do swiftc: rode 'xcode-select --install' e tente de novo); "
                 "veja ~/.cache/baton/baton.log")
-    try:  # direto, como o launchd o executa: o `open` falha com -10825 em alguns Macs
-        r = subprocess.run([exe, "--pedir-acesso"], capture_output=True, text=True, timeout=20)
-        estado_txt = (r.stdout or "").strip() or ("liberada" if r.returncode == 0 else "pendente")
-    except (OSError, subprocess.TimeoutExpired):
-        estado_txt = "sem resposta do Baton.app"
+    if acesso_do_launcher() is True:
+        return "o Baton.app ja esta liberado em Acessibilidade (o launcher confirma)."
+    # abre o Finder e os Ajustes antes de reiniciar: quando chamado pelo painel, o reinicio encerra este proprio processo
     subprocess.Popen(["open", "-R", str(app)])
     subprocess.Popen(["open", "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"])
-    return (f"{estado_txt}. Se o Baton nao aparecer na lista de Acessibilidade, clique em + e escolha "
-            f"{app} (ja mostrado no Finder)")
+    subprocess.run(["tccutil", "reset", "Accessibility", "com.baton.app"], capture_output=True)
+    reiniciar_baton_mac()
+    return ("pedi a permissao pelo Baton.app (reiniciado pelo launchd). Na lista de Acessibilidade ative o Baton; se ele nao "
+            f"aparecer, clique em + e escolha {app} (ja mostrado no Finder). Depois rode: baton --diagnostico")
 
 
 def instalar_login(remover=False):
