@@ -15,7 +15,7 @@ import zipfile
 from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parent.parent
-ARQUIVOS = ["baton.py", "residente.py", "overlay_tk.py", "tray_win.ps1", "LICENSE"]
+ARQUIVOS = ["baton.py", "residente.py", "relay.py", "overlay_tk.py", "tray_win.ps1", "LICENSE"]
 
 BAT = r'''@echo off
 cd /d "%~dp0"

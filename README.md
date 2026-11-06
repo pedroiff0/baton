@@ -141,6 +141,20 @@ O Baton não precisa de internet: precisa só de uma rede IP entre o celular e o
 
 **Só na primeira vez** o Baton baixa o leitor de PDF e o gerador de QR code (precisa de internet); depois ficam em cache em `~/.cache/baton` e tudo funciona offline.
 
+## 🌐 Várias sessões: relay central <a name="relay"></a>
+
+Uma URL pública (ex.: `https://baton.exemplo.com`, via Cloudflare Tunnel) aponta para um só computador. Para várias apresentações em paralelo, cada uma no seu PC, rode um **relay** no servidor e conecte cada Baton a ele; cada computador mantém sessão, QR e celulares próprios, e as sessões não se enxergam (o roteamento usa o código do QR e o token de cada celular).
+
+```bash
+# no servidor (aponte o túnel para a porta do relay, WebSocket incluído)
+BATON_RELAY_CHAVE='uma-chave-longa' baton --servir-relay --relay-porta 8780
+
+# em cada computador de apresentação
+baton --relay wss://baton.exemplo.com --chave-relay 'uma-chave-longa' --instalar   # vira o padrão do Baton do login
+```
+
+A chave só autoriza computadores a se registrar; os celulares continuam entrando pelo QR de uso único. Com `--relay` e sem `--url-publica`, o QR usa a URL do relay. O painel mostra o estado do relay. `--max-celulares N` muda o limite de celulares por sessão (padrão 8). Botões de volume do celular não chegam a nenhuma página web (iOS e Android os consomem); use os controles de mídia do sistema, fones ou um passador de slides Bluetooth.
+
 ## 🔒 Segurança <a name="seguranca"></a>
 
 O servidor escuta em todas as interfaces (Wi-Fi e Tailscale) e o Baton nunca o abre na internet. Na rede local o tráfego é HTTP sem criptografia: use só em Wi-Fi de confiança. Tudo que importa (PDF, eventos, comandos, manifesto) exige o token; a página do QR code e o painel só abrem no próprio computador. O celular precisa do token da URL; o computador local não. Quem tem a URL com o token controla o computador: não compartilhe o QR code. Pausado, nenhum comando é aceito.

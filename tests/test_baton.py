@@ -10,6 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import baton as P  # noqa: E402
+import relay as RL  # noqa: E402
 import residente as R  # noqa: E402
 
 _TMP = tempfile.mkdtemp()
@@ -854,3 +855,87 @@ class LaunchdTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RelayTest(unittest.TestCase):
+    def _par(self):
+        import socket as so
+        a, b = so.socketpair()
+        return RL.WS(a, True), RL.WS(b, False)
+
+    def test_ws_mascarado_e_fragmentado(self):
+        c, s = self._par()
+        c.enviar(1, "ola")
+        self.assertEqual(s.receber(), (1, "ola"))
+        grande = os.urandom(RL.PEDACO)
+        threading.Thread(target=lambda: c.enviar(2, grande), daemon=True).start()
+        self.assertEqual(s.receber(), (2, grande))
+        # fragmentado: texto "ab" + "cd"; ping no meio e respondido
+        c.s.sendall(bytes([0x01, 0x82]) + b"\0\0\0\0" + b"ab")
+        c.s.sendall(bytes([0x89, 0x80]) + b"\0\0\0\0")
+        c.s.sendall(bytes([0x80, 0x82]) + b"\0\0\0\0" + b"cd")
+        self.assertEqual(s.receber(), (1, "abcd"))
+
+    def test_roteamento_por_credencial(self):
+        r = RL.Relay("k" * 12)
+        a1, a2 = RL.Agente(None, "x"), RL.Agente(None, "y")
+        a1.codigos, a1.tokens = {"cod1"}, {RL.hash_token("tok1")}
+        a2.codigos, a2.tokens = {"cod2"}, {RL.hash_token("tok2")}
+        r.agentes = {a1.sid: a1, a2.sid: a2}
+        self.assertIs(r.achar(codigo="cod2"), a2)
+        self.assertIs(r.achar(token="tok1"), a1)
+        self.assertIsNone(r.achar(token="outro"))
+        self.assertIs(r.achar(sid=a2.sid), a2)
+        self.assertIsNotNone(r.achar(estatico=True))
+        a1.vivo = a2.vivo = False
+        self.assertIsNone(r.achar(estatico=True))
+
+    def test_limite_de_sessoes(self):
+        r = RL.Relay("k" * 12, max_sessoes=1)
+        self.assertTrue(r.registrar(RL.Agente(None, "a")))
+        self.assertFalse(r.registrar(RL.Agente(None, "b")))
+
+    def test_relay_ponta_a_ponta_e_chave(self):
+        import http.client
+        srv = RL.servir(0, "chave-de-teste-123456", host="127.0.0.1")
+        porta = srv.server_address[1]
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        # chave errada: recusada
+        ag = RL.AgenteRelay(f"ws://127.0.0.1:{porta}", "errada", 1, lambda: ([], []))
+        with self.assertRaises(ConnectionError):
+            ag._conectar()
+        # baton local de mentira
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        class L(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                corpo = ("xff=" + str(self.headers.get("X-Forwarded-For"))).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(corpo)))
+                self.send_header("Set-Cookie", "a=1")
+                self.end_headers()
+                self.wfile.write(corpo)
+
+        loc = ThreadingHTTPServer(("127.0.0.1", 0), L)
+        threading.Thread(target=loc.serve_forever, daemon=True).start()
+        ag = RL.AgenteRelay(f"ws://127.0.0.1:{porta}", "chave-de-teste-123456", loc.server_address[1], lambda: (["abc"], [RL.hash_token("t1")]))
+        ag.start()
+        for _ in range(50):
+            if srv.relay.agentes and next(iter(srv.relay.agentes.values())).codigos:
+                break
+            time.sleep(0.1)
+        c = http.client.HTTPConnection("127.0.0.1", porta, timeout=5)
+        c.request("GET", "/x?k=t1", headers={"X-Forwarded-For": "6.6.6.6", "Cf-Connecting-Ip": "9.9.9.9"})
+        r = c.getresponse()
+        self.assertEqual(r.status, 200)
+        self.assertEqual(r.read(), b"xff=9.9.9.9")  # o relay impoe o IP real; XFF do cliente e descartado
+        self.assertTrue(any(k == "Set-Cookie" and v.startswith("baton_s=") for k, v in r.getheaders()))
+        c = http.client.HTTPConnection("127.0.0.1", porta, timeout=5)
+        c.request("GET", "/x?k=desconhecido")
+        self.assertEqual(c.getresponse().status, 404)
+        ag.parar = True
+        srv.shutdown()
+        loc.shutdown()

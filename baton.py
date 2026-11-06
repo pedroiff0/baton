@@ -41,6 +41,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import relay as relay_mod
 import residente
 from urllib.parse import parse_qs, urlparse
 
@@ -301,6 +302,7 @@ class Estado:
         self.tela_propria, self.tela_proc = False, None  # tela cheia do proprio Baton (PDF carregado pelo painel)
         self._bases_fixas, self.bases_fn, self._bases_cache = [], None, (0.0, [])  # enderecos do computador (ver calcular_bases)
         self.dispositivos = []  # celulares pareados: {id, nome, token, criado, ultimo_visto, ua}
+        self.relay = None  # AgenteRelay (sessao no relay central), se configurado
         self.pareamento = None  # {"codigo", "expira"}: QR de uso unico
         self._salvo_em = 0.0
         self.falhas_pareamento = {}  # ip -> instantes de codigos errados (limite por minuto)
@@ -545,7 +547,7 @@ class Estado:
                 "residente": self.residente, "acessibilidade": self.acessibilidade(), "deck": self.deck_info(), "tela_propria": self.tela_propria, "captura": self.captura,
                 "conexoes": len(self.conectados()), "dispositivos": self.dispositivos_info(),
                 "plataforma": sys.platform, "rede_bluetooth": self.rede_bluetooth(),
-                "pareamento_urls": self.urls_pareamento()}
+                "pareamento_urls": self.urls_pareamento(), "relay": getattr(self.relay, "status", "")}
 
     def comando(self, cmd, valor=None, cid=None):
         if not self.permitido():
@@ -1941,6 +1943,42 @@ def salvar_url_publica(url):
         pass
 
 
+ARQ_RELAY = Path.home() / ".cache" / "baton" / "relay.json"
+ARQ_CHAVE_RELAY = Path.home() / ".config" / "baton" / "relay-chave"
+
+
+def relay_salvo():
+    try:
+        d = json.loads(ARQ_RELAY.read_text())
+        return str(d.get("url", "")), str(d.get("chave", ""))
+    except (OSError, ValueError):
+        return "", ""
+
+
+def salvar_relay(url, chave):
+    """Grava (ou, com '-', apaga) o relay padrao do Baton iniciado no login (--residente)."""
+    try:
+        if url in ("", "-"):
+            ARQ_RELAY.unlink(missing_ok=True)
+        else:
+            ARQ_RELAY.parent.mkdir(parents=True, exist_ok=True)
+            ARQ_RELAY.write_text(json.dumps({"url": url.strip().rstrip("/"), "chave": chave}))
+            os.chmod(ARQ_RELAY, 0o600)
+    except OSError:
+        pass
+
+
+def chave_do_relay(pedida=""):
+    if pedida:
+        return pedida
+    if os.environ.get("BATON_RELAY_CHAVE"):
+        return os.environ["BATON_RELAY_CHAVE"]
+    try:
+        return ARQ_CHAVE_RELAY.read_text().strip()
+    except OSError:
+        return ""
+
+
 def calcular_bases(porta, host=None):
     """Enderecos do computador, do melhor para o pior: Bluetooth > hotspot do celular > (internet HTTPS, se configurada) >
     Wi-Fi/rota padrao > outras > Tailscale."""
@@ -2393,6 +2431,27 @@ HTML_REMOTO = """<div id="aviso"></div><div id="app"><div id="colA"><div id="top
 </div></div>
 <div id="irbox"><div id="irhead"><input id="irn" type="number" inputmode="numeric" min="1" placeholder="no do slide"><button id="irgo">Ir</button><button id="irx">Fechar</button></div><div id="irgrid"></div></div>
 """
+JS_MIDIA = r"""
+// controles de midia (tela bloqueada, fones, relogio): um audio mudo em loop mantem a sessao de midia ativa
+let midiaOk=false;
+function iniciaMidia(){
+  if(midiaOk||!('mediaSession' in navigator))return;midiaOk=true;
+  try{
+    const n=8000,b=new ArrayBuffer(44+n),v=new DataView(b),w=(o,t)=>{for(let i=0;i<t.length;i++)v.setUint8(o+i,t.charCodeAt(i))};
+    w(0,'RIFF');v.setUint32(4,36+n,true);w(8,'WAVEfmt ');v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);v.setUint32(24,8000,true);
+    v.setUint32(28,8000,true);v.setUint16(32,1,true);v.setUint16(34,8,true);w(36,'data');v.setUint32(40,n,true);for(let i=0;i<n;i++)v.setUint8(44+i,128);
+    const a=new Audio(URL.createObjectURL(new Blob([b],{type:'audio/wav'})));a.loop=true;a.volume=0.01;
+    a.play().then(()=>{
+      navigator.mediaSession.metadata=new MediaMetadata({title:'Baton',artist:'Controle de slides'});
+      const h=(k,f)=>{try{navigator.mediaSession.setActionHandler(k,f)}catch(x){}};
+      h('nexttrack',()=>cmd('next'));h('previoustrack',()=>cmd('prev'));h('seekforward',()=>cmd('next'));h('seekbackward',()=>cmd('prev'));
+      h('play',()=>{a.play()});h('pause',()=>{a.play()});
+    }).catch(()=>{midiaOk=false});
+  }catch(x){midiaOk=false}
+}
+addEventListener('pointerdown',iniciaMidia,{once:true});
+"""
+
 JS_REMOTO = r"""
 const $=id=>document.getElementById(id);
 let raioFoco=0.12;try{raioFoco=(parseInt(localStorage.getItem('baton-raio'))||12)/100}catch(e){}
@@ -2628,24 +2687,7 @@ addEventListener('keydown',e=>{
   if(['AudioVolumeUp','VolumeUp','MediaTrackNext','PageDown','ArrowRight'].includes(e.key)){cmd('next');e.preventDefault()}
   else if(['AudioVolumeDown','VolumeDown','MediaTrackPrevious','PageUp','ArrowLeft'].includes(e.key)){cmd('prev');e.preventDefault()}
 });
-// controles de midia (tela bloqueada, fones, relogio): um audio mudo em loop mantem a sessao de midia ativa
-let midiaOk=false;
-function iniciaMidia(){
-  if(midiaOk||!('mediaSession' in navigator))return;midiaOk=true;
-  try{
-    const n=8000,b=new ArrayBuffer(44+n),v=new DataView(b),w=(o,t)=>{for(let i=0;i<t.length;i++)v.setUint8(o+i,t.charCodeAt(i))};
-    w(0,'RIFF');v.setUint32(4,36+n,true);w(8,'WAVEfmt ');v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);v.setUint32(24,8000,true);
-    v.setUint32(28,8000,true);v.setUint16(32,1,true);v.setUint16(34,8,true);w(36,'data');v.setUint32(40,n,true);for(let i=0;i<n;i++)v.setUint8(44+i,128);
-    const a=new Audio(URL.createObjectURL(new Blob([b],{type:'audio/wav'})));a.loop=true;a.volume=0.01;
-    a.play().then(()=>{
-      navigator.mediaSession.metadata=new MediaMetadata({title:'Baton',artist:'Controle de slides'});
-      const h=(k,f)=>{try{navigator.mediaSession.setActionHandler(k,f)}catch(x){}};
-      h('nexttrack',()=>cmd('next'));h('previoustrack',()=>cmd('prev'));h('seekforward',()=>cmd('next'));h('seekbackward',()=>cmd('prev'));
-      h('play',()=>{a.play()});h('pause',()=>{a.play()});
-    }).catch(()=>{midiaOk=false});
-  }catch(x){midiaOk=false}
-}
-addEventListener('pointerdown',iniciaMidia,{once:true});
+__JSMIDIA__
 if('serviceWorker' in navigator&&isSecureContext)navigator.serviceWorker.register('/sw.js').catch(()=>{});
 $('bb').onclick=()=>cmd('blank');$('tr').onchange=e=>cmd('transition',e.target.value);
 $('bx').onclick=()=>{limpaLocal();cmd('limpar')};
@@ -2763,6 +2805,7 @@ addEventListener('online',conectar);addEventListener('pageshow',conectar);wake()
 if(TEM_PDF){pdfjsLib.getDocument(Object.assign({url:'/pdf?k='+encodeURIComponent(TOKEN)},LEVE?{disableAutoFetch:true,disableStream:true,rangeChunkSize:65536}:{})).promise.then(async d=>{pdf=d;total=d.numPages;try{await detectaLado(d);if(!LEVE){notasPdf=await notasDoPdf(d);mapa=await agruparPassos(d)}}catch(e){}mostraNotas();conectar()})}
 else{$('vista').style.background='#1a1a1c';$('vista').insertAdjacentHTML('beforeend','<div id="lzdica" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#666;font-size:14px;text-align:center;padding:12px;pointer-events:none">area do laser<br>(mapeada na tela do Mac)</div>');conectar()}
 """
+JS_REMOTO = JS_REMOTO.replace("__JSMIDIA__", JS_MIDIA)
 
 
 PAGINA_QR = """<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><title>Baton - QR</title>
@@ -2783,7 +2826,7 @@ function desenhar(urls){
 }
 desenhar(__URLS__);
 async function ciclo(){try{const j=await (await fetch('/painel/estado')).json();desenhar(j.pareamento_urls||[]);
-  document.getElementById('cel').textContent=(j.dispositivos||[]).length?('Celulares pareados: '+j.dispositivos.map(function(d){return d.nome+(d.conectado?' (conectado)':'')}).join(', ')):'Nenhum celular pareado ainda.'}catch(e){}}
+  document.getElementById('cel').textContent=((j.dispositivos||[]).length?('Celulares pareados: '+j.dispositivos.map(function(d){return d.nome+(d.conectado?' (conectado)':'')}).join(', ')):'Nenhum celular pareado ainda.')+(j.relay?'  |  Relay: '+j.relay:'')}catch(e){}}
 ciclo();setInterval(ciclo,2000);
 </script></body></html>"""
 
@@ -2806,22 +2849,24 @@ body{display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto 1f
 #voltas{font-size:12px;color:#888;max-height:54px;overflow:auto;margin-top:4px;font-variant-numeric:tabular-nums}
 .chip{border:0;background:#1d1d1f;color:#fff;border-radius:14px;padding:7px 10px;font-size:13px;font-weight:600;text-decoration:none;display:inline-block;white-space:nowrap}
 .chip.az{background:#0a84ff}
-#corpo{display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr) auto minmax(0,.9fr) minmax(0,1.3fr);gap:10px;min-height:0;
+#corpo{display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,.9fr) minmax(0,1.05fr) minmax(0,.9fr) minmax(0,1.2fr);gap:10px;min-height:0;
   grid-template-areas:"nav" "zoom" "foco" "laser"}
 button.g{border:0;border-radius:24px;color:#fff;font-weight:700;touch-action:manipulation;font-size:clamp(20px,6.2vmin,36px);position:relative;min-height:0}
 #navrow{grid-area:nav;display:flex;gap:10px;min-height:0}#navrow button{min-height:0}
 #ant{background:#1d1d1f;flex:.8}#seg{background:#0a84ff;flex:1.2}#seg:active{background:#006fe0}#ant:active{background:#333}
-#zrow{grid-area:zoom;display:flex;gap:10px}
-#zrow button{flex:1;height:clamp(46px,8.5vh,64px);border:0;border-radius:18px;background:#1d1d1f;color:#fff;font-weight:700;font-size:22px;touch-action:manipulation}
-#zrow button:active{background:#333}#zrow #z1{flex:.7;font-size:16px}
-#zrow #zaim{flex:2.4;position:relative;background:#10223a;border:2px solid #0a84ff;touch-action:none;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:17px;line-height:1.15}
+#zrow{grid-area:zoom;display:flex;flex-direction:column;gap:8px;min-height:0}
+#zctl{display:flex;gap:8px;align-items:center;flex:none;height:46px}
+#zctl button{width:50px;height:46px;border:0;border-radius:14px;background:#1d1d1f;color:#fff;font-weight:700;font-size:22px;touch-action:manipulation}
+#zctl button:active{background:#333}#zctl #z1{width:58px;font-size:15px}
+#zniv{flex:1;min-width:0;accent-color:#0a84ff;touch-action:pan-x;height:34px}
+#zrow #zaim{flex:1;min-height:0;border-radius:24px;color:#fff;font-weight:700;position:relative;background:#10223a;border:2px solid #0a84ff;touch-action:none;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:17px;line-height:1.15}
 #zrow #zaim small{position:static;display:block;font-size:11px;font-weight:500;color:#9fb4cc;padding:0}
 #zrow.ativo #zaim{background:#16335a}#zrow #zaim.on{background:#0a84ff}#zrow #zaim.on small{color:#fff}
 #foco{grid-area:foco}#laser{grid-area:laser}
 #laser,#foco{touch-action:none}
 #laser{background:#3a1212;border:3px solid #ff3b30}#laser.on{background:#ff3b30}
 #foco{background:#10223a;border:3px solid #0a84ff}#foco.on{background:#0a84ff}
-body.canhoto #navrow,body.canhoto #zrow{flex-direction:row-reverse}
+body.canhoto #navrow,body.canhoto #zctl{flex-direction:row-reverse}
 .dica{position:absolute;left:0;right:0;bottom:9px;font-size:12px;font-weight:500;color:#cfd3d8;padding:0 8px;line-height:1.25}
 .on .dica{color:#fff}
 .mapa{display:none;position:absolute;inset:0;pointer-events:none}
@@ -2838,7 +2883,6 @@ body.canhoto #navrow,body.canhoto #zrow{flex-direction:row-reverse}
   body{padding-top:max(10px,env(safe-area-inset-top))}
   #corpo{grid-template-columns:minmax(0,1fr) minmax(0,1.5fr);grid-template-rows:minmax(0,1.2fr) minmax(0,1fr);grid-template-areas:"nav foco" "zoom laser"}
   body.canhoto #corpo{grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);grid-template-areas:"foco nav" "laser zoom"}
-  #zrow button{height:auto}
 }
 </style></head><body class="destro">
 <div id="topo"><span><i id="dot"></i><span id="st">conectando</span></span>
@@ -2846,13 +2890,15 @@ body.canhoto #navrow,body.canhoto #zrow{flex-direction:row-reverse}
   <span class="acoes"><button class="chip az" id="binst" style="display:none">Instalar</button><button class="chip" id="bcfg">Ajustes</button><a class="chip" href="/remote?k=__TOKEN__">Completo</a></span></div>
 <div id="corpo">
   <div id="navrow"><button class="g" id="ant">&#9664; Anterior</button><button class="g" id="seg">Proximo &#9654;</button></div>
-  <div id="zrow"><button id="zm">&minus;</button><button id="zaim"><div class="mapa"><i></i></div><span id="zt">Zoom 1x</span><small class="dica">toque onde quer ampliar</small></button><button id="zp">+</button><button id="z1">1x</button></div>
+  <div id="zrow"><div id="zctl"><button id="zm">&minus;</button><input id="zniv" type="range" min="1" max="5" step="0.1" value="1"><button id="zp">+</button><button id="z1">1x</button></div><button id="zaim"><div class="mapa"><i></i></div><span id="zt">Zoom 1x</span><small class="dica">toque onde quer ampliar</small></button></div>
   <button class="g" id="foco">FOCO<div class="mapa"><i></i></div><div class="dica">Toque onde quer e aponte; 2o dedo: raio</div></button>
   <button class="g" id="laser">LASER<div class="mapa"><i></i></div><div class="dica">Toque onde quer e aponte</div></button>
 </div>
 <div id="folha">
   <h3>Ajustes <button class="chip" id="bfecha">Fechar</button></h3>
   <div class="tm"><span>Cronometro</span><button id="tvolta">Volta</button><button id="tzera">Zerar</button><span id="trest"></span></div><div id="voltas"></div>
+  <label>Meta do cronometro (min)<input id="s_meta" type="range" min="1" max="180" value="50"><output>50</output></label>
+  <div class="mao" id="metas"><button data-m="10">10</button><button data-m="15">15</button><button data-m="20">20</button><button data-m="30">30</button><button data-m="45">45</button><button data-m="60">60</button></div>
   <label>Laser: tamanho<input id="s_laser_tam" type="range" min="6" max="120" value="24"><output>24</output></label>
   <label>Foco: raio<input id="raio" type="range" min="3" max="35" value="12"><output id="rv">12</output></label>
   <label>Foco: desfoque<input id="s_foco_blur" type="range" min="0" max="100" value="100"><output>100</output></label>
@@ -2868,17 +2914,23 @@ function status(ok,t){$('dot').classList.toggle('ok',ok);$('st').textContent=t}
 const cid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,8);
 // ---- zoom: laser/foco apontam na tela; com zoom, a tela mostra so uma regiao do slide, e o ponto precisa cair nela
 let zoom={z:1,x:.5,y:.5},ultSlide={x:.5,y:.5};
-const NIVEIS=[1,1.5,2,3,4];
+const NIVEIS=[1,1.5,2,3,4,5];
 function regiao(){const w=1/Math.max(1,zoom.z),cx=Math.max(w/2,Math.min(1-w/2,zoom.x)),cy=Math.max(w/2,Math.min(1-w/2,zoom.y));return{w,x0:cx-w/2,y0:cy-w/2}}
 function paraSlide(x,y){if(zoom.z<=1.001)return{x,y};const r=regiao();return{x:r.x0+x*r.w,y:r.y0+y*r.w}}
-function mostraZoom(){$('zt').textContent='Zoom '+(zoom.z%1?zoom.z.toFixed(1):zoom.z)+'x';$('zrow').classList.toggle('ativo',zoom.z>1.001)}
+function mostraZoom(){$('zt').textContent='Zoom '+(zoom.z%1?zoom.z.toFixed(1):zoom.z)+'x';$('zrow').classList.toggle('ativo',zoom.z>1.001);if(!arrastaNiv)$('zniv').value=zoom.z}
+let arrastaNiv=false;
+$('zniv').addEventListener('pointerdown',()=>{arrastaNiv=true});
+['pointerup','pointercancel'].forEach(t=>$('zniv').addEventListener(t,()=>{arrastaNiv=false}));
+$('zniv').oninput=e=>{const z=Math.round(parseFloat(e.target.value)*10)/10,c=zoom.z<=1.001&&z>1?ultSlide:{x:zoom.x,y:zoom.y};
+  zoom={z,x:z>1?c.x:.5,y:z>1?c.y:.5};mostraZoom();zPend={z:zoom.z,x:zoom.x,y:zoom.y};if(!zEnv)bombeiaZoom()};
+$('zniv').onchange=()=>{arrastaNiv=false;mostraZoom();cmd('zoom',zoom)};
 function passoZoom(d){let i=NIVEIS.findIndex(n=>n>=zoom.z-1e-6);if(i<0)i=NIVEIS.length-1;i=Math.max(0,Math.min(NIVEIS.length-1,i+d));const z=NIVEIS[i];
   const c=zoom.z<=1.001&&z>1?ultSlide:{x:zoom.x,y:zoom.y};  // ao ampliar a partir de 1x, centraliza onde voce apontou por ultimo
   zoom={z,x:z>1?c.x:.5,y:z>1?c.y:.5};mostraZoom();cmd('zoom',zoom)}
 $('zp').onclick=()=>{passoZoom(1);navigator.vibrate&&navigator.vibrate(8)};$('zm').onclick=()=>{passoZoom(-1);navigator.vibrate&&navigator.vibrate(8)};
 $('z1').onclick=()=>{zoom={z:1,x:.5,y:.5};mostraZoom();cmd('zoom',zoom)};
 if(EXTERNO)$('zrow').style.display='none';  // modo externo (app de terceiros): o Baton nao amplia a janela do outro programa
-function aplicaSnap(s){if(s.timer)sincTimer(s.timer);if(s.zoom!==undefined&&ativo!=='zoom'){zoom={z:s.zoom||1,x:s.zx===undefined?.5:s.zx,y:s.zy===undefined?.5:s.zy};mostraZoom()}}
+function aplicaSnap(s){if(s.cfg){mostraAj(s.cfg);tick();return}if(s.timer)sincTimer(s.timer);if(s.zoom!==undefined&&ativo!=='zoom'){zoom={z:s.zoom||1,x:s.zx===undefined?.5:s.zx,y:s.zy===undefined?.5:s.zy};mostraZoom()}}
 // ---- cronometro (o mesmo do controle completo: vive no computador, todos os celulares veem o mesmo tempo)
 let tm={rodando:false,elapsed:0,rec:performance.now()},metaMin=50,voltasVistas='';
 const mmss=t=>{t=Math.max(0,Math.floor(t));const h=Math.floor(t/3600),m=Math.floor(t%3600/60),s=t%60;return(h?h+':'+String(m).padStart(2,'0'):String(m).padStart(2,'0'))+':'+String(s).padStart(2,'0')};
@@ -2903,6 +2955,7 @@ $('seg').onclick=()=>{cmd('next');navigator.vibrate&&navigator.vibrate(8)};$('an
 addEventListener('keydown',e=>{
   if(['AudioVolumeUp','VolumeUp','MediaTrackNext','PageDown','ArrowRight'].includes(e.key)){cmd('next');e.preventDefault()}
   else if(['AudioVolumeDown','VolumeDown','MediaTrackPrevious','PageUp','ArrowLeft'].includes(e.key)){cmd('prev');e.preventDefault()}});
+__JSMIDIA__
 function conectar(){if(es){try{es.close()}catch(e){}}es=new EventSource('/events?k='+encodeURIComponent(TOKEN));ultimaMsg=Date.now();
   es.onmessage=ev=>{ultimaMsg=Date.now();status(true,'conectado');try{aplicaSnap(JSON.parse(ev.data))}catch(e){}};es.onerror=()=>status(false,'reconectando...')}
 setInterval(()=>{if(Date.now()-ultimaMsg>12000)conectar()},3000);conectar();
@@ -2918,12 +2971,13 @@ $('mdestro').onclick=()=>poeMao('destro');$('mcanhoto').onclick=()=>poeMao('canh
 // ---- ajustes
 let raio=.12,tCfg=null,pend={},gan=35;try{gan=parseFloat(localStorage.getItem('baton-gan2')||'35')}catch(e){}
 $('bcfg').onclick=()=>$('folha').classList.toggle('aberta');$('bfecha').onclick=()=>$('folha').classList.remove('aberta');
-const AJ={laser_tam:'s_laser_tam',foco_raio:'raio',foco_blur:'s_foco_blur',foco_escuro:'s_foco_escuro'};
+const AJ={meta_min:'s_meta',laser_tam:'s_laser_tam',foco_raio:'raio',foco_blur:'s_foco_blur',foco_escuro:'s_foco_escuro'};
 function mostraAj(c){if(c.meta_min)metaMin=c.meta_min;for(const k in AJ){if(c[k]===undefined)continue;const el=$(AJ[k]);el.value=c[k];el.parentNode.querySelector('output').textContent=Math.round(c[k])}if(c.foco_raio)raio=c.foco_raio/100}
 fetch('/cfg?k='+encodeURIComponent(TOKEN)).then(r=>r.json()).then(mostraAj).catch(()=>{});
 function salvaCfg(k,v){pend[k]=v;clearTimeout(tCfg);tCfg=setTimeout(()=>{const d=pend;pend={};
   fetch('/cfg',{method:'POST',headers:{'Content-Type':'application/json','X-Token':TOKEN},body:JSON.stringify(d)}).catch(()=>{})},150)}
-for(const k in AJ)$(AJ[k]).oninput=e=>{const v=parseFloat(e.target.value);e.target.parentNode.querySelector('output').textContent=Math.round(v);if(k==='foco_raio')raio=v/100;salvaCfg(k,v)};
+for(const k in AJ)$(AJ[k]).oninput=e=>{const v=parseFloat(e.target.value);e.target.parentNode.querySelector('output').textContent=Math.round(v);if(k==='foco_raio')raio=v/100;if(k==='meta_min'){metaMin=v;tick()}salvaCfg(k,v)};
+document.querySelectorAll('#metas button').forEach(b=>b.onclick=()=>{const v=parseFloat(b.dataset.m);$('s_meta').value=v;$('s_meta').parentNode.querySelector('output').textContent=v;metaMin=v;tick();salvaCfg('meta_min',v)});
 $('s_gan').value=gan;$('s_gan').parentNode.querySelector('output').textContent=Math.round(gan);
 $('s_gan').oninput=e=>{gan=parseFloat(e.target.value);e.target.parentNode.querySelector('output').textContent=Math.round(gan);try{localStorage.setItem('baton-gan2',String(gan))}catch(x){}};
 function poeRaio(r,salva){raio=Math.max(.04,Math.min(.3,r));const p=Math.round(raio*100);$('raio').value=p;$('rv').textContent=p;if(salva)salvaCfg('foco_raio',p)}
@@ -3024,6 +3078,8 @@ $('binst').onclick=async()=>{
   d.style.display=d.style.display==='block'?'none':'block'};
 </script></body></html>
 """
+
+PAGINA_SIMPLES = PAGINA_SIMPLES.replace("__JSMIDIA__", JS_MIDIA)
 
 PAGINA_QR_USADO = """<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Baton</title></head><body style="font-family:-apple-system,system-ui,sans-serif;background:#111;color:#eee;text-align:center;padding:48px 24px">
@@ -3571,6 +3627,7 @@ def contar_paginas(pdf):
 
 
 def main():
+    global MAX_DISPOSITIVOS
     ap = argparse.ArgumentParser(description="Baton de slides pelo celular (Tailscale), com laser e QR code.")
     ap.add_argument("pdf", nargs="?", help="PDF dos slides (sem PDF, o modo e 'externo': o celular controla o app em primeiro plano)")
     ap.add_argument("--instalar", action="store_true", help="macOS: liga o Baton sozinho no login (modo externo)")
@@ -3584,6 +3641,14 @@ def main():
     ap.add_argument("--url-publica", default=os.environ.get("BATON_URL_PUBLICA", ""), metavar="URL",
                     help="endereco HTTPS publico (ex.: https://baton.exemplo.com, via Cloudflare Tunnel apontando para esta porta); entra nos QR codes. "
                          "Com --instalar vira o padrao do Baton iniciado no login; '-' remove o padrao")
+    ap.add_argument("--relay", default=os.environ.get("BATON_RELAY", ""), metavar="URL",
+                    help="conecta este Baton a um relay central (ex.: wss://baton.exemplo.com): varios computadores atras da mesma URL publica, "
+                         "cada um com sua sessao. Com --instalar vira o padrao; '-' remove")
+    ap.add_argument("--chave-relay", default="", metavar="CHAVE", help="chave de registro do relay (ou BATON_RELAY_CHAVE)")
+    ap.add_argument("--servir-relay", action="store_true", help="roda o relay central (aponte o Cloudflare Tunnel para --relay-porta); exige a chave do relay")
+    ap.add_argument("--relay-porta", type=int, default=8780, help="porta do relay com --servir-relay")
+    ap.add_argument("--relay-max", type=int, default=50, help="maximo de computadores (sessoes) no relay")
+    ap.add_argument("--max-celulares", type=int, default=MAX_DISPOSITIVOS, help="celulares pareados por sessao")
     ap.add_argument("--sem-https", action="store_true", help="nao abre a porta HTTPS (porta+1), usada pelo laser por apontamento com sensores")
     ap.add_argument("--sem-captura", action="store_true", help="nao envia ao celular a previa (captura) da tela do computador quando nao ha PDF")
     ap.add_argument("--sem-abrir", action="store_true", help="nao abre o navegador no Mac")
@@ -3610,6 +3675,21 @@ def main():
     ap.add_argument("--detectar", action="store_true", help="mostra qual app esta em tela cheia agora e sai (teste)")
     ap.add_argument("--novo-token", action="store_true", help="desfaz o pareamento de todos os celulares (cada um precisa escanear um QR novo)")
     a = ap.parse_args()
+    if a.instalar and a.relay:
+        salvar_relay(a.relay, chave_do_relay(a.chave_relay))
+        print(f"Relay padrao: {a.relay}" if a.relay != "-" else "Relay removido")
+    if a.servir_relay:
+        chave = chave_do_relay(a.chave_relay)
+        if len(chave) < 12:
+            sys.exit("defina a chave do relay (>= 12 caracteres): --chave-relay, BATON_RELAY_CHAVE ou o arquivo ~/.config/baton/relay-chave")
+        srv = relay_mod.servir(a.relay_porta, chave, a.relay_max)
+        print(f"Relay do Baton em 0.0.0.0:{a.relay_porta} (ate {a.relay_max} sessoes). Aponte o tunel/proxy para esta porta; "
+              f"cada Baton usa --relay wss://<seu-dominio> com a mesma chave.")
+        try:
+            srv.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        return
     if a.instalar and a.url_publica:
         salvar_url_publica(a.url_publica)
         print(f"URL publica padrao: {a.url_publica}" if a.url_publica != "-" else "URL publica removida")
@@ -3692,8 +3772,14 @@ def main():
     total = contar_paginas(pdf) if pdf else 9999
     estado = Estado(pdf, total, a.transicao, token, externo, "", prop)
     global URL_PUBLICA
+    MAX_DISPOSITIVOS = max(1, min(64, a.max_celulares))
     pedido = a.url_publica.strip()
     URL_PUBLICA = "" if pedido == "-" else (pedido or url_publica_salva())
+    relay_url, relay_chave = (a.relay.strip(), chave_do_relay(a.chave_relay)) if a.relay.strip() else relay_salvo()
+    if relay_url == "-":
+        relay_url = ""
+    if relay_url and not URL_PUBLICA and "127.0.0.1" not in relay_url and "localhost" not in relay_url:
+        URL_PUBLICA = relay_url.replace("wss://", "https://").replace("ws://", "http://").rstrip("/")  # QR e HTTPS pela URL do relay
     estado.captura = not a.sem_captura
     estado.bases_fn = lambda: calcular_bases(a.porta, a.host)
     estado.carregar_dispositivos()
@@ -3768,6 +3854,11 @@ def main():
             print(f"aviso: sem HTTPS na porta {a.porta + 1} ({e}); o laser por apontamento volta ao dedo", file=sys.stderr)
     local = f"http://localhost:{a.porta}/"
     estado.local_url = local
+    if relay_url:
+        estado.relay = relay_mod.AgenteRelay(relay_url, relay_chave, a.porta, lambda: (
+            [estado.codigo_pareamento()], [relay_mod.hash_token(d["token"]) for d in list(estado.dispositivos)]))
+        estado.relay.start()
+        print(f"Relay: {relay_url} (sessao propria; QR e celulares isolados dos outros computadores)")
     tray = residente.iniciar_tray(a.porta) if (a.residente or a.tray) and not a.sem_tray else None
     print(f"\nModo: {'externo (teclas e mouse para o app em primeiro plano)' if externo else 'tela do Baton'}")
     if pdf:

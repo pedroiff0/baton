@@ -9,7 +9,7 @@ command -v python3 >/dev/null 2>&1 || { echo "Python 3 nao encontrado. Instale o
 python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' || { echo "Precisa do Python 3.8 ou mais novo." >&2; exit 1; }
 
 mkdir -p "$DEST" "$HOME/.local/bin"
-cp "$SRC"/baton.py "$SRC"/residente.py "$SRC"/launcher.swift "$SRC"/overlay.swift "$SRC"/overlay_gtk.py "$SRC"/overlay_tk.py "$SRC"/tray_gtk.py "$SRC"/LICENSE "$DEST"/
+cp "$SRC"/baton.py "$SRC"/residente.py "$SRC"/relay.py "$SRC"/launcher.swift "$SRC"/overlay.swift "$SRC"/overlay_gtk.py "$SRC"/overlay_tk.py "$SRC"/tray_gtk.py "$SRC"/LICENSE "$DEST"/
 git -C "$SRC" rev-parse --short HEAD > "$DEST/VERSION" 2>/dev/null || true
 printf '#!/bin/sh\nexec python3 "%s/baton.py" "$@"\n' "$DEST" > "$HOME/.local/bin/baton"
 chmod +x "$HOME/.local/bin/baton"
