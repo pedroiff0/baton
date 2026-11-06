@@ -1,6 +1,7 @@
 # Changelog
 
 ## Não lançado
+- macOS: o `Baton.app` vira um aplicativo de verdade (AppKit, sem Dock) antes de pedir a Acessibilidade, para entrar na lista; `baton --diagnostico` resume o ambiente para suporte.
 - Ícone na bandeja (macOS: barra de menu no `Baton.app`; Windows: `tray_win.ps1`; Linux: `tray_gtk.py`) com Pausar/Retomar, Escolher apresentação (seletor nativo), Remover, QR code, painel e Sair; `--tray`/`--sem-tray`. Se a bandeja não compilar no Mac, o `Baton.app` é montado sem ela.
 - macOS: `baton --permissao` (e o botão do painel) pede a Acessibilidade pelo próprio `Baton.app` via LaunchServices, mostra o app no Finder para arrastar para a lista com o `+` e abre os Ajustes; corrige o Baton não aparecer na lista.
 - Carregar a apresentação pela interface: o painel aceita PDF, PPTX, ODP ou `.md` (arrastar e soltar); o celular recarrega com prévia, próximo slide e notas, sem terminal.

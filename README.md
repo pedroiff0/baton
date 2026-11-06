@@ -56,7 +56,7 @@ Requisitos: Python 3.8+. O celular conecta pelo Wi-Fi do computador (sem VPN) ou
 ./uninstall.sh      # ou .\uninstall.ps1
 ```
 
-**Mac, permissão de teclas:** se o Baton não aparecer em Acessibilidade, rode `baton --permissao` (ou use o botão no painel): ele pede a permissão pelo `Baton.app`, mostra o app no Finder e abre os Ajustes; se ainda não listar, clique em **+** e escolha `~/Applications/Baton.app`.
+**Mac, permissão de teclas:** se o Baton não aparecer em Acessibilidade, rode `baton --permissao` (ou use o botão no painel): ele pede a permissão pelo `Baton.app`, mostra o app no Finder e abre os Ajustes; se ainda não listar, clique em **+** e escolha `~/Applications/Baton.app`. `baton --diagnostico` imprime um resumo (Baton.app, assinatura, swiftc, launchd, log) para suporte.
 
 Dependências opcionais:
 - macOS: `swiftc` (`xcode-select --install`) para a camada de desenho; `terminal-notifier` para o aviso clicável; liberar o **Baton** em Acessibilidade.

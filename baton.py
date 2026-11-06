@@ -1109,6 +1109,33 @@ def montar_app_mac():
     return str(exe)
 
 
+def diagnostico():
+    """Resumo para colar numa conversa: versao, Baton.app, assinatura, swiftc, launchd, log e permissao."""
+    def run(*cmd):
+        try:
+            r = subprocess.run(list(cmd), capture_output=True, text=True, timeout=10)
+            return ((r.stdout or "") + (r.stderr or "")).strip()
+        except Exception as e:
+            return f"(falhou: {e})"
+    aqui = Path(__file__).resolve().parent
+    L = [f"baton.py: {Path(__file__).resolve()}",
+         f"launcher.swift: {hashlib.sha1((aqui / 'launcher.swift').read_bytes()).hexdigest()[:10] if (aqui / 'launcher.swift').exists() else 'AUSENTE'}",
+         f"tray: {'sim' if (aqui / 'tray_gtk.py').exists() else 'nao'} | python: {sys.version.split()[0]} | sistema: {sys.platform}"]
+    if sys.platform == "darwin":
+        app = Path.home() / "Applications" / "Baton.app"
+        exe = app / "Contents" / "MacOS" / "Baton"
+        L += [f"Baton.app: {'existe' if app.exists() else 'NAO EXISTE'} | executavel: {'ok' if exe.exists() else 'NAO EXISTE'}",
+              f"swiftc: {shutil.which('swiftc') or 'NAO ENCONTRADO (xcode-select --install)'}",
+              "bundle id: " + run("/usr/libexec/PlistBuddy", "-c", "Print :CFBundleIdentifier", str(app / "Contents" / "Info.plist")),
+              "assinatura: " + " | ".join(x for x in run("codesign", "-dv", str(app)).splitlines() if x.startswith(("Identifier", "Signature", "CodeDirectory"))),
+              "launchd: " + (run("launchctl", "list", "com.baton") or "(nao carregado)").replace("\n", " ")[:200],
+              "processos: " + (run("pgrep", "-fl", "Baton") or "(nenhum)").replace("\n", " ; ")[:200],
+              f"acessibilidade (launcher): {acessibilidade_mac()}"]
+        log = Path.home() / ".cache" / "baton" / "baton.log"
+        L.append("log (ultimas linhas):\n" + "\n".join(log.read_text(errors="replace").splitlines()[-12:]) if log.exists() else "log: ausente")
+    return "\n".join(L)
+
+
 def pedir_acessibilidade():
     """macOS: garante o Baton.app, pede a permissao por ele (via LaunchServices, que faz o app aparecer na lista),
     mostra o app no Finder (para arrastar para a lista com o +) e abre os Ajustes. Devolve uma mensagem."""
@@ -2241,6 +2268,7 @@ def main():
                     help="importa as notas de um .pptx (notas do apresentador) ou .md para a sessao do Baton e sai")
     ap.add_argument("--tray", action="store_true", help="mostra o icone na bandeja (ja e o padrao no modo --residente)")
     ap.add_argument("--sem-tray", action="store_true", help="nao mostra o icone na bandeja")
+    ap.add_argument("--diagnostico", action="store_true", help="imprime um resumo do ambiente (Baton.app, permissao, log) para suporte")
     ap.add_argument("--permissao", action="store_true", help="macOS: pede a permissao de Acessibilidade para o Baton.app e abre os Ajustes")
     ap.add_argument("--rede", action="store_true", help="(sem efeito: a rede local ja e o endereco principal)")
     ap.add_argument("--residente", action="store_true",
@@ -2252,6 +2280,8 @@ def main():
     a = ap.parse_args()
     if a.instalar or a.desinstalar:
         return instalar_login(remover=a.desinstalar)
+    if a.diagnostico:
+        return print(diagnostico())
     if a.permissao:
         return print(pedir_acessibilidade())
     if a.pausar or a.retomar:

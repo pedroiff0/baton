@@ -174,12 +174,23 @@ final class Bandeja: NSObject {
 
 let argumentos = Array(CommandLine.arguments.dropFirst())
 
+#if BANDEJA
+// Vira um aplicativo de verdade (sem Dock) antes de pedir a permissao: o macOS so lista na Acessibilidade
+// quem esta registrado no WindowServer; um executavel sem AppKit pode nem aparecer na lista.
+let aplicativo = NSApplication.shared
+aplicativo.setActivationPolicy(.accessory)
+#endif
+
 // Baton.app --pedir-acesso: so pede a permissao de Acessibilidade (o app passa a aparecer na lista) e sai.
 if argumentos.first == "--pedir-acesso" {
     let opcoes = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
     let ok = AXIsProcessTrustedWithOptions(opcoes)
     print(ok ? "Acessibilidade: liberada" : "Acessibilidade: pendente, ative o Baton nos Ajustes")
+    #if BANDEJA
+    RunLoop.main.run(until: Date().addingTimeInterval(4))
+    #else
     Thread.sleep(forTimeInterval: 1.5)
+    #endif
     exit(ok ? 0 : 1)
 }
 guard argumentos.count >= 2 else {
@@ -228,8 +239,6 @@ do {
 filho.terminationHandler = { p in exit(p.terminationStatus) }
 var porta = 8765
 if let i = argumentos.firstIndex(of: "--porta"), i + 1 < argumentos.count, let n = Int(argumentos[i + 1]) { porta = n }
-let aplicativo = NSApplication.shared
-aplicativo.setActivationPolicy(.accessory)
 let bandeja = Bandeja(porta: porta)
 _ = bandeja
 aplicativo.run()
