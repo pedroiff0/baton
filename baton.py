@@ -2603,6 +2603,7 @@ function iniciaMidia(){
   }catch(x){midiaOk=false}
 }
 addEventListener('pointerdown',iniciaMidia,{once:true});
+if('serviceWorker' in navigator&&isSecureContext)navigator.serviceWorker.register('/sw.js').catch(()=>{});
 $('bb').onclick=()=>cmd('blank');$('tr').onchange=e=>cmd('transition',e.target.value);
 $('bx').onclick=()=>{limpaLocal();cmd('limpar')};
 const BOTAO={laser:'bl',foco:'bf',caneta:'bc',marca:'bm',zoom:'bz'};
@@ -2745,48 +2746,64 @@ ciclo();setInterval(ciclo,2000);
 
 
 PAGINA_SIMPLES = r"""<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
-<meta name="apple-mobile-web-app-capable" content="yes"><meta name="theme-color" content="#000000"><title>Baton simples</title>
+<meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Baton"><meta name="theme-color" content="#000000">
+<link rel="manifest" href="/manifest.json?k=__TOKEN__&m=simples"><link rel="apple-touch-icon" href="/icon.png"><title>Baton simples</title>
 <style>
-*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;-webkit-touch-callout:none}
 html,body{margin:0;height:100%;background:#000;color:#fff;font-family:-apple-system,system-ui,sans-serif;touch-action:none;user-select:none;-webkit-user-select:none;overflow:hidden}
-body{display:grid;grid-template-rows:auto 1fr auto;gap:10px;padding:max(10px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) max(12px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left))}
-#topo{display:flex;justify-content:space-between;align-items:center;font-size:14px;color:#aaa}
+body{display:grid;grid-template-rows:auto 1fr;gap:8px;padding:max(8px,env(safe-area-inset-top)) max(10px,env(safe-area-inset-right)) max(10px,env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left))}
+#topo{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:13px;color:#aaa;min-height:34px}
 #dot{width:10px;height:10px;border-radius:50%;background:#e33;display:inline-block;margin-right:6px}#dot.ok{background:#3c6}
-#topo a{color:#0a84ff;text-decoration:none;font-size:14px;padding:6px 0}
-#corpo{display:grid;grid-template-columns:1fr;grid-template-rows:1.25fr 1fr 1fr;gap:12px;min-height:0}
-button{border:0;border-radius:22px;color:#fff;font-weight:700;touch-action:manipulation;font-size:clamp(22px,7vmin,40px)}
+#topo .acoes{display:flex;gap:6px;align-items:center}
+.chip{border:0;background:#1d1d1f;color:#fff;border-radius:14px;padding:7px 11px;font-size:13px;font-weight:600;text-decoration:none;display:inline-block}
+.chip.az{background:#0a84ff}
+#corpo{display:grid;grid-template-columns:1fr 1fr;grid-template-rows:.8fr 1.7fr;gap:10px;min-height:0}
+button.g{border:0;border-radius:24px;color:#fff;font-weight:700;touch-action:manipulation;font-size:clamp(20px,6.2vmin,36px);position:relative;min-height:0}
 #ant{background:#1d1d1f}#seg{background:#0a84ff}#seg:active{background:#006fe0}#ant:active{background:#333}
-#apontar{display:grid;grid-template-columns:1fr 1fr;gap:12px;min-height:0}#apontar button{min-height:0}
-#laser,#foco{position:relative;touch-action:none}
+#laser,#foco{touch-action:none}
 #laser{background:#3a1212;border:3px solid #ff3b30}#laser.on{background:#ff3b30}
 #foco{background:#10223a;border:3px solid #0a84ff}#foco.on{background:#0a84ff}
-.dica{position:absolute;left:0;right:0;bottom:8px;font-size:12px;font-weight:500;color:#cfd3d8;padding:0 8px;line-height:1.25}
+/* zona do polegar: Laser e Foco embaixo; o Laser (mais usado) fica do lado da mao dominante e mais largo */
+#corpo{grid-template-areas:"ant seg" "foco laser";grid-template-columns:1fr 1fr}
+#ant{grid-area:ant}#seg{grid-area:seg}#foco{grid-area:foco}#laser{grid-area:laser}
+body.destro #corpo{grid-template-columns:.8fr 1.2fr}
+body.canhoto #corpo{grid-template-areas:"ant seg" "laser foco";grid-template-columns:1.2fr .8fr}
+.dica{position:absolute;left:0;right:0;bottom:9px;font-size:12px;font-weight:500;color:#cfd3d8;padding:0 8px;line-height:1.25}
 .on .dica{color:#fff}
-#cfg{font-size:13px;color:#aaa;padding:0 4px}
-#bajust{width:100%;padding:9px 0;font-size:14px;border-radius:14px;background:#1d1d1f;font-weight:600}
-#ajl{display:none;grid-template-columns:1fr 1fr;gap:4px 14px;padding:8px 6px 2px}#cfg.aberto #ajl{display:grid}
-#ajl label{display:flex;align-items:center;gap:8px;font-size:12px;color:#aaa}#ajl input{flex:1;min-width:0;accent-color:#0a84ff}#ajl output{min-width:26px;text-align:right;color:#777}
-@media (max-width:520px){#ajl{grid-template-columns:1fr}}
-#modo{font-size:12px;color:#888;text-align:center;padding:0 8px}
+.mapa{display:none;position:absolute;left:50%;top:12px;width:62%;max-width:150px;aspect-ratio:16/9;transform:translateX(-50%);border:2px solid rgba(255,255,255,.7);border-radius:6px}
+.mapa i{position:absolute;width:14px;height:14px;margin:-7px 0 0 -7px;border-radius:50%;background:#fff;box-shadow:0 0 8px 3px rgba(255,255,255,.7)}
+.on .mapa{display:block}
+#folha{display:none;position:fixed;left:0;right:0;bottom:0;background:#141416;border-radius:22px 22px 0 0;padding:14px 16px max(16px,env(safe-area-inset-bottom));z-index:10;box-shadow:0 -8px 30px rgba(0,0,0,.6)}
+#folha.aberta{display:block}
+#folha label{display:flex;align-items:center;gap:10px;font-size:14px;color:#ccc;margin:10px 0}#folha input{flex:1;min-width:0;accent-color:#0a84ff}#folha output{min-width:34px;text-align:right;color:#888}
+#folha h3{margin:0 0 4px;font-size:15px;color:#fff;display:flex;justify-content:space-between;align-items:center}
+#folha .mao{display:flex;gap:8px;margin-top:10px}#folha .mao button{flex:1;padding:11px 0;font-size:14px;border-radius:12px;border:0;background:#1d1d1f;color:#fff;font-weight:600}#folha .mao button.sel{background:#0a84ff}
+#dicainst{display:none;position:fixed;left:12px;right:12px;top:max(50px,env(safe-area-inset-top));background:#2c2c2e;border:1px solid #0a84ff;border-radius:14px;padding:12px;font-size:14px;z-index:11;line-height:1.4}
 @media (orientation:landscape){
-  body{grid-template-rows:auto 1fr auto}
-  #corpo{grid-template-columns:1fr 1.6fr 1fr;grid-template-rows:1fr}
-  #ant{order:0}#apontar{order:1}#seg{order:2}
+  #corpo{grid-template-rows:1fr;grid-template-columns:1fr 1fr 1.3fr 1.3fr;grid-template-areas:"ant seg foco laser"}
+  body.destro #corpo{grid-template-columns:1fr 1fr 1.1fr 1.5fr}
+  body.canhoto #corpo{grid-template-areas:"laser foco ant seg";grid-template-columns:1.5fr 1.1fr 1fr 1fr}
+  .mapa{top:8px;width:46%}
 }
-</style></head><body>
-<div id="topo"><span><i id="dot"></i><span id="st">conectando</span></span><span><a href="/remote?k=__TOKEN__">Controle completo</a></span></div>
+</style></head><body class="destro">
+<div id="topo"><span><i id="dot"></i><span id="st">conectando</span></span>
+  <span class="acoes"><button class="chip az" id="binst" style="display:none">Instalar</button><button class="chip" id="bcfg">Ajustes</button><a class="chip" href="/remote?k=__TOKEN__">Completo</a></span></div>
 <div id="corpo">
-  <div id="apontar"><button id="laser">LASER<div class="dica">Segure e aponte</div></button><button id="foco">FOCO<div class="dica">Segure e aponte; 2o dedo: raio</div></button></div>
-  <button id="ant">&#9664; Anterior</button><button id="seg">Proximo &#9654;</button>
+  <button class="g" id="ant">&#9664; Anterior</button><button class="g" id="seg">Proximo &#9654;</button>
+  <button class="g" id="foco">FOCO<div class="mapa"><i></i></div><div class="dica">Segure e aponte</div></button>
+  <button class="g" id="laser">LASER<div class="mapa"><i></i></div><div class="dica">Segure e aponte</div></button>
 </div>
-<div id="cfg"><button id="bajust">Ajustes</button>
-  <div id="ajl">
-    <label>Laser: tamanho<input id="s_laser_tam" type="range" min="6" max="120" value="24"><output>24</output></label>
-    <label>Foco: raio<input id="raio" type="range" min="3" max="35" value="12"><output id="rv">12</output></label>
-    <label>Foco: desfoque<input id="s_foco_blur" type="range" min="0" max="100" value="100"><output>100</output></label>
-    <label>Foco: escuro<input id="s_foco_escuro" type="range" min="0" max="90" value="25"><output>25</output></label>
-  </div></div>
-<div style="position:fixed;left:12px;right:12px;bottom:max(2px,env(safe-area-inset-bottom));pointer-events:none"></div>
+<div id="folha">
+  <h3>Ajustes <button class="chip" id="bfecha">Fechar</button></h3>
+  <label>Laser: tamanho<input id="s_laser_tam" type="range" min="6" max="120" value="24"><output>24</output></label>
+  <label>Foco: raio<input id="raio" type="range" min="3" max="35" value="12"><output id="rv">12</output></label>
+  <label>Foco: desfoque<input id="s_foco_blur" type="range" min="0" max="100" value="100"><output>100</output></label>
+  <label>Foco: escuro<input id="s_foco_escuro" type="range" min="0" max="90" value="25"><output>25</output></label>
+  <label>Alcance do apontador (graus)<input id="s_gan" type="range" min="15" max="80" value="35"><output>35</output></label>
+  <div class="mao"><button id="mdestro">Destro</button><button id="mcanhoto">Canhoto</button></div>
+</div>
+<div id="dicainst"></div>
 <script>
 const TOKEN="__TOKEN__",HTTPS="__HTTPS__",AUTO="__AUTO__"==="1",$=id=>document.getElementById(id);
 let ultimaMsg=Date.now(),es=null;
@@ -2808,49 +2825,63 @@ setInterval(()=>{if(Date.now()-ultimaMsg>12000)conectar()},3000);conectar();
 async function wake(){try{if('wakeLock' in navigator)await navigator.wakeLock.request('screen')}catch(e){}}
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){wake();conectar()}});wake();
 
-// ---- laser e foco por apontamento: gira o celular e o ponto acompanha (a pose ao apertar o botao vira o centro da tela)
-const rad=Math.PI/180;
-function mul(a,b){const r=[[0,0,0],[0,0,0],[0,0,0]];for(let i=0;i<3;i++)for(let j=0;j<3;j++)for(let k=0;k<3;k++)r[i][j]+=a[i][k]*b[k][j];return r}
-const Rz=a=>[[Math.cos(a),-Math.sin(a),0],[Math.sin(a),Math.cos(a),0],[0,0,1]];
-const Rx=a=>[[1,0,0],[0,Math.cos(a),-Math.sin(a)],[0,Math.sin(a),Math.cos(a)]];
-const Ry=a=>[[Math.cos(a),0,Math.sin(a)],[0,1,0],[-Math.sin(a),0,Math.cos(a)]];
-// direcao em que o celular aponta, no mundo (x leste, y norte, z cima): a borda de cima (+Y) com o celular mais deitado,
-// a camera de tras (-Z) com ele em pe, como numa foto
-function direcao(o,eixo){const R=mul(mul(Rz(o.a*rad),Rx(o.b*rad)),Ry(o.g*rad));const v=eixo==='z'?[0,0,-1]:[0,1,0];
-  return[R[0][0]*v[0]+R[0][1]*v[1]+R[0][2]*v[2],R[1][0]*v[0]+R[1][1]*v[1]+R[1][2]*v[2],R[2][0]*v[0]+R[2][1]*v[1]+R[2][2]*v[2]]}
-const angulos=f=>({yaw:Math.atan2(f[0],f[1])/rad,pitch:Math.asin(Math.max(-1,Math.min(1,f[2])))/rad});
-const dif=a=>{while(a>180)a-=360;while(a<-180)a+=360;return a};
-let ori=null,semSensor=true,base=null,sx=.5,sy=.5,ativo=null,ptoque=null;  // ativo: 'laser' | 'foco' | null
-function aoOrientar(e){if(e.alpha===null||e.alpha===undefined)return;semSensor=false;ori={a:e.alpha,b:e.beta,g:e.gamma};if(ativo)atualiza()}
-addEventListener('deviceorientation',aoOrientar,true);
-let gan=parseFloat(localStorage.getItem('baton-gan')||'30');
-const sensor=()=>!semSensor;
-let raio=.12,tCfg=null,pend={};
-$('bajust').onclick=()=>$('cfg').classList.toggle('aberto');
+// ---- mao dominante
+let mao='destro';try{mao=localStorage.getItem('baton-mao')||'destro'}catch(e){}
+function poeMao(m){mao=m;document.body.classList.toggle('destro',m==='destro');document.body.classList.toggle('canhoto',m==='canhoto');
+  $('mdestro').classList.toggle('sel',m==='destro');$('mcanhoto').classList.toggle('sel',m==='canhoto');try{localStorage.setItem('baton-mao',m)}catch(e){}}
+$('mdestro').onclick=()=>poeMao('destro');$('mcanhoto').onclick=()=>poeMao('canhoto');poeMao(mao);
+
+// ---- ajustes
+let raio=.12,tCfg=null,pend={},gan=35;try{gan=parseFloat(localStorage.getItem('baton-gan2')||'35')}catch(e){}
+$('bcfg').onclick=()=>$('folha').classList.toggle('aberta');$('bfecha').onclick=()=>$('folha').classList.remove('aberta');
 const AJ={laser_tam:'s_laser_tam',foco_raio:'raio',foco_blur:'s_foco_blur',foco_escuro:'s_foco_escuro'};
 function mostraAj(c){for(const k in AJ){if(c[k]===undefined)continue;const el=$(AJ[k]);el.value=c[k];el.parentNode.querySelector('output').textContent=Math.round(c[k])}if(c.foco_raio)raio=c.foco_raio/100}
 fetch('/cfg?k='+encodeURIComponent(TOKEN)).then(r=>r.json()).then(mostraAj).catch(()=>{});
 function salvaCfg(k,v){pend[k]=v;clearTimeout(tCfg);tCfg=setTimeout(()=>{const d=pend;pend={};
   fetch('/cfg',{method:'POST',headers:{'Content-Type':'application/json','X-Token':TOKEN},body:JSON.stringify(d)}).catch(()=>{})},150)}
 for(const k in AJ)$(AJ[k]).oninput=e=>{const v=parseFloat(e.target.value);e.target.parentNode.querySelector('output').textContent=Math.round(v);if(k==='foco_raio')raio=v/100;salvaCfg(k,v)};
+$('s_gan').value=gan;$('s_gan').parentNode.querySelector('output').textContent=Math.round(gan);
+$('s_gan').oninput=e=>{gan=parseFloat(e.target.value);e.target.parentNode.querySelector('output').textContent=Math.round(gan);try{localStorage.setItem('baton-gan2',String(gan))}catch(x){}};
 function poeRaio(r,salva){raio=Math.max(.04,Math.min(.3,r));const p=Math.round(raio*100);$('raio').value=p;$('rv').textContent=p;if(salva)salvaCfg('foco_raio',p)}
+
+// ---- apontador: gira o celular e o ponto acompanha (a pose ao apertar o botao vira o centro da tela)
+const rad=Math.PI/180;
+function mul(a,b){const r=[[0,0,0],[0,0,0],[0,0,0]];for(let i=0;i<3;i++)for(let j=0;j<3;j++)for(let k=0;k<3;k++)r[i][j]+=a[i][k]*b[k][j];return r}
+const Rz=a=>[[Math.cos(a),-Math.sin(a),0],[Math.sin(a),Math.cos(a),0],[0,0,1]];
+const Rx=a=>[[1,0,0],[0,Math.cos(a),-Math.sin(a)],[0,Math.sin(a),Math.cos(a)]];
+const Ry=a=>[[Math.cos(a),0,Math.sin(a)],[0,1,0],[-Math.sin(a),0,Math.cos(a)]];
+function direcao(o,eixo){const R=mul(mul(Rz(o.a*rad),Rx(o.b*rad)),Ry(o.g*rad));const v=eixo==='z'?[0,0,-1]:[0,1,0];
+  return[R[0][0]*v[0]+R[0][1]*v[1]+R[0][2]*v[2],R[1][0]*v[0]+R[1][1]*v[1]+R[1][2]*v[2],R[2][0]*v[0]+R[2][1]*v[1]+R[2][2]*v[2]]}
+const angulos=f=>({yaw:Math.atan2(f[0],f[1])/rad,pitch:Math.asin(Math.max(-1,Math.min(1,f[2])))/rad});
+const dif=a=>{while(a>180)a-=360;while(a<-180)a+=360;return a};
+// filtro One Euro: parado suaviza o tremor da mao; em movimento rapido quase nao atrasa
+function umEuro(mc,beta,dc){let xp=null,dxp=0,tp=0;
+  const al=(c,dt)=>1/(1+1/(2*Math.PI*c)/dt);
+  return{reset(){xp=null},f(x,t){if(xp===null){xp=x;dxp=0;tp=t;return x}
+    const dt=Math.min(.1,Math.max(.004,(t-tp)/1000));tp=t;const dx=(x-xp)/dt;dxp+=(dx-dxp)*al(dc,dt);
+    const c=mc+beta*Math.abs(dxp);xp+=(x-xp)*al(c,dt);return xp}}}
+const fx=umEuro(1.6,9,1.2),fy=umEuro(1.6,9,1.2);
+let ori=null,semSensor=true,base=null,sx=.5,sy=.5,ativo=null,ptoque=null,modoUlt='laser';
+function aoOrientar(e){if(e.alpha===null||e.alpha===undefined)return;semSensor=false;ori={a:e.alpha,b:e.beta,g:e.gamma};if(ativo)atualiza()}
+addEventListener('deviceorientation',aoOrientar,true);
+const sensor=()=>!semSensor;
 let lsEnv=false,lsPend=null,ultimo=0;
-function envLaser(x,y,on){const t=performance.now();if(on&&t-ultimo<8)return;ultimo=t;lsPend={x,y,on,m:ativo==='foco'||(!on&&modoUlt==='foco')?'foco':'laser',r:raio};if(!lsEnv)bombeia()}
-let modoUlt='laser';
+function envLaser(x,y,on){const t=performance.now();if(on&&t-ultimo<6)return;ultimo=t;lsPend={x,y,on,m:modoUlt,r:raio};if(!lsEnv)bombeia()}
 function bombeia(){if(!lsPend){lsEnv=false;return}lsEnv=true;const d=lsPend;lsPend=null;
   fetch('/laser',{method:'POST',headers:{'Content-Type':'application/json','X-Token':TOKEN},body:JSON.stringify(d),keepalive:true}).catch(()=>{}).finally(bombeia)}
+function mostraMapa(){const el=$(modoUlt).querySelector('.mapa i');el.style.left=(sx*100)+'%';el.style.top=(sy*100)+'%'}
 function atualiza(){
   if(!base||!ori)return;const f=direcao(ori,base.eixo),an=angulos(f);
   const x=.5+dif(an.yaw-base.yaw)/gan,y=.5-(an.pitch-base.pitch)/(gan*9/16);
-  // filtro adaptativo: parado, suaviza o tremor da mao; em movimento, acompanha quase sem atraso
-  const tx=Math.max(0,Math.min(1,x)),ty=Math.max(0,Math.min(1,y)),d=Math.hypot(tx-sx,ty-sy),k=d>.04?.9:d>.012?.6:.25;
-  sx+=(tx-sx)*k;sy+=(ty-sy)*k;envLaser(sx,sy,true)}
+  const t=performance.now();sx=Math.max(0,Math.min(1,fx.f(Math.max(0,Math.min(1,x)),t)));sy=Math.max(0,Math.min(1,fy.f(Math.max(0,Math.min(1,y)),t)));
+  mostraMapa();envLaser(sx,sy,true)}
 async function permissao(){
   if(typeof DeviceOrientationEvent!=='undefined'&&typeof DeviceOrientationEvent.requestPermission==='function'){
     try{const r=await DeviceOrientationEvent.requestPermission();return r==='granted'}catch(e){return false}}
   return true}
 let pediu=false;
 const DICAS={laser:'Segure e aponte',foco:'Segure e aponte; 2o dedo: raio'};
+DICAS.laser='Segure e aponte';
 const dedos=new Map();let pinca=null;
 function distDedos(){const[a,b]=[...dedos.values()];return Math.hypot(a.x-b.x,a.y-b.y)}
 function liga(id,modo){
@@ -2858,15 +2889,16 @@ function liga(id,modo){
   el.addEventListener('pointerdown',async e=>{
     e.preventDefault();try{el.setPointerCapture(e.pointerId)}catch(x){}
     if(ativo)return;
-    if(!pediu){pediu=true;await permissao();await new Promise(r=>setTimeout(r,250))}
-    ativo=modo;modoUlt=modo;el.classList.add('on');navigator.vibrate&&navigator.vibrate(12);sx=sy=.5;
-    if(sensor()&&ori){const eixo=Math.abs(ori.b)>55?'z':'y',an=angulos(direcao(ori,eixo));base={eixo,yaw:an.yaw,pitch:an.pitch};
-      el.querySelector('.dica').textContent='Aponte: o ponto acompanha o celular';envLaser(.5,.5,true)}
+    if(!pediu){pediu=true;const ok=await permissao();await new Promise(r=>setTimeout(r,200));if(!ok&&typeof DeviceOrientationEvent!=='undefined'&&DeviceOrientationEvent.requestPermission){
+      el.querySelector('.dica').textContent='Permita o movimento e segure de novo';return}}
+    ativo=modo;modoUlt=modo;el.classList.add('on');navigator.vibrate&&navigator.vibrate(12);sx=sy=.5;fx.reset();fy.reset();
+    if(sensor()&&ori){const eixo=Math.abs(ori.b)>50?'z':'y',an=angulos(direcao(ori,eixo));base={eixo,yaw:an.yaw,pitch:an.pitch};
+      el.querySelector('.dica').textContent='Aponte para a tela';mostraMapa();envLaser(.5,.5,true)}
     else{ptoque={x:e.clientX,y:e.clientY};base=null;
-      el.querySelector('.dica').textContent=(HTTPS&&!isSecureContext?'Sem sensores aqui; arraste o dedo (ou abra em HTTPS)':'Sem sensores; arraste o dedo');envLaser(.5,.5,true)}
+      el.querySelector('.dica').textContent=(HTTPS&&!isSecureContext?'Sem sensores aqui: abra o endereco HTTPS':'Sem sensores: arraste o dedo');envLaser(.5,.5,true)}
   });
   el.addEventListener('pointermove',e=>{if(ativo!==modo||sensor()&&base)return;if(!ptoque)return;
-    const r=Math.min(innerWidth,innerHeight)*0.45;sx=Math.max(0,Math.min(1,.5+(e.clientX-ptoque.x)/r/2));sy=Math.max(0,Math.min(1,.5+(e.clientY-ptoque.y)/r/2));envLaser(sx,sy,true)});
+    const r=Math.min(innerWidth,innerHeight)*0.45;sx=Math.max(0,Math.min(1,.5+(e.clientX-ptoque.x)/r/2));sy=Math.max(0,Math.min(1,.5+(e.clientY-ptoque.y)/r/2));mostraMapa();envLaser(sx,sy,true)});
   ['pointerup','pointercancel'].forEach(t=>el.addEventListener(t,()=>{if(ativo!==modo)return;ativo=null;base=null;ptoque=null;pinca=null;el.classList.remove('on');
     el.querySelector('.dica').textContent=DICAS[modo];lsPend=null;envLaser(sx,sy,false)}));
   el.addEventListener('contextmenu',e=>e.preventDefault());
@@ -2878,10 +2910,20 @@ document.addEventListener('pointerdown',e=>{dedos.set(e.pointerId,{x:e.clientX,y
 document.addEventListener('pointermove',e=>{if(!dedos.has(e.pointerId))return;dedos.set(e.pointerId,{x:e.clientX,y:e.clientY});
   if(pinca&&dedos.size>=2&&pinca.d0>0)poeRaio(pinca.r0*distDedos()/pinca.d0,true)},true);
 ['pointerup','pointercancel'].forEach(t=>document.addEventListener(t,e=>{dedos.delete(e.pointerId);if(dedos.size<2)pinca=null},true));
-// sensibilidade: tocar duas vezes na barra de status alterna 20/30/45 graus de campo de visao
-$('topo').addEventListener('dblclick',()=>{gan=gan===30?45:gan===45?20:30;try{localStorage.setItem('baton-gan',String(gan))}catch(e){}$('st').textContent='campo '+gan+' graus'});
+// vai para o HTTPS com certificado valido (sensores de movimento so funcionam em pagina segura)
 if(HTTPS&&!isSecureContext&&AUTO&&!sessionStorage.getItem('baton-https-tentou')){try{sessionStorage.setItem('baton-https-tentou','1')}catch(e){}location.replace(HTTPS)}
-if(HTTPS&&!isSecureContext){const a=document.createElement('div');a.id='modo';a.innerHTML='Para apontar com os sensores abra <a href="'+HTTPS+'" style="color:#0a84ff">a versao segura (HTTPS)</a> e aceite o aviso do certificado.';$('corpo').after(a);document.body.style.gridTemplateRows='auto 1fr auto'}
+if(HTTPS&&!isSecureContext){$('st').insertAdjacentHTML('afterend',' <a href="'+HTTPS+'" style="color:#0a84ff">(abrir em HTTPS)</a>')}
+// ---- app na tela inicial (PWA)
+const standalone=matchMedia('(display-mode: standalone)').matches||navigator.standalone===true;
+if('serviceWorker' in navigator&&isSecureContext)navigator.serviceWorker.register('/sw.js').catch(()=>{});
+let instEv=null;
+addEventListener('beforeinstallprompt',e=>{e.preventDefault();instEv=e;if(!standalone)$('binst').style.display='inline-block'});
+const ios=/iphone|ipad|ipod/i.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+if(ios&&!standalone)$('binst').style.display='inline-block';
+$('binst').onclick=async()=>{
+  if(instEv){instEv.prompt();try{await instEv.userChoice}catch(e){}instEv=null;$('binst').style.display='none';return}
+  const d=$('dicainst');d.innerHTML=ios?'Toque em <b>Compartilhar</b> (quadrado com seta) e depois em <b>Adicionar a Tela de Inicio</b>. Abra pelo icone: fica em tela cheia.':'No menu do navegador (tres pontos) escolha <b>Instalar app</b> ou <b>Adicionar a tela inicial</b>.';
+  d.style.display=d.style.display==='block'?'none':'block'};
 </script></body></html>
 """
 
@@ -3046,7 +3088,7 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
             u = urlparse(self.path)
             # pela internet (tunel/proxy) so entra quem traz o id do QR (/p/<codigo>, uso unico) ou o token de um celular ja
             # pareado; todo o resto some (404), sem revelar que ha um Baton ali
-            if self._proxiado() and not (u.path.startswith(("/p/", "/vendor/")) or self._dispositivo(u) is not None):
+            if self._proxiado() and not (u.path.startswith(("/p/", "/vendor/", "/icon", "/sw.js")) or self._dispositivo(u) is not None):
                 return self._enviar(404, "not found", "text/plain; charset=utf-8")
             if u.path in ("/", "/qr", "/apresentar") and not self._local():
                 return self._enviar(403, "abra o Baton pelo QR code ou pelo endereco do celular", "text/plain; charset=utf-8")
@@ -3066,14 +3108,23 @@ def criar_handler(estado, usar_cache, usar_qr_cache):
                 if u.path == "/painel":
                     return self._enviar(200, residente.PAINEL_HTML, "text/html; charset=utf-8")
                 return self._enviar(200, json.dumps(estado.painel_estado()))
+            if u.path == "/sw.js":  # service worker minimo: so existe para o navegador oferecer "instalar o app"
+                return self._enviar(200, "self.addEventListener('install',()=>self.skipWaiting());"
+                                         "self.addEventListener('activate',e=>e.waitUntil(self.clients.claim()));"
+                                         "self.addEventListener('fetch',()=>{});", "application/javascript",
+                                    {"Service-Worker-Allowed": "/"})
             if u.path in ("/icon.png", "/icon-192.png", "/icon-512.png"):
                 tam = {"/icon-192.png": 192, "/icon-512.png": 512}.get(u.path, 180)
                 return self._enviar(200, icone_png(tam), "image/png", {"Cache-Control": "max-age=86400"})
             if u.path == "/manifest.json":
                 if not self._leitura_ok(u):
                     return self._enviar(403, "{}")
-                m = {"name": "Baton", "short_name": "Baton", "display": "standalone", "background_color": "#000000",
-                     "theme_color": "#000000", "start_url": "/remote?k=" + parse_qs(u.query).get("k", [""])[0],
+                q = parse_qs(u.query)
+                k, modo = q.get("k", [""])[0], q.get("m", [""])[0]
+                rota = "/simples" if modo == "simples" else "/remote"
+                m = {"name": "Baton simples" if modo == "simples" else "Baton", "short_name": "Baton", "display": "standalone",
+                     "orientation": "any", "background_color": "#000000", "theme_color": "#000000", "scope": "/",
+                     "id": rota, "start_url": f"{rota}?k={k}",
                      "icons": [{"src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
                                {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
                                {"src": "/icon.png", "sizes": "180x180", "type": "image/png"}]}
