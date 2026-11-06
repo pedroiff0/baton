@@ -1059,7 +1059,7 @@ PLIST = """<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
 <key>Label</key><string>com.baton</string>
 <key>ProgramArguments</key><array>__ARGS__</array>
-<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+<key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict><key>ThrottleInterval</key><integer>10</integer>
 <key>StandardOutPath</key><string>__LOG__</string><key>StandardErrorPath</key><string>__LOG__</string>
 </dict></plist>
 """
@@ -1082,6 +1082,10 @@ INFO_PLIST_APP = """<?xml version="1.0" encoding="UTF-8"?>
 """
 
 
+MARCA_APP = Path.home() / ".cache" / "baton" / "launcher-hash"
+MARCA_APP_BANDEJA = Path.home() / ".cache" / "baton" / "launcher-bandeja"
+
+
 def montar_app_mac(forcar=False):
     """Cria ~/Applications/Baton.app (miolo em Swift): a lista de permissoes do macOS passa a mostrar 'Baton'."""
     base = Path(__file__).resolve().parent
@@ -1091,7 +1095,10 @@ def montar_app_mac(forcar=False):
         print("aviso: sem swiftc/launcher.swift; a permissao aparecera como o nome do Python", file=sys.stderr)
         return None
     app = Path.home() / "Applications" / "Baton.app"
-    exe, marca = app / "Contents" / "MacOS" / "Baton", app / "Contents" / ".launcher-hash"
+    # os marcadores ficam FORA do pacote: arquivo novo dentro do .app depois do codesign invalida a assinatura
+    # ("a sealed resource is missing or invalid") e o macOS nao lista o app em Acessibilidade
+    exe, marca = app / "Contents" / "MacOS" / "Baton", MARCA_APP
+    marca.parent.mkdir(parents=True, exist_ok=True)
     h = hashlib.sha1(fonte.read_bytes() + INFO_PLIST_APP.encode()).hexdigest()[:10]
     if not forcar and exe.exists() and marca.exists() and marca.read_text() == h:
         return str(exe)  # nao recompila: assinatura estavel mantem a permissao ja concedida
@@ -1122,7 +1129,10 @@ def montar_app_mac(forcar=False):
         subprocess.run(["codesign", "--force", "--deep", "-s", "-", str(app)], check=False, capture_output=True)
     subprocess.run(["tccutil", "reset", "Accessibility", "com.baton.app"], capture_output=True)  # assinatura nova: registro antigo nao vale
     marca.write_text(h)
-    (app / "Contents" / ".launcher-bandeja").write_text("1" if bandeja else "0")
+    MARCA_APP_BANDEJA.write_text("1" if bandeja else "0")
+    v = subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app)], capture_output=True, text=True) if shutil.which("codesign") else None
+    if v is not None and v.returncode != 0:
+        print("aviso: assinatura do Baton.app invalida: " + (v.stderr or "").strip()[-300:], file=sys.stderr)
     print("Baton.app compilado " + ("(com icone na barra de menu)" if bandeja else "(SEM icone na barra de menu)"), flush=True)
     return str(exe)
 
@@ -1146,15 +1156,21 @@ def diagnostico():
         L += [f"Baton.app: {'existe' if app.exists() else 'NAO EXISTE'} | executavel: {'ok' if exe.exists() else 'NAO EXISTE'}",
               f"swiftc: {shutil.which('swiftc') or 'NAO ENCONTRADO (xcode-select --install)'}",
               "executavel compilado em: " + run("stat", "-f", "%Sm", str(exe)),
-              "Baton.app atualizado: " + ("sim" if (app / "Contents" / ".launcher-hash").exists() and (app / "Contents" / ".launcher-hash").read_text() == hashlib.sha1((aqui / "launcher.swift").read_bytes() + INFO_PLIST_APP.encode()).hexdigest()[:10] else "NAO (rode: baton --recompilar-app)"),
+              "Baton.app atualizado: " + ("sim" if MARCA_APP.exists() and MARCA_APP.read_text() == hashlib.sha1((aqui / "launcher.swift").read_bytes() + INFO_PLIST_APP.encode()).hexdigest()[:10] else "NAO (rode: baton --recompilar-app)"),
               "icone na barra de menu: " + {"1": "compilado", "0": "NAO compilado (veja o erro em: baton --recompilar-app)"}.get(
-                  (app / "Contents" / ".launcher-bandeja").read_text().strip() if (app / "Contents" / ".launcher-bandeja").exists() else "", "desconhecido"),
+                  MARCA_APP_BANDEJA.read_text().strip() if MARCA_APP_BANDEJA.exists() else "", "desconhecido"),
+              "assinatura valida: " + (run("codesign", "--verify", "--deep", "--strict", str(app)) or "sim"),
               "bundle id: " + run("/usr/libexec/PlistBuddy", "-c", "Print :CFBundleIdentifier", str(app / "Contents" / "Info.plist")),
               "assinatura: " + " | ".join(x for x in run("codesign", "-dv", str(app)).splitlines() if x.startswith(("Identifier", "Signature", "CodeDirectory"))),
               "launchd: " + (run("launchctl", "list", "com.baton") or "(nao carregado)").replace("\n", " ")[:200],
               "processos: " + (run("pgrep", "-fl", "Baton") or "(nenhum)").replace("\n", " ; ")[:200],
               f"acessibilidade do Baton.app (o que importa): {acesso_do_launcher()} (None = launcher parado)",
               f"acessibilidade deste terminal (nao conta): {acessibilidade_mac()}"]
+        L += ["macOS: " + run("sw_vers", "-productVersion") + " | arquitetura: " + run("uname", "-m"),
+              "quarentena: " + (run("xattr", str(app)) or "(nenhuma)").replace("\n", " "),
+              "binario: " + run("file", "-b", str(exe))[:120],
+              "TCC (ultimos 10 min, com.baton.app):\n" + (run("log", "show", "--last", "10m", "--style", "compact", "--predicate",
+                                                                 'eventMessage CONTAINS "com.baton.app"') or "(nada)").replace("Filtering the log data using", "")[-900:]]
         log = Path.home() / ".cache" / "baton" / "baton.log"
         L.append("log (ultimas linhas):\n" + "\n".join(log.read_text(errors="replace").splitlines()[-12:]) if log.exists() else "log: ausente")
     return "\n".join(L)
@@ -2492,7 +2508,13 @@ def main():
         except OSError as e:
             print(f"aviso: nao consegui escutar em {h}:{a.porta} ({e})", file=sys.stderr)
             if h in ("127.0.0.1", "0.0.0.0"):
-                sys.exit(f"a porta {a.porta} esta ocupada ou indisponivel (outro Baton rodando? use --porta)")
+                try:  # ja ha um Baton nessa porta: sai sem erro (o launchd nao fica reiniciando)
+                    urllib.request.urlopen(f"http://127.0.0.1:{a.porta}/painel/estado", timeout=2).read()
+                    print(f"Baton ja esta rodando na porta {a.porta}; esta copia encerra.", file=sys.stderr)
+                    sys.exit(0)
+                except OSError:
+                    pass
+                sys.exit(f"a porta {a.porta} esta ocupada por outro programa (use --porta)")
             continue
         threading.Thread(target=s.serve_forever, daemon=True).start()
         servidores.append(s)

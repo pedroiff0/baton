@@ -1,6 +1,8 @@
 # Changelog
 
 ## Não lançado
+- Se já há um Baton na porta, a segunda cópia sai sem erro e o launchd só reinicia em caso de falha (antes ficava reiniciando e enchendo o log).
+- Correção (macOS): os marcadores de versão eram gravados dentro do `Baton.app` depois do `codesign`, o que invalidava a assinatura ("a sealed resource is missing or invalid") e impedia o app de aparecer em Acessibilidade; agora ficam em `~/.cache/baton`, o app é recompilado uma vez e a assinatura é verificada ao montar (e mostrada no `--diagnostico`).
 - `uninstall.sh` no macOS faz a limpeza completa: para o launchd e os processos, apaga o `Baton.app` e o plist e zera o registro de Acessibilidade (`tccutil reset`).
 - macOS: `--permissao` agora limpa o registro antigo da Acessibilidade (`tccutil reset`, a assinatura muda a cada recompilação) e reinicia o Baton.app pelo launchd, para o pedido ser atribuído ao app e não ao terminal; `--diagnostico` mostra a permissão do Baton.app separada da do terminal.
 - Redes sem internet: o Baton lista todos os caminhos do computador (Wi-Fi, cabo, Bluetooth, hotspot) além do Tailscale, um QR para cada; funciona com roteador sem internet, hotspot do celular ou rede por Bluetooth.
