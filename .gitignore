@@ -6,3 +6,4 @@ overlay-*
 *.log
 dist/
 relay.json
+convite.txt

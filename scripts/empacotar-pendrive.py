@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Monta a pasta Baton/ para pen-drive, multi-sistema: Windows, Mac (Apple Silicon e Intel) e Linux, sem instalar nada.
 
+O pen-drive leva tudo: os lancadores portateis (sem instalar), o Python de cada sistema e o repositorio completo (com .git),
+entao tambem da para instalar de vez (`./install.sh`, `install.ps1`) e atualizar (`git pull`) como quem clonou do GitHub.
+
 Uso (pode rodar no Mac, Linux ou Windows, com internet na primeira vez):
     python3 scripts/empacotar-pendrive.py --destino /Volumes/PENDRIVE
     python3 scripts/empacotar-pendrive.py                 # so gera dist/Baton-pendrive/
@@ -22,8 +25,6 @@ import urllib.request
 from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parent.parent
-ARQUIVOS = ["baton.py", "residente.py", "relay.py", "monitores.py", "overlay_tk.py", "overlay_gtk.py", "overlay.swift", "launcher.swift",
-            "tray_win.ps1", "tray_gtk.py", "LICENSE"]
 # pasta em runtime/ -> trecho do nome do arquivo do python-build-standalone
 RUNTIMES = {"win": ("win-x64", "x86_64-pc-windows-msvc"), "mac": ("mac-arm64", "aarch64-apple-darwin"),
             "mac-intel": ("mac-x64", "x86_64-apple-darwin"), "linux": ("linux-x64", "x86_64-unknown-linux-gnu")}
@@ -32,11 +33,11 @@ API = "https://api.github.com/repos/astral-sh/python-build-standalone/releases/l
 BAT = r'''@echo off
 cd /d "%~dp0"
 if not exist "dados" mkdir "dados"
-start "" wscript.exe //nologo "%~dp0baton\iniciar.vbs"
+start "" wscript.exe //nologo "%~dp0lancador\iniciar.vbs"
 '''
 VBS = r'''Set fso = CreateObject("Scripting.FileSystemObject")
 raiz = fso.GetParentFolderName(fso.GetParentFolderName(WScript.ScriptFullName))
-CreateObject("WScript.Shell").Run "cmd /c """ & raiz & "\baton\rodar.bat""", 0, False
+CreateObject("WScript.Shell").Run "cmd /c """ & raiz & "\lancador\rodar.bat""", 0, False
 '''
 RODAR = r'''@echo off
 set "RAIZ=%~dp0.."
@@ -44,7 +45,7 @@ set "USERPROFILE=%RAIZ%\dados"
 set "HOME=%RAIZ%\dados"
 set "PYTHONIOENCODING=utf-8"
 if not exist "%USERPROFILE%\.cache\baton" mkdir "%USERPROFILE%\.cache\baton"
-"%RAIZ%\runtime\win-x64\python.exe" "%RAIZ%\baton\baton.py" --residente > "%USERPROFILE%\.cache\baton\baton.log" 2>&1
+"%RAIZ%\runtime\win-x64\python.exe" "%RAIZ%\repositorio\baton.py" --residente > "%USERPROFILE%\.cache\baton\baton.log" 2>&1
 '''
 UNIX = r'''#!/bin/bash
 # Baton portatil: roda direto do pen-drive, com o Python embutido desta pasta.
@@ -65,10 +66,11 @@ if [ ! -f "$PY" ]; then
   exit 1
 fi
 chmod +x "$RAIZ/runtime/$R/bin/"* 2>/dev/null
+[ -z "$XAUTHORITY" ] && [ -f "$HOME/.Xauthority" ] && export XAUTHORITY="$HOME/.Xauthority"  # o X precisa da credencial do HOME real
 export HOME="$RAIZ/dados"
 export PYTHONIOENCODING=utf-8
 echo "Baton: abra o QR code no navegador que vai abrir. Para encerrar, feche esta janela ou use 'Sair do Baton' no painel."
-exec "$PY" "$RAIZ/baton/baton.py" --residente
+exec "$PY" "$RAIZ/repositorio/baton.py" --residente
 '''
 LEIAME = """Baton portatil (Windows, Mac e Linux)
 =====================================
@@ -80,6 +82,11 @@ Abra direto do pen-drive, sem instalar e sem copiar nada para o computador:
 O navegador abre com o QR code: escaneie com o celular (mesma rede, hotspot ou a internet, pelo relay).
 Abra http://localhost:8765/painel, solte o PDF ou PPTX na area Apresentacao: ele abre em tela cheia.
 Para encerrar: botao "Sair do Baton" no painel.
+
+Esta pasta tambem tem o repositorio completo (repositorio/, com .git), como quem clonou do GitHub:
+  instalar de vez : Mac/Linux `cd repositorio && ./install.sh` (precisa de Python 3 no computador); Windows `repositorio\\install.ps1`
+  atualizar       : `git pull` dentro de repositorio/ (o Baton portatil usa esse mesmo codigo)
+  testes          : `python3 -m unittest discover -s tests`
 
 Tudo fica na pasta dados/ deste pen-drive (celulares pareados, cache, notas); o computador nao guarda nada.
 Windows: se o Firewall perguntar, permita redes privadas.
@@ -160,6 +167,25 @@ def extrair(tar_gz, destino):
                 break
 
 
+def clonar_repositorio(destino):
+    """Repositorio completo (com .git, origin = GitHub) em `destino`; sem git, copia os arquivos."""
+    def git(*args, pasta=RAIZ):
+        return subprocess.run(["git", "-C", str(pasta), *args], capture_output=True, text=True)
+    try:
+        ok = (RAIZ / ".git").exists() and subprocess.run(["git", "clone", "--quiet", "--no-hardlinks", str(RAIZ), str(destino)],
+                                                          capture_output=True).returncode == 0
+    except OSError:
+        ok = False
+    if ok:
+        origem = git("remote", "get-url", "origin").stdout.strip()
+        if origem:
+            git("remote", "set-url", "origin", origem, pasta=destino)
+        if git("status", "--porcelain").stdout.strip():
+            print("aviso: ha alteracoes nao commitadas aqui; o pen-drive leva so o ultimo commit")
+        return
+    shutil.copytree(RAIZ, destino, ignore=shutil.ignore_patterns("dist", ".git", "__pycache__", "*.pyc", ".DS_Store"))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--destino", default="", metavar="PASTA", help="copia a pasta pronta para PASTA/Baton (ex.: /Volumes/PENDRIVE); dados/ ja existente e mantido")
@@ -177,7 +203,7 @@ def main():
     pasta = dist / "Baton-pendrive" / "Baton"
     if pasta.parent.exists():
         shutil.rmtree(pasta.parent)
-    (pasta / "baton").mkdir(parents=True)
+    (pasta / "lancador").mkdir(parents=True)
     (pasta / "dados").mkdir()
     assets = achar_assets(a.python)
     for k in quais:
@@ -187,34 +213,30 @@ def main():
             baixar(asset["browser_download_url"], arq)
         print("extraindo", RUNTIMES[k][0])
         extrair(arq, pasta / "runtime" / RUNTIMES[k][0])
-    for nome in ARQUIVOS:
-        if (RAIZ / nome).exists():
-            shutil.copy2(RAIZ / nome, pasta / "baton" / nome)
-    shutil.copytree(RAIZ / "vendor", pasta / "baton" / "vendor", dirs_exist_ok=True)  # pdf.js e QR offline
+    repo = pasta / "repositorio"
+    clonar_repositorio(repo)
     if a.convite:
-        (pasta / "baton" / "convite.txt").write_text(a.convite.strip() + "\n", encoding="utf-8")
-    try:
-        versao = subprocess.run(["git", "-C", str(RAIZ), "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
-    except OSError:
-        versao = ""
-    (pasta / "baton" / "VERSION").write_text(versao + "\n")
+        (repo / "convite.txt").write_text(a.convite.strip() + "\n", encoding="utf-8")
     (pasta / "Baton.bat").write_text(BAT.replace("\n", "\r\n"), encoding="ascii")
-    (pasta / "baton" / "iniciar.vbs").write_text(VBS.replace("\n", "\r\n"), encoding="ascii")
-    (pasta / "baton" / "rodar.bat").write_text(RODAR.replace("\n", "\r\n"), encoding="ascii")
+    (pasta / "lancador" / "iniciar.vbs").write_text(VBS.replace("\n", "\r\n"), encoding="ascii")
+    (pasta / "lancador" / "rodar.bat").write_text(RODAR.replace("\n", "\r\n"), encoding="ascii")
     for nome in ("Baton.command", "Baton.sh"):
         f = pasta / nome
         f.write_text(UNIX, encoding="utf-8", newline="\n")
         f.chmod(0o755)
     (pasta / "LEIA-ME.txt").write_text(LEIAME.replace("\n", "\r\n"), encoding="ascii", errors="replace")
-    for f in (pasta / "baton").rglob("__pycache__"):
+    for f in repo.rglob("__pycache__"):
         shutil.rmtree(f, ignore_errors=True)
     print(f"pronto: {pasta} ({sum(f.stat().st_size for f in pasta.rglob('*') if f.is_file()) // 1048576} MB)")
     if a.destino:
         alvo = Path(a.destino).expanduser() / "Baton"
-        for sub in ("runtime", "baton"):  # codigo novo por cima do velho; dados/ nao e tocado
+        for sub in ("runtime", "repositorio", "lancador", "baton"):  # codigo novo por cima do velho; dados/ nao e tocado
             shutil.rmtree(alvo / sub, ignore_errors=True)
         shutil.copytree(pasta, alvo, dirs_exist_ok=True)
-        print(f"copiado para {alvo}: abra Baton.bat (Windows), Baton.command (Mac) ou Baton.sh (Linux) direto do pen-drive")
+        print(f"copiado para {alvo}:")
+        for f in sorted(alvo.iterdir()):
+            print("  ", f.name + ("/" if f.is_dir() else ""))
+        print("abra Baton.bat (Windows), Baton.command (Mac) ou Baton.sh (Linux) direto do pen-drive")
 
 
 if __name__ == "__main__":
