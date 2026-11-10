@@ -164,7 +164,7 @@ git clone https://github.com/pedroiff0/baton && cd baton && BATON_CONVITE=baton.
 
 O convite é trocado por uma chave própria do computador (guardada só nele); a chave de administrador nunca sai do servidor. Para o Windows portátil, `python3 scripts/empacotar-windows.py --convite baton.exemplo.com/CODIGO` leva um convite no zip e o Baton entra no relay sozinho no primeiro uso: o usuário só abre o app, joga a apresentação (ou põe um slide em tela cheia) e escaneia o QR.
 
-**Painel da central:** `https://baton.exemplo.com/relay/painel` (entra com a chave de administrador): lista os computadores com status online, tempo e celulares conectados agora; cria convites com os comandos prontos para copiar; renomeia, cancela convites e revoga computadores (desconecta na hora). Botões de volume do celular não chegam a nenhuma página web (iOS e Android os consomem); use os controles de mídia do sistema, fones ou um passador de slides Bluetooth.
+**Painel da central:** `https://baton.exemplo.com/relay/painel` (entra com a chave de administrador; `baton --painel-link` no servidor mostra um link que entra direto, e o convite sai como link `…/relay/convite/CODIGO` com QR, que mostra o comando certo para o sistema de quem abre; `baton --relay-status` e `baton --atualizar-relay` cuidam do servidor): lista os computadores com status online, tempo e celulares conectados agora; cria convites com os comandos prontos para copiar; renomeia, cancela convites e revoga computadores (desconecta na hora). Botões de volume do celular não chegam a nenhuma página web (iOS e Android os consomem); use os controles de mídia do sistema, fones ou um passador de slides Bluetooth.
 
 ## 🔒 Segurança <a name="seguranca"></a>
 

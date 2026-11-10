@@ -978,6 +978,55 @@ class RelayTest(unittest.TestCase):
             ag.parar = True
             srv.shutdown()
 
+    def test_painel_convite_visto_e_servidor(self):
+        import http.client
+        with tempfile.TemporaryDirectory() as d:
+            srv = RL.servir(0, "admin-chave-de-teste-1", host="127.0.0.1", registro=RL.Registro(Path(d) / "r.json"), publico="https://x.exemplo.com")
+            porta = srv.server_address[1]
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            adm = {"X-Baton-Admin": "admin-chave-de-teste-1"}
+
+            def req(metodo, caminho, corpo=None, cab=None):
+                c = http.client.HTTPConnection("127.0.0.1", porta, timeout=5)
+                c.request(metodo, caminho, body=json.dumps(corpo) if corpo is not None else None, headers=cab or {})
+                r = c.getresponse()
+                return r.status, r.read()
+            cod = json.loads(req("POST", "/relay/api/convite", {"rotulo": "mac"}, adm)[1])["codigo"]
+            st, html = req("GET", "/relay/convite/" + cod)  # pagina publica, sem chave
+            self.assertEqual(st, 200)
+            self.assertIn(b"x.exemplo.com/" + cod.encode(), html)
+            self.assertEqual(req("GET", "/relay/convite/" + cod)[0], 200)  # abrir a pagina nao consome o convite
+            self.assertEqual(req("GET", "/relay/convite/ERRADO-ERRADO-X")[0], 404)
+            self.assertEqual(req("GET", "/relay/convite/%3C/script%3E")[0], 404)
+            url, chave = RL.resgatar_convite(f"127.0.0.1:{porta}/{cod}")
+            self.assertEqual(req("GET", "/relay/convite/" + cod)[0], 404)  # usado
+            ag = RL.AgenteRelay(url, chave, 1, lambda: (["c1"], []))
+            ag.start()
+            for _ in range(50):
+                if srv.relay.agentes:
+                    break
+                time.sleep(0.1)
+            est = json.loads(req("GET", "/relay/api/estado", cab=adm)[1])
+            c = est["computadores"][0]
+            self.assertTrue(c["online"] and c["sid"])
+            self.assertEqual(c["visto"], 0)
+            self.assertIn("versao", est["servidor"])
+            self.assertEqual(json.loads(req("POST", "/relay/api/derrubar", {"sid": c["sid"]}, adm)[1]), {"ok": True})  # derruba sessao de computador
+            ag.parar = True
+            for _ in range(50):
+                c = json.loads(req("GET", "/relay/api/estado", cab=adm)[1])["computadores"][0]
+                if not c["online"] and c["visto"]:
+                    break
+                time.sleep(0.1)
+            self.assertFalse(c["online"])
+            self.assertGreater(c["visto"], 0)  # "visto por ultimo" gravado ao sair
+            srv.shutdown()
+
+    def test_comandos_atualizar_relay(self):
+        cmds = RL.comandos_atualizar("/x/baton")
+        self.assertEqual(cmds[0][:4], ["git", "-C", "/x/baton", "pull"])
+        self.assertEqual(cmds[-1], ["systemctl", "--user", "restart", "baton-relay.service"])
+
     def test_registro_aberto_com_limites(self):
         import http.client
         with tempfile.TemporaryDirectory() as d:

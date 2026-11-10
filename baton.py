@@ -4116,6 +4116,9 @@ def main():
                     help="entra no relay com um convite de uso unico (ex.: baton.exemplo.com/ABCD-EFGH-JKLM); sem login, nada e coletado")
     ap.add_argument("--criar-convite", nargs="?", const="", default=None, metavar="ROTULO",
                     help="no servidor do relay: cria um convite de uso unico (vale 24 h) e mostra os comandos para a pessoa")
+    ap.add_argument("--painel-link", action="store_true", help="no servidor do relay: mostra o link do painel que entra direto (a chave vai no fragmento #, que nao chega ao servidor nem aos logs)")
+    ap.add_argument("--relay-status", action="store_true", help="no servidor do relay: resume computadores online, sessoes e versao")
+    ap.add_argument("--atualizar-relay", action="store_true", help="no servidor do relay: git pull, reinstala e reinicia o servico baton-relay (derruba as sessoes por alguns segundos)")
     ap.add_argument("--servir-relay", action="store_true", help="roda o relay central (aponte o Cloudflare Tunnel para --relay-porta); exige a chave do relay")
     ap.add_argument("--relay-porta", type=int, default=8780, help="porta do relay com --servir-relay")
     ap.add_argument("--relay-max", type=int, default=50, help="maximo de computadores (sessoes) no relay")
@@ -4169,6 +4172,24 @@ def main():
         return print(f"Convite: {r['codigo']} (24 h, uso unico)\n\nbaton --convite {c}\n"
                      f"git clone https://github.com/pedroiff0/baton && cd baton && BATON_CONVITE={c} ./install.sh\n"
                      f"Windows: $env:BATON_CONVITE=\"{c}\"; .\\install.ps1")
+    if a.painel_link:
+        chave = chave_do_relay(a.chave_relay)
+        h = (url_publica_salva() or f"http://127.0.0.1:{a.relay_porta}").rstrip("/")
+        link = f"{h}/relay/painel#{urllib.parse.quote(chave, safe='')}"
+        print(f"Painel do relay (abra no aparelho que vai administrar; guarde como segredo, o link contem a chave):\n\n{link}\n")
+        try:
+            import qrcode as _qr  # opcional: pip install qrcode
+            q = _qr.QRCode(border=1)
+            q.add_data(link)
+            q.make(fit=True)
+            q.print_ascii(invert=True)
+        except ImportError:
+            print("(para ver o QR no terminal: pip install qrcode; ou abra o link no computador e use o painel)")
+        return
+    if a.relay_status:
+        return print(relay_mod.resumo_local(a.relay_porta, chave_do_relay(a.chave_relay)))
+    if a.atualizar_relay:
+        return sys.exit(relay_mod.atualizar_local(a.relay_porta))
     if a.servir_relay:
         chave = chave_do_relay(a.chave_relay)
         if len(chave) < 12:

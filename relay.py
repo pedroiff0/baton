@@ -19,6 +19,7 @@ import secrets
 import socket
 import ssl
 import struct
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -179,6 +180,22 @@ class Registro:
                     return cid, chave
         return None
 
+    def convite_valido(self, codigo):
+        """Confere um convite sem consumi-lo (usado pela pagina publica /relay/convite/<codigo>)."""
+        h = hash_token(self._norm(codigo))
+        with self.lock:
+            agora = time.time()
+            return any(secrets.compare_digest(c["h"], h) and c["expira"] > agora for c in self.d["convites"])
+
+    def marcar_visto(self, cid):
+        """Instante em que o computador saiu do ar (so o horario; nada sobre quem usa)."""
+        with self.lock:
+            for c in self.d["computadores"]:
+                if c["id"] == cid:
+                    c["visto"] = time.time()
+                    self._salvar()
+                    return
+
     def autenticar(self, chave):
         h = hash_token(chave)
         with self.lock:
@@ -236,6 +253,7 @@ class Relay:
     def __init__(self, chave, max_sessoes=50, registro=None, publico=""):
         self.chave, self.max_sessoes, self.agentes, self.lock = chave, max_sessoes, {}, threading.Lock()
         self.registro, self.publico = registro or Registro(), publico
+        self.inicio = time.time()
         self.falhas = {}  # ip -> instantes de tentativas erradas (limite por minuto; nao e gravado)
 
     MAX_ABERTOS_POR_IP = 3
@@ -283,6 +301,8 @@ class Relay:
         with self.lock:
             self.agentes.pop(ag.sid, None)
         ag.cair()
+        if ag.cid:
+            self.registro.marcar_visto(ag.cid)
 
     def achar(self, codigo="", token="", sid="", estatico=False):
         with self.lock:
@@ -302,6 +322,42 @@ class Relay:
         return None  # nunca "qualquer agente": um agente aberto serviria scripts sob o dominio de outro
 
 
+def _git(*args, repo, timeout=10):
+    try:
+        r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=timeout)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def repo_do_baton():
+    """Clone git de onde o Baton foi instalado (o install.sh grava o caminho em REPO ao lado do baton.py); None se nao houver."""
+    try:
+        r = Path((Path(__file__).resolve().parent / "REPO").read_text().strip())
+        return r if (r / ".git").exists() else None
+    except OSError:
+        return None
+
+
+def versao_servidor(relay):
+    """Versao instalada, tempo ligado e quantos commits o clone esta atras do remoto (so conhecido apos `verificar`)."""
+    try:
+        instalada = (Path(__file__).resolve().parent / "VERSION").read_text().strip()
+    except OSError:
+        instalada = ""
+    repo = repo_do_baton()
+    atras = _git("rev-list", "--count", "HEAD..@{upstream}", repo=repo) if repo else ""
+    return {"versao": instalada or "desconhecida", "ligado_ha": int(time.time() - relay.inicio),
+            "atras": int(atras) if atras.isdigit() else None, "repo": bool(repo)}
+
+
+def verificar_atualizacao(relay):
+    repo = repo_do_baton()
+    if repo:
+        _git("fetch", "--quiet", repo=repo, timeout=20)
+    return versao_servidor(relay)
+
+
 def _igual(a, b):
     try:
         return secrets.compare_digest(str(a).encode(), str(b).encode())
@@ -318,62 +374,120 @@ def _cookie(cabecalhos, nome):
 
 
 PAINEL_RELAY = r"""<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="robots" content="noindex"><title>Baton central</title>
+<meta name="robots" content="noindex"><meta name="referrer" content="no-referrer"><title>Baton central</title>
 <style>
-:root{--bg:#0b0b0d;--card:#17171a;--linha:#2a2a2e;--tx:#f2f2f4;--mut:#8e8e93;--az:#0a84ff;--vd:#30d158;--vm:#ff453a}
-@media (prefers-color-scheme:light){:root{--bg:#f4f4f6;--card:#fff;--linha:#dcdce0;--tx:#18181b;--mut:#6b6b73}}
+:root{--bg:#0b0b0d;--card:#17171a;--linha:#2a2a2e;--tx:#f2f2f4;--mut:#8e8e93;--az:#0a84ff;--vd:#30d158;--vm:#ff453a;--am:#ffd60a}
+@media (prefers-color-scheme:light){:root{--bg:#f4f4f6;--card:#fff;--linha:#dcdce0;--tx:#18181b;--mut:#6b6b73;--am:#b58900}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.45 -apple-system,system-ui,sans-serif;padding:max(18px,env(safe-area-inset-top)) 16px 40px}
 main{max-width:760px;margin:0 auto}h1{font-size:24px;margin:6px 0 2px}h2{font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);margin:26px 0 8px}
 .sub{color:var(--mut);font-size:13px;margin:0 0 4px}.card{background:var(--card);border:1px solid var(--linha);border-radius:14px;padding:12px 14px;margin:8px 0}
 .lin{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.lin>.g{flex:1;min-width:0}
 .dot{width:10px;height:10px;border-radius:50%;background:var(--mut);flex:none}.dot.on{background:var(--vd);box-shadow:0 0 8px var(--vd)}
 b{font-weight:600}small,.mut{color:var(--mut);font-size:13px}code{font:13px ui-monospace,Menlo,monospace;word-break:break-all}
-button,input{font:inherit;border-radius:10px;border:1px solid var(--linha);background:var(--card);color:var(--tx);padding:8px 12px}
+button,input{font:inherit;border-radius:10px;border:1px solid var(--linha);background:var(--card);color:var(--tx);padding:9px 14px;min-height:40px}
 button{cursor:pointer}button.az{background:var(--az);border-color:var(--az);color:#fff;font-weight:600}button.vm{color:var(--vm)}
+button:focus-visible,input:focus-visible,a:focus-visible{outline:2px solid var(--az);outline-offset:2px}
 input{width:100%}.cod{font:600 26px ui-monospace,Menlo,monospace;letter-spacing:.08em;text-align:center;padding:10px 0}
 pre{margin:6px 0;padding:10px;border-radius:10px;background:var(--bg);border:1px solid var(--linha);white-space:pre-wrap;word-break:break-all;font:12.5px ui-monospace,Menlo,monospace}
-#login{display:none}.vazio{color:var(--mut);padding:6px 2px}
+#login{display:none}.vazio{color:var(--mut);padding:6px 2px}.abas{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 4px}.abas button[aria-selected=true]{background:var(--az);border-color:var(--az);color:#fff}
+.qr{width:168px;height:168px;background:#fff;border-radius:10px;padding:8px;margin:8px auto 0;display:block}.qr svg{width:100%;height:100%}
+#aviso{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);max-width:92vw;background:var(--card);border:1px solid var(--linha);border-radius:12px;padding:10px 16px;box-shadow:0 8px 30px rgba(0,0,0,.4);display:none;z-index:9}
+.tag{display:inline-block;font-size:12px;padding:1px 8px;border-radius:9px;border:1px solid var(--linha);color:var(--mut)}.tag.at{color:var(--am);border-color:var(--am)}
 </style></head><body><main>
-<h1>Baton central</h1><p class="sub" id="resumo">Entre com a chave de administrador deste relay.</p>
-<div id="login" class="card"><div class="lin"><div class="g"><input id="chave" type="password" placeholder="Chave de administrador" autocomplete="current-password"></div><button class="az" id="entrar">Entrar</button></div><small id="erro" style="color:var(--vm)"></small></div>
+<h1>Baton central</h1><p class="sub" id="resumo" role="status">Entre com a chave de administrador deste relay.</p>
+<div id="login" class="card"><div class="lin"><div class="g"><input id="chave" type="password" placeholder="Chave de administrador" autocomplete="current-password" aria-label="Chave de administrador"></div><button class="az" id="entrar">Entrar</button></div>
+<label class="mut" style="display:block;margin-top:8px"><input type="checkbox" id="lembrar" style="width:auto;min-height:0;vertical-align:middle"> Lembrar neste aparelho</label><small id="erro" style="color:var(--vm)"></small>
+<p class="mut" style="margin:10px 0 0">Dica: no servidor, <code>baton --painel-link</code> mostra um link que entra direto, sem digitar a chave.</p></div>
 <div id="app" style="display:none">
+<div class="lin" style="justify-content:flex-end"><button id="sair">Sair deste aparelho</button></div>
+<h2>Agora</h2><div id="agora"></div>
 <h2>Computadores</h2><div id="comps"></div>
-<h2>Registro aberto</h2><div class="card"><div class="lin"><div class="g"><b id="abtit"></b><br><small>Aberto: qualquer Baton entra sem convite, com limite por IP e vagas reservadas. Fechado: so com convite.</small></div><button id="abtog"></button></div><div id="abertos"></div></div>
-<h2>Novo computador</h2><div class="card"><div class="lin"><div class="g"><input id="rotulo" placeholder="Rotulo so seu, opcional (ex.: Mac do instituto)" maxlength="40"></div><button class="az" id="criar">Criar convite</button></div>
+<h2>Novo computador</h2><div class="card"><div class="lin"><div class="g"><input id="rotulo" placeholder="Rotulo so seu, opcional (ex.: Mac do instituto)" maxlength="40" aria-label="Rotulo do convite"></div><button class="az" id="criar">Criar convite</button></div>
 <div id="novo"></div></div>
 <h2>Convites pendentes</h2><div id="convs"></div>
-<p class="mut" style="margin-top:28px">Este relay nao tem login de usuarios e nao guarda IP, nome, conta nem conteudo: so repassa o trafego entre o celular e o computador. Em disco ficam apenas o hash da chave de cada computador autorizado e o rotulo que voce deu. Quem esta online e quantos celulares estao conectados existem so em memoria.</p>
-</div></main>
+<h2>Registro aberto</h2><div class="card"><div class="lin"><div class="g"><b id="abtit"></b><br><small>Aberto: qualquer Baton entra sem convite, com limite por IP e vagas reservadas. Fechado: so com convite.</small></div><button id="abtog"></button></div></div>
+<h2>Servidor</h2><div class="card" id="srv"></div>
+<p class="mut" style="margin-top:28px">Este relay nao tem login de usuarios e nao guarda IP, nome, conta nem conteudo: so repassa o trafego entre o celular e o computador. Em disco ficam apenas o hash da chave de cada computador autorizado, o rotulo que voce deu e o horario em que ele saiu do ar. Quem esta online e quantos celulares estao conectados existem so em memoria.</p>
+</div><div id="aviso" role="status" aria-live="polite"></div></main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js" async></script>
 <script>
-const $=id=>document.getElementById(id);let K=sessionStorage.getItem('baton-adm')||'',ES=null;
+const $=id=>document.getElementById(id);
+const LS=(()=>{try{return window.localStorage}catch(e){return null}})();
+let K='',ES=null,ANT=null,CONV=null,ABA=0;
+(function(){const h=location.hash.slice(1);if(h){K=decodeURIComponent(h);try{LS&&LS.setItem('baton-adm',K)}catch(e){}history.replaceState(null,'',location.pathname)}
+  else K=sessionStorage.getItem('baton-adm')||(LS&&LS.getItem('baton-adm'))||''})();
 const esc=t=>String(t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function limpa(){sessionStorage.removeItem('baton-adm');try{LS&&LS.removeItem('baton-adm')}catch(e){}K=''}
 async function api(c,d){const r=await fetch('/relay/api/'+c,{method:d?'POST':'GET',headers:{'X-Baton-Admin':K,'Content-Type':'application/json'},body:d?JSON.stringify(d):undefined});
-  if(r.status===403){sessionStorage.removeItem('baton-adm');K='';mostra(false);$('erro').textContent='Chave invalida.';throw 0}return r.json()}
+  if(r.status===403){limpa();mostra(false);$('erro').textContent='Chave invalida.';throw 0}return r.json()}
 function mostra(ok){$('login').style.display=ok?'none':'block';$('app').style.display=ok?'block':'none'}
 const dur=s=>s<60?s+' s':s<3600?Math.floor(s/60)+' min':Math.floor(s/3600)+' h '+Math.floor(s%3600/60)+' min';
+const atras=t=>{if(!t)return 'nunca foi visto';const s=Math.max(0,Math.floor(Date.now()/1000-t));return s<60?'agora ha pouco':'ha '+dur(s)};
 const host=()=>(ES&&ES.publico?ES.publico.replace(/^https?:\/\//,''):location.host);
+let tm=0;function aviso(t){const a=$('aviso');a.textContent=t;a.style.display='block';clearTimeout(tm);tm=setTimeout(()=>a.style.display='none',6000)}
+function copia(b,txt){navigator.clipboard&&navigator.clipboard.writeText(txt);const o=b.textContent;b.textContent='Copiado';setTimeout(()=>b.textContent=o,1500)}
 async function ver(){try{ES=await api('estado')}catch(e){return}mostra(true);
+  const nome=c=>c.rotulo||'Computador '+c.id;
   const on=ES.computadores.filter(c=>c.online).length+ES.locais.length+ES.abertos.length;
-  $('resumo').textContent=on+' de '+ES.max+' sessoes online - '+(ES.computadores.reduce((a,c)=>a+c.celulares,0)+ES.locais.reduce((a,c)=>a+c.celulares,0)+ES.abertos.reduce((a,c)=>a+c.celulares,0))+' celulares conectados agora';
-  $('comps').innerHTML=(ES.locais.map(l=>'<div class="card lin"><span class="dot on"></span><div class="g"><b>Este servidor</b> <small>(chave de administrador)</small><br><small>online ha '+dur(l.online_ha)+' - '+l.celulares+' celular(es)</small></div></div>').join('')+
-   ES.computadores.map(c=>'<div class="card lin"><span class="dot '+(c.online?'on':'')+'"></span><div class="g"><b>'+esc(c.rotulo||'Computador '+c.id)+'</b> <small>'+c.id+'</small><br><small>'+(c.online?'online ha '+dur(c.online_ha)+' - '+c.celulares+' celular(es)':'offline')+'</small></div>'+
-   '<button data-r="'+c.id+'">Renomear</button><button class="vm" data-v="'+c.id+'">Revogar</button></div>').join(''))||'<div class="vazio">Nenhum computador ainda. Crie um convite abaixo.</div>';
+  const cel=ES.computadores.reduce((a,c)=>a+c.celulares,0)+ES.locais.reduce((a,c)=>a+c.celulares,0)+ES.abertos.reduce((a,c)=>a+c.celulares,0);
+  $('resumo').textContent=on+' de '+ES.max+' sessoes online - '+cel+' celulares conectados agora';document.title=(on?'('+on+') ':'')+'Baton central';
+  const novo=new Set(ES.computadores.filter(c=>c.online).map(c=>c.id));
+  if(ANT){ES.computadores.forEach(c=>{if(ANT.has(c.id)&&!novo.has(c.id))aviso(nome(c)+' saiu do ar');if(!ANT.has(c.id)&&novo.has(c.id))aviso(nome(c)+' voltou')})}ANT=novo;
+  const ag=[];
+  ES.locais.forEach(l=>ag.push('<div class="card lin"><span class="dot on"></span><div class="g"><b>Este servidor</b> <small>(chave de administrador)</small><br><small>online ha '+dur(l.online_ha)+' - '+l.celulares+' celular(es)</small></div></div>'));
+  ES.computadores.filter(c=>c.online).forEach(c=>ag.push('<div class="card lin"><span class="dot on"></span><div class="g"><b>'+esc(nome(c))+'</b><br><small>online ha '+dur(c.online_ha)+' - '+c.celulares+' celular(es)</small></div><button class="vm" data-d="'+c.sid+'">Derrubar</button></div>'));
+  ES.abertos.forEach(a=>ag.push('<div class="card lin"><span class="dot on"></span><div class="g"><b>Sessao aberta '+a.sid.slice(0,4)+'</b><br><small>online ha '+dur(a.online_ha)+' - '+a.celulares+' celular(es)</small></div><button class="vm" data-d="'+a.sid+'">Derrubar</button></div>'));
+  $('agora').innerHTML=ag.join('')||'<div class="vazio">Ninguem online agora.</div>';
+  $('comps').innerHTML=ES.computadores.map(c=>'<div class="card lin"><span class="dot '+(c.online?'on':'')+'"></span><div class="g"><b>'+esc(nome(c))+'</b> <small>'+c.id+'</small><br><small>'+(c.online?'online ha '+dur(c.online_ha):'offline, visto '+atras(c.visto))+'</small></div>'+
+   '<button data-r="'+c.id+'">Renomear</button><button class="vm" data-v="'+c.id+'">Revogar</button></div>').join('')||'<div class="vazio">Nenhum computador ainda. Crie um convite abaixo.</div>';
   $('abtit').textContent=ES.aberto?'Ligado ('+ES.abertos.length+' online)':'Desligado';$('abtog').textContent=ES.aberto?'Fechar registro':'Abrir registro';$('abtog').className=ES.aberto?'vm':'az';
-  $('abertos').innerHTML=ES.abertos.map(a=>'<div class="lin" style="margin-top:8px"><span class="dot on"></span><div class="g"><b>Sessao '+a.sid.slice(0,4)+'</b> <small>online ha '+dur(a.online_ha)+' - '+a.celulares+' celular(es)</small></div><button class="vm" data-d="'+a.sid+'">Derrubar</button></div>').join('');
-  document.querySelectorAll('[data-d]').forEach(b=>b.onclick=async()=>{await api('derrubar',{sid:b.dataset.d});ver()});
   $('convs').innerHTML=ES.convites.map(c=>'<div class="card lin"><div class="g"><b>'+esc(c.rotulo||'Sem rotulo')+'</b><br><small>expira em '+dur(Math.max(0,Math.floor(c.expira-Date.now()/1000)))+'</small></div><button class="vm" data-i="'+c.id+'">Cancelar</button></div>').join('')||'<div class="vazio">Nenhum.</div>';
+  const s=ES.servidor||{};const a=s.atras;
+  $('srv').innerHTML='<div class="lin"><div class="g"><b>Versao '+esc(s.versao||'?')+'</b> <small>ligado ha '+dur(s.ligado_ha||0)+'</small><br>'+
+   (!s.repo?'<small>Instalado sem o clone git: nao da para checar atualizacao por aqui.</small>':a===null?'<small>Atualizacao ainda nao verificada.</small>':a>0?'<span class="tag at">'+a+' atualizacao(oes) disponivel(is)</span>':'<span class="tag">Em dia</span>')+'</div>'+
+   '<button id="verif">Verificar</button><button class="az" id="atu">Copiar comando de atualizar</button></div><small>Atualizar roda no servidor (puxa o codigo, reinstala e reinicia o servico, que derruba as sessoes por alguns segundos): <code>baton --atualizar-relay</code></small>';
+  $('verif').onclick=async()=>{$('verif').textContent='Verificando...';await api('verificar',{});ver()};$('atu').onclick=()=>copia($('atu'),'baton --atualizar-relay');
+  document.querySelectorAll('[data-d]').forEach(b=>b.onclick=async()=>{if(confirm('Derrubar esta sessao? O Baton reconecta sozinho.')){await api('derrubar',{sid:b.dataset.d});ver()}});
   document.querySelectorAll('[data-v]').forEach(b=>b.onclick=async()=>{if(confirm('Revogar este computador? Ele para de conectar agora.')){await api('revogar',{id:b.dataset.v});ver()}});
   document.querySelectorAll('[data-r]').forEach(b=>b.onclick=async()=>{const n=prompt('Novo rotulo:');if(n!==null){await api('rotular',{id:b.dataset.r,rotulo:n});ver()}});
   document.querySelectorAll('[data-i]').forEach(b=>b.onclick=async()=>{await api('revogar-convite',{id:b.dataset.i});ver()})}
 $('abtog').onclick=async()=>{await api('aberto',{valor:!ES.aberto});ver()};
-$('entrar').onclick=()=>{K=$('chave').value;sessionStorage.setItem('baton-adm',K);$('erro').textContent='';ver()};
+$('sair').onclick=()=>{limpa();mostra(false);$('resumo').textContent='Entre com a chave de administrador deste relay.'};
+$('entrar').onclick=()=>{K=$('chave').value;sessionStorage.setItem('baton-adm',K);try{if(LS){$('lembrar').checked?LS.setItem('baton-adm',K):LS.removeItem('baton-adm')}}catch(e){}$('erro').textContent='';ver()};
 $('chave').onkeydown=e=>{if(e.key==='Enter')$('entrar').click()};
-$('criar').onclick=async()=>{const r=await api('convite',{rotulo:$('rotulo').value});$('rotulo').value='';const h=r.publico?r.publico.replace(/^https?:\/\//,''):location.host,c=h+'/'+r.codigo;
-  const cmds=[['Qualquer sistema (Baton ja instalado)','baton --convite '+c],['Mac ou Linux (instala e conecta)','git clone https://github.com/pedroiff0/baton && cd baton && BATON_CONVITE='+c+' ./install.sh'],
-   ['Windows (PowerShell, na pasta do Baton)','$env:BATON_CONVITE="'+c+'"; .\\install.ps1']];
-  $('novo').innerHTML='<div class="cod">'+r.codigo+'</div><small>Vale por 24 h e uma unica vez. Mande um dos comandos para a pessoa:</small>'+cmds.map((x,i)=>'<div class="mut" style="margin-top:8px">'+x[0]+'</div><pre id="p'+i+'">'+esc(x[1])+'</pre><button data-c="'+i+'">Copiar</button>').join('');
-  document.querySelectorAll('[data-c]').forEach(b=>b.onclick=()=>{navigator.clipboard&&navigator.clipboard.writeText($('p'+b.dataset.c).textContent);b.textContent='Copiado'});ver()};
+function cmds(c){return [['Mac ou Linux','git clone https://github.com/pedroiff0/baton && cd baton && BATON_CONVITE='+c+' ./install.sh'],['Windows (PowerShell)','git clone https://github.com/pedroiff0/baton; cd baton; $env:BATON_CONVITE="'+c+'"; .\\install.ps1'],['Baton ja instalado','baton --convite '+c]]}
+function mostraConv(){if(!CONV)return;const c=CONV.h+'/'+CONV.codigo,link='https://'+CONV.h+'/relay/convite/'+CONV.codigo,cs=cmds(c);
+  $('novo').innerHTML='<div class="cod">'+CONV.codigo+'</div><small>Vale por 24 h e uma unica vez. Mande o link: a pessoa abre e ve o comando certo para o sistema dela.</small>'+
+   '<pre id="lk">'+esc(link)+'</pre><button id="cplk" class="az">Copiar link</button><div id="qr" class="qr" hidden></div>'+
+   '<div class="abas" role="tablist">'+cs.map((x,i)=>'<button role="tab" aria-selected="'+(i===ABA)+'" data-a="'+i+'">'+x[0]+'</button>').join('')+'</div><pre id="cmd">'+esc(cs[ABA][1])+'</pre><button id="cpcmd">Copiar comando</button>';
+  $('cplk').onclick=()=>copia($('cplk'),link);$('cpcmd').onclick=()=>copia($('cpcmd'),cs[ABA][1]);
+  document.querySelectorAll('[data-a]').forEach(b=>b.onclick=()=>{ABA=+b.dataset.a;mostraConv()});
+  try{if(window.qrcode){const q=qrcode(0,'M');q.addData(link);q.make();$('qr').innerHTML=q.createSvgTag({cellSize:6,margin:0,scalable:true});$('qr').hidden=false}}catch(e){}}
+$('criar').onclick=async()=>{const r=await api('convite',{rotulo:$('rotulo').value});$('rotulo').value='';CONV={codigo:r.codigo,h:r.publico?r.publico.replace(/^https?:\/\//,''):location.host};ABA=0;mostraConv();ver()};
 if(K)ver();else mostra(false);setInterval(()=>{if(K&&document.visibilityState==='visible')ver()},4000);
+</script></body></html>"""
+
+
+PAGINA_CONVITE_INVALIDO = """<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Convite do Baton</title>
+<style>body{margin:0;font:16px/1.5 -apple-system,system-ui,sans-serif;background:#0b0b0d;color:#f2f2f4;padding:32px 18px}main{max-width:560px;margin:0 auto}@media (prefers-color-scheme:light){body{background:#f4f4f6;color:#18181b}}</style></head>
+<body><main><h1>Convite invalido</h1><p>Este convite expirou, ja foi usado ou nao existe. Peca um novo para quem administra o relay.</p></main></body></html>"""
+
+PAGINA_CONVITE = """<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><meta name="referrer" content="no-referrer"><title>Convite do Baton</title>
+<style>:root{--bg:#0b0b0d;--card:#17171a;--linha:#2a2a2e;--tx:#f2f2f4;--mut:#8e8e93;--az:#0a84ff}@media (prefers-color-scheme:light){:root{--bg:#f4f4f6;--card:#fff;--linha:#dcdce0;--tx:#18181b;--mut:#6b6b73}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.5 -apple-system,system-ui,sans-serif;padding:max(24px,env(safe-area-inset-top)) 16px 40px}main{max-width:620px;margin:0 auto}
+h1{font-size:24px;margin:0 0 6px}.mut{color:var(--mut);font-size:14px}.abas{display:flex;gap:6px;flex-wrap:wrap;margin:18px 0 8px}
+button{font:inherit;border-radius:10px;border:1px solid var(--linha);background:var(--card);color:var(--tx);padding:10px 14px;min-height:44px;cursor:pointer}button[aria-selected=true],button.az{background:var(--az);border-color:var(--az);color:#fff;font-weight:600}
+pre{margin:6px 0 10px;padding:12px;border-radius:10px;background:var(--card);border:1px solid var(--linha);white-space:pre-wrap;word-break:break-all;font:13px ui-monospace,Menlo,monospace}button:focus-visible{outline:2px solid var(--az);outline-offset:2px}</style></head>
+<body><main><h1>Entrar no relay do Baton</h1><p class="mut">Este convite vale por 24 h e uma unica vez. Abrir esta pagina nao o gasta: ele so e usado quando o comando abaixo roda no computador.</p>
+<div class="abas" role="tablist" id="abas"></div><pre id="cmd"></pre><button class="az" id="cp">Copiar comando</button>
+<p class="mut" style="margin-top:22px">Depois de rodar, feche e abra o Baton de novo. Nada sobre voce ou sobre o computador e enviado ao relay: so a chave que ele gera para esta maquina.</p></main>
+<script>
+const C=__CONVITE__;
+const ops=[["Mac ou Linux","git clone https://github.com/pedroiff0/baton && cd baton && BATON_CONVITE="+C+" ./install.sh"],["Windows (PowerShell)","git clone https://github.com/pedroiff0/baton; cd baton; $env:BATON_CONVITE=\\""+C+"\\"; .\\\\install.ps1"],["Baton ja instalado","baton --convite "+C]];
+const ua=navigator.userAgent||"";let a=/Windows/i.test(ua)?1:0;
+function d(){document.getElementById("abas").innerHTML=ops.map((o,i)=>'<button role="tab" aria-selected="'+(i===a)+'" data-i="'+i+'">'+o[0]+'</button>').join("");document.getElementById("cmd").textContent=ops[a][1];
+  document.querySelectorAll("[data-i]").forEach(b=>b.onclick=()=>{a=+b.dataset.i;d()})}
+document.getElementById("cp").onclick=function(){navigator.clipboard&&navigator.clipboard.writeText(ops[a][1]);this.textContent="Copiado";setTimeout(()=>this.textContent="Copiar comando",1500)};d();
 </script></body></html>"""
 
 
@@ -432,6 +546,27 @@ def criar_handler(relay):
                 return self._json(403, {"erro": "convite invalido, expirado ou ja usado"})
             self._json(200, {"id": r[0], "chave": r[1]})
 
+        def _pagina_convite(self, codigo):
+            """Pagina publica com o comando certo para o sistema de quem abriu o link; nao consome o convite."""
+            if relay.limite(self._ip()):
+                return self._texto(429, "muitas tentativas; aguarde um minuto")
+            if not relay.registro.convite_valido(codigo):
+                relay.falhou(self._ip())
+                corpo = PAGINA_CONVITE_INVALIDO.encode()
+                status = 404
+            else:
+                host = (relay.publico or "").replace("https://", "").replace("http://", "").strip("/") or self.headers.get("Host", "")
+                limpo = lambda t: "".join(ch for ch in t if ch.isalnum() or ch in ".:-")  # vai para dentro de um <script>: so caracteres seguros
+                corpo = PAGINA_CONVITE.replace("__CONVITE__", json.dumps(limpo(host) + "/" + limpo(codigo.upper()))).encode()
+                status = 200
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Content-Length", str(len(corpo)))
+            self.end_headers()
+            self.wfile.write(corpo)
+
         def _api(self, caminho):
             if not self._admin_ok():
                 return self._json(403, {"erro": "chave de administrador invalida"})
@@ -448,11 +583,12 @@ def criar_handler(relay):
                 for c in comps:
                     a = online.get(c["id"])
                     saida.append({"id": c["id"], "rotulo": c["rotulo"], "criado": c["criado"], "online": bool(a),
-                                  "online_ha": int(agora - a.desde) if a else 0, "celulares": a.fluxos if a else 0})
+                                  "online_ha": int(agora - a.desde) if a else 0, "celulares": a.fluxos if a else 0,
+                                  "sid": a.sid if a else "", "visto": c.get("visto", 0)})
                 locais = [{"online_ha": int(agora - a.desde), "celulares": a.fluxos} for a in ags if a.vivo and not a.cid and not a.aberto]
                 abertos = [{"sid": a.sid, "online_ha": int(agora - a.desde), "celulares": a.fluxos} for a in ags if a.vivo and a.aberto]
                 return self._json(200, {"computadores": saida, "locais": locais, "abertos": abertos, "aberto": reg.aberto,
-                                        "max": relay.max_sessoes, "publico": relay.publico,
+                                        "max": relay.max_sessoes, "publico": relay.publico, "servidor": versao_servidor(relay),
                                         "convites": [{"id": c["id"], "rotulo": c["rotulo"], "expira": c["expira"]} for c in convs]})
             if self.command == "POST":
                 d = self._corpo_json()
@@ -467,6 +603,8 @@ def criar_handler(relay):
                 if caminho == "aberto":
                     relay.registro.definir_aberto(bool(d.get("valor")))
                     return self._json(200, {"aberto": relay.registro.aberto})
+                if caminho == "verificar":
+                    return self._json(200, verificar_atualizacao(relay))
                 if caminho == "derrubar":
                     return self._json(200, {"ok": relay.derrubar(str(d.get("sid", "")))})
                 if caminho == "rotular":
@@ -532,6 +670,8 @@ def criar_handler(relay):
                 return self._agente_ws()
             if u.path == "/relay/convite" and self.command == "POST":
                 return self._resgatar()
+            if u.path.startswith("/relay/convite/") and self.command == "GET":
+                return self._pagina_convite(u.path[len("/relay/convite/"):])
             if u.path in ("/relay/painel", "/relay/painel/"):
                 corpo = PAINEL_RELAY.encode()
                 self.send_response(200)
@@ -685,6 +825,63 @@ def criar_convite_local(porta, chave, rotulo=""):
     req = urllib.request.Request(f"http://127.0.0.1:{porta}/relay/api/convite", data=json.dumps({"rotulo": rotulo}).encode(), method="POST",
                                  headers={"Content-Type": "application/json", "X-Baton-Admin": chave})
     return json.loads(urllib.request.urlopen(req, timeout=10).read())
+
+
+def _admin_get(porta, chave, caminho, corpo=None):
+    import urllib.request
+    req = urllib.request.Request(f"http://127.0.0.1:{porta}/relay/api/{caminho}", data=None if corpo is None else json.dumps(corpo).encode(),
+                                 method="GET" if corpo is None else "POST", headers={"Content-Type": "application/json", "X-Baton-Admin": chave})
+    return json.loads(urllib.request.urlopen(req, timeout=10).read())
+
+
+def resumo_local(porta, chave):
+    """Texto de `baton --relay-status`: o mesmo que o painel mostra, para quem esta no terminal do servidor."""
+    try:
+        e = _admin_get(porta, chave, "estado")
+    except Exception as ex:
+        return f"o relay local na porta {porta} nao respondeu ({ex}); veja: systemctl --user status baton-relay.service"
+    comps = e["computadores"]
+    on = [c for c in comps if c["online"]]
+    sv = e.get("servidor", {})
+    L = [f"Relay na porta {porta}: {len(on) + len(e['locais']) + len(e['abertos'])} de {e['max']} sessoes online, versao {sv.get('versao', '?')}, "
+         f"ligado ha {sv.get('ligado_ha', 0) // 60} min; registro aberto: {'sim' if e['aberto'] else 'nao'}"]
+    for c in comps:
+        L.append(f"  {'online ' if c['online'] else 'offline'}  {c['rotulo'] or c['id']}  {c['celulares']} celular(es)" if c["online"] else f"  offline  {c['rotulo'] or c['id']}")
+    L.append(f"  sessoes abertas: {len(e['abertos'])}; convites pendentes: {len(e['convites'])}")
+    a = sv.get("atras")
+    L.append("  atualizacao: " + ("nao verificada (painel > Verificar)" if a is None else f"{a} disponivel(is): baton --atualizar-relay" if a else "em dia"))
+    return "\n".join(L)
+
+
+def comandos_atualizar(repo):
+    """Passos de `baton --atualizar-relay` (lista de argv), separados para serem testaveis."""
+    return [["git", "-C", str(repo), "pull", "--ff-only"], [str(Path(repo) / "install.sh")],
+            ["systemctl", "--user", "restart", "baton-relay.service"]]
+
+
+def atualizar_local(porta):
+    """git pull, reinstala e reinicia o servico; confere se o painel voltou. Devolve o codigo de saida."""
+    repo = repo_do_baton() or (Path(os.environ["BATON_REPO"]) if os.environ.get("BATON_REPO") else None)
+    if not repo or not (Path(repo) / ".git").exists():
+        print("Nao achei o clone git do Baton. Rode ./install.sh uma vez a partir do clone (ele grava o caminho) ou defina BATON_REPO.")
+        return 2
+    env = dict(os.environ, BATON_SEM_DEPS="1", BATON_SEM_INICIAR="1")
+    for cmd in comandos_atualizar(repo):
+        print("$", " ".join(cmd))
+        if subprocess.run(cmd, cwd=str(repo), env=env).returncode != 0:
+            print("falhou; o servico nao foi alterado alem desse passo.")
+            return 1
+    import urllib.request
+    for _ in range(20):
+        time.sleep(1)
+        try:
+            if urllib.request.urlopen(f"http://127.0.0.1:{porta}/relay/painel", timeout=3).status == 200:
+                print("Relay de volta no ar.")
+                return 0
+        except Exception:
+            continue
+    print("O relay nao respondeu em 20 s: veja journalctl --user -u baton-relay.service -n 30")
+    return 1
 
 
 # ------------------------------------------------------------------ agente (dentro do Baton)
