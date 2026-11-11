@@ -1,8 +1,6 @@
 # Baton
 
-[![Licença](https://img.shields.io/github/license/pedroiff0/baton)](LICENSE)
-[![Estrelas](https://img.shields.io/github/stars/pedroiff0/baton?style=flat&logo=github)](https://github.com/pedroiff0/baton/stargazers)
-[![Status](https://img.shields.io/badge/status-ativo-informational)](#status-e-próximos-passos)
+[![Licença](https://img.shields.io/github/license/pedroiff0/baton)](LICENSE) [![Estrelas](https://img.shields.io/github/stars/pedroiff0/baton?style=flat&logo=github)](https://github.com/pedroiff0/baton/stargazers) [![Status](https://img.shields.io/badge/status-ativo-informational)](#status-e-próximos-passos)
 
 Passador de slides pelo celular: o iPhone ou Android controla qualquer app de apresentação no macOS, Windows ou Linux, com laser, foco, caneta, marca-texto, cortina, notas e zoom. Somente biblioteca padrão do Python 3.8+.
 
